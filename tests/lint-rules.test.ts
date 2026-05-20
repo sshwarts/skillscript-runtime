@@ -322,6 +322,152 @@ default: t
   });
 });
 
+describe("tier-1: status-disabled", () => {
+  it("flags compiling a disabled skill", async () => {
+    const src = `# Skill: gone
+# Status: disabled
+
+t:
+    ! hi
+
+default: t
+`;
+    const r = await lint(src);
+    const f = r.findings.find((f) => f.rule === "status-disabled");
+    expect(f).toBeDefined();
+  });
+});
+
+describe("tier-2: unsafe-shell-op", () => {
+  it("flags @@ shell opt-in", async () => {
+    // Parser treats `@@ ...` as an `@` op whose body starts with `@`.
+    const src = `# Skill: t
+t:
+    @ @rm -rf /tmp/something
+
+default: t
+`;
+    const r = await lint(src);
+    const f = r.findings.find((f) => f.rule === "unsafe-shell-op");
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe("warning");
+  });
+});
+
+describe("tier-2: unconfirmed-mutation", () => {
+  it("flags $ op invoking a mutating-named tool without ??", async () => {
+    const src = `# Skill: t
+t:
+    $ delete_record id=42
+
+default: t
+`;
+    const r = await lint(src);
+    const f = r.findings.find((f) => f.rule === "unconfirmed-mutation");
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe("warning");
+  });
+
+  it("accepts mutation when preceded by ??", async () => {
+    const src = `# Skill: t
+t:
+    ?? Are you sure you want to delete?
+    $ delete_record id=42
+
+default: t
+`;
+    const r = await lint(src);
+    expect(r.findings.find((f) => f.rule === "unconfirmed-mutation")).toBeUndefined();
+  });
+});
+
+describe("tier-2: model-contention", () => {
+  it("flags $ op with batch-shaped tool name + ~ on the same model", async () => {
+    const src = `# Skill: t
+t:
+    $ run_olsen_scan task_type=classify
+    ~ prompt="verdict" model=gemma2 -> V
+
+default: t
+`;
+    const r = await lint(src);
+    expect(r.findings.find((f) => f.rule === "model-contention")).toBeDefined();
+  });
+});
+
+describe("tier-2: draft-with-trigger", () => {
+  it("flags draft skill with triggers declared", async () => {
+    const src = `# Skill: t
+# Status: draft
+# Triggers: cron: */5 * * * *
+
+t:
+    ! hi
+
+default: t
+`;
+    const r = await lint(src);
+    expect(r.findings.find((f) => f.rule === "draft-with-trigger")).toBeDefined();
+  });
+
+  it("doesn't fire on approved skills with triggers", async () => {
+    const src = `# Skill: t
+# Status: approved
+# Triggers: cron: */5 * * * *
+
+t:
+    ! hi
+
+default: t
+`;
+    const r = await lint(src);
+    expect(r.findings.find((f) => f.rule === "draft-with-trigger")).toBeUndefined();
+  });
+});
+
+describe("tier-2: reference-to-disabled-skill", () => {
+  it("warns when & refs a disabled skill", async () => {
+    await registry.getSkillStore().store("legacy", `# Skill: legacy
+# Status: disabled
+
+t:
+    ! old behavior
+
+default: t
+`);
+    const src = `# Skill: caller
+t:
+    & legacy
+
+default: t
+`;
+    const r = await lint(src, { skillStore: registry.getSkillStore() });
+    const f = r.findings.find((f) => f.rule === "reference-to-disabled-skill");
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe("warning");
+  });
+});
+
+describe("tier-3: duplicate-skill-name", () => {
+  it("reports info finding when SkillStore has duplicates", async () => {
+    // Filesystem store can't actually have duplicates (filename unique).
+    // Rule fires when query() returns multiple matches; test the predicate
+    // by stubbing query.
+    const stubStore = {
+      ...registry.getSkillStore(),
+      query: async () => [
+        { name: "shared", version: "v1", content_hash: "h1", status: "draft" as const, created_at: 0, updated_at: 0 },
+        { name: "shared", version: "v2", content_hash: "h2", status: "approved" as const, created_at: 0, updated_at: 0 },
+      ],
+    };
+    const src = `# Skill: shared\nt:\n    ! hi\ndefault: t\n`;
+    const r = await lint(src, { skillStore: stubStore });
+    const f = r.findings.find((f) => f.rule === "duplicate-skill-name");
+    expect(f).toBeDefined();
+    expect(f!.severity).toBe("info");
+  });
+});
+
 describe("compile preflight integration", () => {
   it("LintFailureError thrown when tier-1 rule fires at compile time", async () => {
     const src = `# Skill: t

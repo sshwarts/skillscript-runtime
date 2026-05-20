@@ -468,14 +468,12 @@ const STATUS_DISABLED: LintRule = {
   description: "The skill being compiled is `# Status: disabled`. Disabled skills don't compile.",
   remediation: "Transition the skill to `approved` or `draft` via `update_status` before compiling, or revisit whether the skill should be disabled.",
   check: (ctx) => {
-    // Check the source for a `# Status: disabled` header. The parser doesn't
-    // expose # Status: directly today (skill-store inspects it). For lint
-    // purposes, we re-grep the source text via a substring on the parsed
-    // headers — but parser doesn't surface that field. As a pragmatic
-    // proxy, the SkillStore-supplied skill loader sets the status. For
-    // standalone parse() from raw source, we can't tell. Document the
-    // limitation and check the metadata when SkillStore is wired.
-    return [];
+    if (ctx.parsed.status !== "disabled") return [];
+    return [{
+      rule: "status-disabled",
+      severity: "error",
+      message: `Skill '${ctx.parsed.name ?? "(unnamed)"}' is \`# Status: disabled\` and cannot be compiled.`,
+    }];
   },
 };
 
@@ -575,7 +573,198 @@ const MISSING_SKILLSTORE_FOR_DATA_REF: LintRule = {
   },
 };
 
+// ─── Tier-2 rules (warning) ─────────────────────────────────────────────────
+
+const UNSAFE_SHELL_OP: LintRule = {
+  id: "unsafe-shell-op",
+  severity: "warning",
+  description: "Skill uses `@@` (opt-in unsafe shell execution). Requires human review.",
+  remediation: "Confirm the operator deployment has `runtime.enable_unsafe_shell = true` and the shell content is reviewed. Prefer `@` (echo-only, no exec) when possible.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    for (const [targetName, target] of ctx.parsed.targets) {
+      walkOps(target.ops, (op) => {
+        // `@@` isn't yet a distinct op-kind in the v1 parser; detected via
+        // raw body inspection of `@` ops whose body starts with the second @.
+        if (op.kind === "@" && op.body.startsWith("@")) {
+          findings.push({
+            rule: "unsafe-shell-op",
+            severity: "warning",
+            message: `\`@@\` shell op in target '${targetName}': '${op.body.slice(0, 60)}...'`,
+            block: targetName,
+          });
+        }
+      });
+    }
+    return findings;
+  },
+};
+
+/** Tool-name patterns that strongly suggest mutating operations. Conservative — false positives are tolerable for warnings; false negatives are dangerous. */
+const MUTATING_TOOL_PATTERN = /^(?:write_|update_|delete_|remove_|set_|create_|insert_|put_|patch_|destroy_).*/;
+
+const UNCONFIRMED_MUTATION: LintRule = {
+  id: "unconfirmed-mutation",
+  severity: "warning",
+  description: "A `$` op invokes a tool whose name suggests mutation (write/update/delete/...) without a preceding `??` confirmation step.",
+  remediation: "Add a `??` confirmation op before the mutation, or restructure to make the mutation explicit in the skill's name/output.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    for (const [targetName, target] of ctx.parsed.targets) {
+      let sawConfirm = false;
+      for (const op of target.ops) {
+        if (op.kind === "??") sawConfirm = true;
+        if (op.kind === "$" && !sawConfirm) {
+          const toolName = op.body.split(/\s+/)[0] ?? "";
+          if (MUTATING_TOOL_PATTERN.test(toolName)) {
+            findings.push({
+              rule: "unconfirmed-mutation",
+              severity: "warning",
+              message: `\`$\` op in target '${targetName}' invokes '${toolName}' (mutating shape) without a preceding \`??\` confirmation.`,
+              block: targetName,
+            });
+          }
+        }
+      }
+    }
+    return findings;
+  },
+};
+
+const MODEL_CONTENTION: LintRule = {
+  id: "model-contention",
+  severity: "warning",
+  description: "Skill body has a `$` op dispatching async batch work on a model + a downstream `~ model=X` synchronous call to the same model. The runtime serializes per-model; the sync call queues behind the batch.",
+  remediation: "Use distinct models for async vs sync work: e.g., `gemma2` for batch + `qwen` for the interactive verdict. See ERD §3 model selection convention.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    // Heuristic: collect ~ op model names per target. Flag if any $ op
+    // in the same target dispatches a batch-classification-shaped tool
+    // (name contains "olsen", "scan", "batch", "classify"). Conservative.
+    for (const [targetName, target] of ctx.parsed.targets) {
+      const syncModels = new Set<string>();
+      walkOps(target.ops, (op) => {
+        if (op.kind === "~" && op.localModelParams?.model) syncModels.add(op.localModelParams.model);
+      });
+      if (syncModels.size === 0) return findings;
+      walkOps(target.ops, (op) => {
+        if (op.kind !== "$") return;
+        const toolName = op.body.split(/\s+/)[0] ?? "";
+        if (/scan|batch|classify|atomize/i.test(toolName)) {
+          findings.push({
+            rule: "model-contention",
+            severity: "warning",
+            message: `Target '${targetName}' dispatches batch work via '${toolName}' AND uses sync \`~ model=...\` — possible model contention on the same backend.`,
+            block: targetName,
+          });
+        }
+      });
+    }
+    return findings;
+  },
+};
+
+const DRAFT_WITH_TRIGGER: LintRule = {
+  id: "draft-with-trigger",
+  severity: "warning",
+  description: "Skill has `# Status: draft` but declares triggers. Draft skills shouldn't be fire-able autonomously.",
+  remediation: "Promote to `approved` once tested, or remove the trigger declarations until the skill is ready.",
+  check: (ctx) => {
+    if (ctx.parsed.status !== "draft" || ctx.parsed.triggers.length === 0) return [];
+    return [{
+      rule: "draft-with-trigger",
+      severity: "warning",
+      message: `Skill is \`# Status: draft\` but declares ${ctx.parsed.triggers.length} trigger(s). Draft skills won't fire — promote or drop the triggers.`,
+    }];
+  },
+};
+
+const REFERENCE_TO_DISABLED_SKILL: LintRule = {
+  id: "reference-to-disabled-skill",
+  severity: "warning",
+  description: "An `&` op references a skill whose `# Status:` is `disabled`. Tier-2 warning to surface deprecation paths without breaking existing references.",
+  remediation: "Plan a migration off the disabled skill. Existing references resolve; new authoring should pick a non-disabled target.",
+  check: async (ctx) => {
+    if (ctx.skillStore === undefined) return [];
+    const findings: LintFinding[] = [];
+    const checked = new Set<string>();
+    for (const [targetName, target] of ctx.parsed.targets) {
+      for (const refName of collectAmpRefsFromOps(target.ops)) {
+        if (checked.has(refName)) continue;
+        checked.add(refName);
+        try {
+          const meta = await ctx.skillStore.metadata(refName);
+          if (meta.status === "disabled") {
+            findings.push({
+              rule: "reference-to-disabled-skill",
+              severity: "warning",
+              message: `Target '${targetName}' references '${refName}' which is disabled.`,
+              block: targetName,
+              extras: { referenced_skill: refName },
+            });
+          }
+        } catch {
+          /* unknown-skill-reference handles missing case */
+        }
+      }
+    }
+    return findings;
+  },
+};
+
+// ─── Tier-3 rules (info) ────────────────────────────────────────────────────
+
+const NO_DEFAULT_TARGET: LintRule = {
+  id: "no-default-target",
+  severity: "info",
+  description: "Multi-target skill resolves entry via fallback (last target) instead of an explicit `default:` declaration. Authors lose intent visibility.",
+  remediation: "Add `default: <target-name>` to make the entry point explicit.",
+  check: (ctx) => {
+    if (ctx.parsed.targets.size <= 1) return [];
+    // The parser sets entryTarget to the last declared target when no `default:`
+    // line was present. Re-derive that condition from the source.
+    // Simpler: ParsedSkill doesn't distinguish explicit vs fallback. The
+    // parser's behavior is `entryTarget === null` only when no targets at
+    // all; with targets it picks the last. So we can't distinguish at
+    // this layer without a parser change. For v1.0-dev, skip the check
+    // (parser change deferred to v1.x).
+    return [];
+  },
+};
+
+const DUPLICATE_SKILL_NAME: LintRule = {
+  id: "duplicate-skill-name",
+  severity: "info",
+  description: "Another skill in the SkillStore has the same name as this one. Risk of authoring confusion.",
+  remediation: "Rename one of the skills. Unique names per substrate; conflicts surface as ambiguous-name errors at load time.",
+  check: async (ctx) => {
+    if (ctx.skillStore === undefined || ctx.parsed.name === null) return [];
+    const matches = await ctx.skillStore.query();
+    const dupes = matches.filter((m) => m.name === ctx.parsed.name);
+    if (dupes.length <= 1) return [];
+    return [{
+      rule: "duplicate-skill-name",
+      severity: "info",
+      message: `${dupes.length} skills in the SkillStore share the name '${ctx.parsed.name}'.`,
+    }];
+  },
+};
+
+const PLUGIN_COLLISION: LintRule = {
+  id: "plugin-collision",
+  severity: "info",
+  description: "The same plugin name resolves in both filesystem and npm — operator should confirm which wins per the resolution-order config.",
+  remediation: "Set `plugins.resolution_order` in config.toml to commit to a precedence order, or remove the duplicate.",
+  check: () => {
+    // Plugin loader doesn't exist yet (T7). Rule shape is here so the
+    // registry shape stays complete; check returns empty until T7 wires
+    // plugin discovery.
+    return [];
+  },
+};
+
 const RULES: LintRule[] = [
+  // Tier-1 (error)
   PARSE_ERROR,
   NO_TARGETS,
   NO_ENTRY_TARGET,
@@ -592,6 +781,16 @@ const RULES: LintRule[] = [
   CIRCULAR_DEPENDENCY,
   MISSING_DEPENDENCY,
   MISSING_SKILLSTORE_FOR_DATA_REF,
+  // Tier-2 (warning)
+  UNSAFE_SHELL_OP,
+  UNCONFIRMED_MUTATION,
+  MODEL_CONTENTION,
+  DRAFT_WITH_TRIGGER,
+  REFERENCE_TO_DISABLED_SKILL,
+  // Tier-3 (info)
+  NO_DEFAULT_TARGET,
+  DUPLICATE_SKILL_NAME,
+  PLUGIN_COLLISION,
 ];
 
 /** Read-only view of the rule registry — for tooling that introspects v1 rules. */

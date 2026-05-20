@@ -77,6 +77,7 @@ export interface OutputDecl {
 }
 
 export type SkillType = "procedural" | "data";
+export type SkillStatusLiteral = "draft" | "approved" | "disabled";
 
 export interface ParsedSkill {
   name: string | null;
@@ -87,6 +88,8 @@ export interface ParsedSkill {
    * inlines at every `& <name>` reference site at compile time.
    */
   type: SkillType;
+  /** `# Status:` header value. Null when omitted; lint defaults to "draft" semantics. */
+  status: SkillStatusLiteral | null;
   vars: SkillVar[];
   /** Variable resolution declarations — `user-var:key -> VAR (fallback: X)` shape. */
   requires: SkillRequire[];
@@ -323,6 +326,7 @@ export function parse(source: string): ParsedSkill {
     name: null,
     description: null,
     type: "procedural",
+    status: null,
     vars: [],
     requires: [],
     requiredCapabilities: [],
@@ -360,6 +364,13 @@ export function parse(source: string): ParsedSkill {
           result.type = norm;
         } else {
           result.parseErrors.push(`\`# Type:\` value must be 'procedural' or 'data' (got '${value}')`);
+        }
+      } else if (key === "status") {
+        const norm = value.toLowerCase();
+        if (norm === "draft" || norm === "approved" || norm === "disabled") {
+          result.status = norm;
+        } else {
+          result.parseErrors.push(`\`# Status:\` value must be 'draft', 'approved', or 'disabled' (got '${value}')`);
         }
       } else if (key === "vars") {
         if (value.toLowerCase() === "(none)" || value === "") {
