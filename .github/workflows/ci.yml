@@ -29,9 +29,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-        env:
-          # Allow esbuild/vitest postinstall scripts in CI.
-          PNPM_ALLOW_BUILD_SCRIPTS: "*"
 
       - name: Typecheck
         run: pnpm exec tsc --noEmit

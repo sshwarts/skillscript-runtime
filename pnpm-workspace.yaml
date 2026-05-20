@@ -1,0 +1,4 @@
+# pnpm v11+ build-script approval. esbuild's postinstall script links
+# the platform-specific binary; it's required for vitest's transformer.
+allowBuilds:
+  esbuild: true
