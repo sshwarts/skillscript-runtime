@@ -350,10 +350,11 @@ async function execOpInner(
         return { lastBoundVar: op.outputVar!, lastValue: [] };
       }
       const store = ctx.registry.getMemoryStore(p.connector);
+      const limitResolved = resolveIntParam(p.limit, vars, "limit");
       const filters = {
         query: querySub,
         mode: p.mode,
-        limit: p.limit,
+        limit: limitResolved,
         ...extraSub,
       };
       const results = await store.query(filters);
@@ -371,7 +372,11 @@ async function execOpInner(
         return { lastBoundVar: op.outputVar!, lastValue: placeholder };
       }
       const model = ctx.registry.getLocalModel(p.model);
-      const response = await model.run(promptSub, p.maxTokens !== undefined ? { maxTokens: p.maxTokens } : {});
+      const runOpts: { maxTokens?: number; model?: string } = {};
+      if (p.maxTokens !== undefined) {
+        runOpts.maxTokens = resolveIntParam(p.maxTokens, vars, "maxTokens");
+      }
+      const response = await model.run(promptSub, runOpts);
       vars.set(op.outputVar!, response);
       return { lastBoundVar: op.outputVar!, lastValue: response };
     }
@@ -408,6 +413,23 @@ function makeOpError(opKind: string, message: string): Error & { opKind: string 
   const err = new Error(message) as Error & { opKind: string };
   err.opKind = opKind;
   return err;
+}
+
+/**
+ * Resolve an integer parameter that may be a literal number or a string
+ * containing a `$(VAR)` ref. Substitutes any refs then parseInts. Throws
+ * a clear runtime error if the resolved value isn't a positive integer —
+ * the parser deferred validation to here because at parse time the ref
+ * couldn't be resolved.
+ */
+function resolveIntParam(raw: number | string, vars: Map<string, unknown>, paramName: string): number {
+  if (typeof raw === "number") return raw;
+  const substituted = substituteRuntime(raw, vars);
+  const n = parseInt(substituted, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`'${paramName}' resolved to '${substituted}', which isn't a positive integer.`);
+  }
+  return n;
 }
 
 function extractToolErrorText(rawResult: unknown): string {

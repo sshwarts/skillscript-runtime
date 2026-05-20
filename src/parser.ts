@@ -12,14 +12,16 @@ export interface SkillOp {
   retrievalParams?: {
     mode: string;
     query: string;
-    limit: number;
+    /** Integer literal OR a `$(VAR)`-style ref string. Runtime substitutes refs then parses to int. */
+    limit: number | string;
     connector: string;
     extra: Record<string, string>;
   };
   localModelParams?: {
     prompt: string;
     model?: string;
-    maxTokens?: number;
+    /** Integer literal OR a `$(VAR)`-style ref string. Runtime substitutes refs then parses to int. */
+    maxTokens?: number | string;
   };
   /**
    * For `&` ops only: skill name + optional key=value args passed as inputs
@@ -238,9 +240,20 @@ function parseRetrievalArgs(
       errors.push(`\`>\` op in target '${targetName}' missing required param '${required}'`);
     }
   }
-  const limit = parseInt(map["limit"] ?? "", 10);
-  if (!Number.isFinite(limit) || limit <= 0) {
-    errors.push(`\`>\` op in target '${targetName}': 'limit' must be a positive integer (got '${map["limit"] ?? ""}')`);
+  // Defer integer validation when the value contains a `$(VAR)` ref — runtime
+  // substitutes + parses after the ref resolves. Literal numerics still
+  // validate at parse time.
+  let limit: number | string = 0;
+  const rawLimit = map["limit"] ?? "";
+  if (/\$\(/.test(rawLimit)) {
+    limit = rawLimit;
+  } else {
+    const n = parseInt(rawLimit, 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      errors.push(`\`>\` op in target '${targetName}': 'limit' must be a positive integer or a \`$(VAR)\` ref (got '${rawLimit}')`);
+    } else {
+      limit = n;
+    }
   }
   const extra: Record<string, string> = {};
   for (const [k, v] of Object.entries(map)) {
@@ -251,7 +264,7 @@ function parseRetrievalArgs(
     params: {
       mode: map["mode"] ?? "",
       query: map["query"] ?? "",
-      limit: Number.isFinite(limit) ? limit : 0,
+      limit,
       connector: map["connector"] ?? "primary",
       extra,
     },
@@ -285,13 +298,19 @@ function parseLocalModelArgs(
   if (!("prompt" in map) || map["prompt"] === "") {
     errors.push(`\`~\` op in target '${targetName}' missing required param 'prompt'`);
   }
-  let maxTokens: number | undefined;
+  // Defer integer validation when the value contains a `$(VAR)` ref.
+  let maxTokens: number | string | undefined;
   if ("maxTokens" in map) {
-    const parsed = parseInt(map["maxTokens"]!, 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      errors.push(`\`~\` op in target '${targetName}': 'maxTokens' must be a positive integer (got '${map["maxTokens"]}')`);
+    const raw = map["maxTokens"]!;
+    if (/\$\(/.test(raw)) {
+      maxTokens = raw;
     } else {
-      maxTokens = parsed;
+      const n = parseInt(raw, 10);
+      if (!Number.isFinite(n) || n <= 0) {
+        errors.push(`\`~\` op in target '${targetName}': 'maxTokens' must be a positive integer or a \`$(VAR)\` ref (got '${raw}')`);
+      } else {
+        maxTokens = n;
+      }
     }
   }
   const params: NonNullable<SkillOp["localModelParams"]> = {
