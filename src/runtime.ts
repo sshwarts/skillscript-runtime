@@ -243,6 +243,20 @@ async function execOpInner(
         `the skill to take the value as an input or via \`# Requires:\`.`,
       );
     }
+    case "&": {
+      // `&` ops are resolved at compile time — data-skill content is
+      // inlined; procedural-skill refs compile to a runtime invocation
+      // shape (not this op). If we hit `&` at runtime, the executor was
+      // handed a raw AST that bypassed compile().
+      const skillName = op.ampParams?.skillName ?? "(unknown)";
+      throw makeOpError(
+        "&",
+        `\`& ${skillName}\` reached the runtime unresolved. The compile() ` +
+        `step inlines data-skills and lowers procedural refs to invocation ` +
+        `ops; running raw parsed skills bypasses that. Call compile() ` +
+        `before execute().`,
+      );
+    }
     case "$": {
       const body = substituteRuntime(op.body, vars);
       const m = /^([A-Za-z_][\w:-]*)\s*([\s\S]*)$/.exec(body);

@@ -230,6 +230,12 @@ function renderOpPrompt(op: SkillOp, targetName: string, resolved: Map<string, s
     case "@":     return [`${prefix}- Run shell: ${body} — bind output to $(${targetName}.output)`];
     case "!":     return [`${prefix}- Tell the user: ${body}`];
     case "??":    return [`${prefix}- Ask the user: ${body}`];
+    case "&": {
+      const p = op.ampParams!;
+      const argsStr = Object.entries(p.args).map(([k, v]) => `${k}=${substitute(v, resolved)}`).join(" ");
+      const bindTail = op.outputVar !== undefined ? ` — bind result to $(${op.outputVar})` : "";
+      return [`${prefix}- Invoke skill: ${p.skillName}${argsStr ? ` (${argsStr})` : ""}${bindTail}`];
+    }
     case "foreach": {
       const listExpr = substitute(op.foreachList!, resolved);
       const lines = [`${prefix}- For each \`${op.foreachIter}\` in ${listExpr}, do (loop-local scope):`];
@@ -324,6 +330,12 @@ function renderOpProse(op: SkillOp, resolved: Map<string, string>): string[] {
     case "@":     return [`Runs a shell command: ${body}.`];
     case "!":     return [`Reports back to the user: ${body}.`];
     case "??":    return [`Pauses to ask the user: ${body}.`];
+    case "&": {
+      const p = op.ampParams!;
+      const argsStr = Object.entries(p.args).map(([k, v]) => `${k}=${substitute(v, resolved)}`).join(", ");
+      const bindTail = op.outputVar !== undefined ? `; binds to $(${op.outputVar})` : "";
+      return [`Invokes skill ${p.skillName}${argsStr ? ` with ${argsStr}` : ""}${bindTail}.`];
+    }
     case "foreach": {
       const listExpr = substitute(op.foreachList!, resolved);
       const inner = op.foreachBody!.flatMap((o) => renderOpProse(o, resolved));

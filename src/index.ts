@@ -17,6 +17,7 @@ export type {
   SkillOp,
   OpKind,
   SkillTarget,
+  SkillType,
   SkillVar,
   SkillRequire,
   TriggerDecl,

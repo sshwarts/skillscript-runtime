@@ -10,7 +10,7 @@
 // user-facing management API — not a skill-execution op — so it surfaces
 // directly to the caller and bypasses recovery routing.
 
-import { parse } from "./parser.js";
+import { parse, type SkillOp } from "./parser.js";
 import type { SkillStore } from "./connectors/types.js";
 import type { Registry } from "./connectors/registry.js";
 
@@ -126,19 +126,35 @@ export class ReferenceIndex {
 }
 
 /**
- * Walk a skill's parsed AST and extract names of skills it references.
+ * Walk a skill's parsed AST and extract names of skills it references via
+ * the `&` op. Returns a deduplicated, sorted list. Includes references to
+ * both data-skills (which inline at compile time) and procedural skills
+ * (which compile to runtime invocations) — the integrity check should fire
+ * for either, since deleting any referenced skill breaks the source.
  *
- * For T1's grammar this returns empty for every input — the `&` op isn't
- * yet parsed (lands in T3 alongside data-skill inlining). The function
- * shape is ready so the index machinery doesn't need to change when T3
- * adds the op. `# Requires:` clauses in T1 declare variable resolution
- * (user-var: / system-var:) and capability flags, neither of which name
- * other skills.
+ * Walks foreach + if bodies recursively. T3+ grammar; T1 returns empty.
  */
 export function extractReferences(source: string): string[] {
-  const _parsed = parse(source);
-  // T1: no `&` op, no skill-naming `# Requires:` shape. Scaffold for T3.
-  return [];
+  const parsed = parse(source);
+  const refs = new Set<string>();
+  for (const target of parsed.targets.values()) {
+    collectAmpRefs(target.ops, refs);
+    if (target.elseBlock !== undefined) collectAmpRefs(target.elseBlock, refs);
+  }
+  return Array.from(refs).sort();
+}
+
+function collectAmpRefs(ops: SkillOp[], out: Set<string>): void {
+  for (const op of ops) {
+    if (op.kind === "&" && op.ampParams !== undefined) {
+      out.add(op.ampParams.skillName);
+    }
+    if (op.foreachBody !== undefined) collectAmpRefs(op.foreachBody, out);
+    if (op.ifBranches !== undefined) {
+      for (const branch of op.ifBranches) collectAmpRefs(branch.body, out);
+    }
+    if (op.ifElseBody !== undefined) collectAmpRefs(op.ifElseBody, out);
+  }
 }
 
 /**

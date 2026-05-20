@@ -2,7 +2,7 @@
 // no resolution against external state. Semantic analysis (variable resolution,
 // data-skill inlining, topo-sort) lives in compile.ts.
 
-export type OpKind = "$" | "$set" | "?" | "@" | "!" | "??" | "foreach" | "if" | ">" | "~";
+export type OpKind = "$" | "$set" | "?" | "@" | "!" | "??" | "foreach" | "if" | ">" | "~" | "&";
 
 export interface SkillOp {
   kind: OpKind;
@@ -20,6 +20,16 @@ export interface SkillOp {
     prompt: string;
     model?: string;
     maxTokens?: number;
+  };
+  /**
+   * For `&` ops only: skill name + optional key=value args passed as inputs
+   * when the target is procedural (runtime invocation), ignored when the
+   * target is data-typed (compile-time inline). `outputVar` captures the
+   * result of procedural invocations; absent for data inlines.
+   */
+  ampParams?: {
+    skillName: string;
+    args: Record<string, string>;
   };
   setName?: string;
   setValue?: string;
@@ -66,9 +76,17 @@ export interface OutputDecl {
   target?: string;
 }
 
+export type SkillType = "procedural" | "data";
+
 export interface ParsedSkill {
   name: string | null;
   description: string | null;
+  /**
+   * `# Type:` header value. Procedural is the default (op-bearing,
+   * dispatched at runtime). `data` marks a content-only skill whose body
+   * inlines at every `& <name>` reference site at compile time.
+   */
+  type: SkillType;
   vars: SkillVar[];
   /** Variable resolution declarations — `user-var:key -> VAR (fallback: X)` shape. */
   requires: SkillRequire[];
@@ -92,6 +110,8 @@ export interface ParsedSkill {
 const REQUIRES_LINE = /^(user-var|system-var):([A-Za-z0-9_-]+)\s*(?:→|->)\s*([A-Za-z_][\w-]*)\s*(?:\(\s*fallback\s*:\s*(.+?)\s*\)\s*)?$/;
 /** Capability token: `connector_type.feature_flag`. Matches one space-separated token of a capability `# Requires:` line. */
 const CAPABILITY_TOKEN = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/;
+/** `&` op: `& skill-name [arg=value ...] [-> VARNAME]`. Skill names follow the same charset as filesystem-safe identifiers (alphanumeric, hyphen, underscore). */
+const AMP_OP_REGEX = /^&\s+([A-Za-z0-9][\w-]*)\s*(.*?)(?:\s*->\s*([A-Za-z_]\w*))?\s*$/;
 const SET_OP_REGEX = /^\$set\s+([A-Za-z_]\w*)\s*=\s*(.*)$/;
 const FOREACH_OP_REGEX = /^foreach\s+([A-Za-z_]\w*)\s+in\s+(.+?):\s*$/;
 const IF_OP_REGEX = /^if\s+(.+?):\s*$/;
@@ -302,6 +322,7 @@ export function parse(source: string): ParsedSkill {
   const result: ParsedSkill = {
     name: null,
     description: null,
+    type: "procedural",
     vars: [],
     requires: [],
     requiredCapabilities: [],
@@ -333,6 +354,13 @@ export function parse(source: string): ParsedSkill {
         result.name = value;
       } else if (key === "description") {
         result.description = value;
+      } else if (key === "type") {
+        const norm = value.toLowerCase();
+        if (norm === "procedural" || norm === "data") {
+          result.type = norm;
+        } else {
+          result.parseErrors.push(`\`# Type:\` value must be 'procedural' or 'data' (got '${value}')`);
+        }
       } else if (key === "vars") {
         if (value.toLowerCase() === "(none)" || value === "") {
           result.vars = [];
@@ -599,6 +627,35 @@ export function parse(source: string): ParsedSkill {
         outputVar: outputVar!,
         localModelParams: parsed.params,
       });
+      continue;
+    }
+    if (stripped0.startsWith("& ")) {
+      const match = AMP_OP_REGEX.exec(stripped0);
+      if (!match) {
+        result.parseErrors.push(`Malformed \`&\` op in target '${currentTarget.name}' — expected \`& skill-name [key=value ...] [-> VARNAME]\``);
+        continue;
+      }
+      const [, skillName, argsStr, outputVar] = match;
+      const args: Record<string, string> = {};
+      const tokens = tokenizeKeywordArgs(argsStr ?? "");
+      let argError = false;
+      for (const tok of tokens) {
+        const eq = tok.indexOf("=");
+        if (eq === -1) {
+          result.parseErrors.push(`Malformed \`&\` arg '${tok}' in target '${currentTarget.name}' — expected key=value`);
+          argError = true;
+          continue;
+        }
+        args[tok.slice(0, eq).trim()] = processSetValue(tok.slice(eq + 1));
+      }
+      if (argError) continue;
+      const ampOp: SkillOp = {
+        kind: "&",
+        body: stripped0,
+        ampParams: { skillName: skillName!, args },
+      };
+      if (outputVar !== undefined) ampOp.outputVar = outputVar;
+      opBucket.push(ampOp);
       continue;
     }
     if (stripped0.startsWith("foreach ")) {
