@@ -8,3 +8,6 @@ coverage/
 .env.local
 *.log
 .claude/
+# Provenance sidecars are derived from compile; they shouldn't be committed
+# alongside skill sources (the source is authoritative; sidecars regenerate).
+*.provenance.json
