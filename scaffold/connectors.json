@@ -1,0 +1,19 @@
+{
+  "_comment": "Optional connector registry overrides. The bundled defaults are wired automatically by skillfile run — entries here are additions and overrides. Per the v1 spec, multi-instance is first-class: register as many SkillStore / MemoryStore / LocalModel / McpConnector instances as you need.",
+
+  "mcp_connectors": {
+    "_example_disabled": {
+      "comment": "Uncomment and configure to wire an MCP server. Bundled `CallbackMcpConnector` is for embedders. Real HTTP-bridge `McpHttpConnector` lands in a follow-up release.",
+      "kind": "callback",
+      "endpoint": "(configured in code)"
+    }
+  },
+
+  "memory_stores": {
+    "_example_disabled": {
+      "comment": "Register additional MemoryStore instances here if you need more than the bundled-default SQLite store at ~/.skillscript/memory.db.",
+      "kind": "sqlite-fts",
+      "db_path": "~/.skillscript/scratch.db"
+    }
+  }
+}

@@ -1,0 +1,44 @@
+version: "3.9"
+
+# Sample compose stack wiring skillscript-runtime alongside Ollama and a
+# host-bind for the SkillStore + MemoryStore. End-to-end demo:
+#
+#   docker compose up -d ollama
+#   docker compose run --rm runtime init
+#   docker compose run --rm runtime run examples/hello.skill
+#
+# Operators typically extend this with their own configured connectors via
+# ~/.skillscript/connectors.json.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      SKILLSCRIPT_HOME: /data
+    volumes:
+      - ./.skillscript:/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    # `runtime` is one-shot — `docker compose run --rm runtime <cmd>`.
+    # No restart loop here; that's the operator's call when registering
+    # cron-triggered skills (T5 work).
+    profiles: ["tools"]
+
+volumes:
+  ollama-data:

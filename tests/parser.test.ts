@@ -1,0 +1,163 @@
+import { describe, it, expect } from "vitest";
+import { parse, toposort, applyFilter } from "../src/parser.js";
+
+describe("parser", () => {
+  it("parses headers + simple skill", () => {
+    const src = `# Skill: hello
+# Description: A welcome message
+# Vars: WHO=world
+
+greet:
+    ! Hello, $(WHO)!
+
+default: greet
+`;
+    const p = parse(src);
+    expect(p.parseErrors).toEqual([]);
+    expect(p.name).toBe("hello");
+    expect(p.description).toBe("A welcome message");
+    expect(p.vars).toEqual([{ name: "WHO", default: "world", required: false }]);
+    expect(p.entryTarget).toBe("greet");
+    expect(p.targets.has("greet")).toBe(true);
+    const target = p.targets.get("greet")!;
+    expect(target.ops).toHaveLength(1);
+    expect(target.ops[0]).toMatchObject({ kind: "!", body: "Hello, $(WHO)!" });
+  });
+
+  it("parses $set, ?, @, !, ?? ops", () => {
+    const src = `t:
+    $set X = hello
+    ? thinking
+    @ ls -la
+    ! talking
+    ?? what?
+
+default: t
+`;
+    const p = parse(src);
+    expect(p.parseErrors).toEqual([]);
+    const kinds = p.targets.get("t")!.ops.map((o) => o.kind);
+    expect(kinds).toEqual(["$set", "?", "@", "!", "??"]);
+  });
+
+  it("parses target deps and toposorts", () => {
+    const src = `a:
+    ! a
+
+b: a
+    ! b
+
+c: b
+    ! c
+
+default: c
+`;
+    const p = parse(src);
+    expect(p.parseErrors).toEqual([]);
+    const order = toposort(p.targets, "c");
+    expect(order).toEqual(["a", "b", "c"]);
+  });
+
+  it("detects dep cycles", () => {
+    const src = `a: b
+    ! a
+
+b: a
+    ! b
+
+default: a
+`;
+    const p = parse(src);
+    expect(() => toposort(p.targets, "a")).toThrow(/cycle/i);
+  });
+
+  it("parses conditionals", () => {
+    const src = `t:
+    $set MODE = fast
+    if $(MODE) == "fast":
+        ! fast path
+    elif $(MODE) == "slow":
+        ! slow path
+    else:
+        ! default
+
+default: t
+`;
+    const p = parse(src);
+    expect(p.parseErrors).toEqual([]);
+    const ops = p.targets.get("t")!.ops;
+    expect(ops[1]!.kind).toBe("if");
+    expect(ops[1]!.ifBranches).toHaveLength(2);
+    expect(ops[1]!.ifElseBody).toHaveLength(1);
+  });
+
+  it("parses foreach", () => {
+    const src = `t:
+    $set ITEMS = [a, b, c]
+    foreach I in $(ITEMS):
+        ! $(I)
+
+default: t
+`;
+    const p = parse(src);
+    expect(p.parseErrors).toEqual([]);
+    const foreachOp = p.targets.get("t")!.ops[1]!;
+    expect(foreachOp.kind).toBe("foreach");
+    expect(foreachOp.foreachIter).toBe("I");
+    expect(foreachOp.foreachList).toBe("$(ITEMS)");
+    expect(foreachOp.foreachBody).toHaveLength(1);
+  });
+
+  it("parses # Triggers: and # Output: headers", () => {
+    const src = `# Skill: notify
+# Triggers: cron: */5 * * * *
+# Output: slack: #alerts
+
+t:
+    ! hi
+
+default: t
+`;
+    const p = parse(src);
+    expect(p.parseErrors).toEqual([]);
+    expect(p.triggers).toEqual([{ source: "cron", name: "*/5 * * * *" }]);
+    expect(p.outputs).toEqual([{ kind: "slack", target: "#alerts" }]);
+  });
+
+  it("rejects unsupported condition shapes", () => {
+    const src = `t:
+    if $(A) && $(B):
+        ! both
+
+default: t
+`;
+    const p = parse(src);
+    expect(p.parseErrors.length).toBeGreaterThan(0);
+    expect(p.parseErrors[0]).toMatch(/Unsupported condition/);
+  });
+
+  it("rejects top-level if/elif", () => {
+    const src = `if $(X):
+    ! oops
+
+default: foo
+`;
+    const p = parse(src);
+    expect(p.parseErrors[0]).toMatch(/only valid inside a target body/);
+  });
+});
+
+describe("applyFilter", () => {
+  it("url encodes", () => {
+    expect(applyFilter("hello world", "url")).toBe("hello%20world");
+  });
+  it("shell quotes", () => {
+    expect(applyFilter("don't", "shell")).toBe("'don'\\''t'");
+  });
+  it("trims", () => {
+    expect(applyFilter("  hi  \n", "trim")).toBe("hi");
+  });
+  it("throws on unknown filter", () => {
+    expect(() => applyFilter("x", "bogus")).toThrow(/Unknown filter/);
+  });
+});

@@ -1,0 +1,66 @@
+{
+  "name": "skillscript-runtime",
+  "version": "0.1.0-dev",
+  "description": "Runtime, compiler, and CLI for Skillscript — a small declarative language for authoring agent workflows.",
+  "license": "MIT",
+  "author": "Scott Shwarts <scotts@pobox.com>",
+  "homepage": "https://github.com/sshwarts/skillscript-runtime",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sshwarts/skillscript-runtime.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sshwarts/skillscript-runtime/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "skillfile": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "scaffold",
+    "examples",
+    "ARCHITECTURE.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "loc-check": "node scripts/loc-ceiling.mjs",
+    "lint": "tsc --noEmit && vitest run",
+    "prepublishOnly": "pnpm run build && pnpm run loc-check"
+  },
+  "keywords": [
+    "skillscript",
+    "agent",
+    "dsl",
+    "workflow",
+    "llm",
+    "mcp"
+  ],
+  "dependencies": {
+    "cron-parser": "^4.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "packageManager": "pnpm@11.0.8"
+}

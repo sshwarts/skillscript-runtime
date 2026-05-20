@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.github
+.claude
+.vitest-cache
+coverage
+tests
+*.log
+*.tsbuildinfo
