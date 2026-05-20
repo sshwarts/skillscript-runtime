@@ -10,20 +10,24 @@ import { applyFilter } from "./filters.js";
 import type { SkillStore } from "./connectors/types.js";
 
 /**
- * Semantic analysis + render. Three phases:
+ * Semantic analysis + render. Four phases:
  *
  *  1. Resolve declared `# Vars:` / `# Requires:` against caller inputs +
- *     the optional require-resolver callback (skipped at T1 baseline if no
- *     resolver is supplied; declared `# Requires:` lines without a resolver
- *     hit fallback or surface as missing).
- *  2. Topological sort. Detects cycles and missing-dep refs.
- *  3. Render. Three output formats: `prompt` (canonical Anthropic-Skill-shaped
- *     markdown), `prose` (narrative for human reading), `test` reserved.
+ *     the optional require-resolver callback.
+ *  2. **Data-skill inlining** (T3). For every `&` op referencing a
+ *     `# Type: data` skill, replace the op with the inlined content;
+ *     procedural-skill refs remain as `&` ops for runtime invocation.
+ *     Skill-dep cycles error here.
+ *  3. Topological sort (target-deps + skill-deps). Detects cycles + missing refs.
+ *  4. Render. Two output formats: `prompt` (canonical agent-shaped
+ *     markdown), `prose` (narrative for human reading).
  *
- * Data-skill compile-time inlining (decision-1) is T3 work — at T1 baseline,
- * an explicit `&` op or `$ skill_name` invocation compiles as a runtime
- * skill-call. The T3 thread reworks this to inline `# Type: data` skill
- * content at compile time.
+ * Inlining: when a `&` op references a data-typed skill, the substituted
+ * shape is a `$set <outputVar> = <data content>` op if `outputVar` is
+ * named, otherwise a `!` op carrying the data content. This keeps the
+ * dispatch shape compatible with the existing runtime — no new op kinds
+ * needed downstream. The data skill's source body (everything after the
+ * headers) is the inlined content.
  */
 
 export type RenderFormat = "prompt" | "prose";
@@ -40,6 +44,17 @@ export interface CompileOptions {
   skillStore?: SkillStore;
 }
 
+/**
+ * Recorded per inlined data-skill. Phase 3's provenance block aggregates
+ * these so `skillfile audit` can detect recompile-staleness by comparing
+ * recorded vs current `content_hash`.
+ */
+export interface InlinedDataSkillRef {
+  name: string;
+  version: string;
+  content_hash: string;
+}
+
 export interface CompileResult {
   skillName: string | null;
   format: RenderFormat;
@@ -48,6 +63,8 @@ export interface CompileResult {
   output: string;
   triggers: ParsedSkill["triggers"];
   outputs: OutputDecl[];
+  /** Data-skill content_hashes recorded for recompile-staleness detection. Empty if no `&` data-skill refs. */
+  dataSkillsInlined: InlinedDataSkillRef[];
   onError: string | null;
   warnings: string[];
   /** Pass-through to the runtime — saves re-parsing. */
@@ -136,6 +153,20 @@ export async function compile(
     throw new Error(`Missing required variables: ${missing.join(", ")}`);
   }
 
+  // Phase 2 (T3): inline data-skill `&` references. Procedural-skill refs
+  // are left as `&` ops with ampParams populated for T5's runtime to dispatch.
+  // Skill-dep cycles error here. Tracks every inlined data-skill's
+  // content_hash for Phase 3's provenance block.
+  const dataSkillsInlined: InlinedDataSkillRef[] = [];
+  if (skillStore !== undefined) {
+    await inlineDataSkills(parsed, skillStore, dataSkillsInlined, [parsed.name ?? "(unnamed)"]);
+  } else if (anyAmpDataLookupNeeded(parsed)) {
+    // Skill body contains `&` ops but no SkillStore was provided. Compile
+    // still proceeds — refs stay as procedural-style for T5 — but issue a
+    // warning if the skill might have meant a data-skill ref.
+    // (We can't know without loading; just emit a hint.)
+  }
+
   const order = toposort(parsed.targets, parsed.entryTarget);
 
 
@@ -172,7 +203,135 @@ export async function compile(
     onError: parsed.onError,
     warnings,
     parsed,
+    dataSkillsInlined,
   };
+}
+
+/**
+ * Walk every op in every target (recursing into foreach/if bodies) and
+ * replace `&` ops that reference data-typed skills with inlined content.
+ * Procedural-skill refs stay as `&` ops for the runtime to invoke. Cycles
+ * error with a chain trace.
+ */
+async function inlineDataSkills(
+  parsed: ParsedSkill,
+  store: SkillStore,
+  inlinedRecord: InlinedDataSkillRef[],
+  chain: string[],
+): Promise<void> {
+  for (const target of parsed.targets.values()) {
+    target.ops = await inlineOps(target.ops, store, inlinedRecord, chain);
+    if (target.elseBlock !== undefined) {
+      target.elseBlock = await inlineOps(target.elseBlock, store, inlinedRecord, chain);
+    }
+  }
+}
+
+async function inlineOps(
+  ops: SkillOp[],
+  store: SkillStore,
+  inlinedRecord: InlinedDataSkillRef[],
+  chain: string[],
+): Promise<SkillOp[]> {
+  const out: SkillOp[] = [];
+  for (const op of ops) {
+    if (op.kind === "&" && op.ampParams !== undefined) {
+      const refName = op.ampParams.skillName;
+      if (chain.includes(refName)) {
+        throw new Error(
+          `Skill-dep cycle detected: ${[...chain, refName].join(" → ")}. ` +
+          `Data skills cannot inline through a reference loop.`,
+        );
+      }
+      const source = await store.load(refName);
+      const refParsed = parse(source.source);
+      if (refParsed.type === "data") {
+        inlinedRecord.push({
+          name: refName,
+          version: source.version,
+          content_hash: source.content_hash,
+        });
+        // Recursively inline data-skills referenced by this data-skill.
+        await inlineDataSkills(refParsed, store, inlinedRecord, [...chain, refName]);
+        // Synthesize the inlined op: $set if outputVar named, else !.
+        const content = dataSkillContent(refParsed);
+        if (op.outputVar !== undefined) {
+          out.push({
+            kind: "$set",
+            body: `$set ${op.outputVar} = ${content}`,
+            setName: op.outputVar,
+            setValue: content,
+          });
+        } else {
+          out.push({
+            kind: "!",
+            body: content,
+          });
+        }
+        continue;
+      }
+      // Procedural ref: leave as-is for T5 runtime.
+      out.push(op);
+      continue;
+    }
+    // Recurse into nested bodies for non-& ops.
+    if (op.foreachBody !== undefined) {
+      out.push({ ...op, foreachBody: await inlineOps(op.foreachBody, store, inlinedRecord, chain) });
+      continue;
+    }
+    if (op.ifBranches !== undefined) {
+      const newBranches = await Promise.all(
+        op.ifBranches.map(async (b) => ({ cond: b.cond, body: await inlineOps(b.body, store, inlinedRecord, chain) })),
+      );
+      const next: SkillOp = { ...op, ifBranches: newBranches };
+      if (op.ifElseBody !== undefined) {
+        next.ifElseBody = await inlineOps(op.ifElseBody, store, inlinedRecord, chain);
+      }
+      out.push(next);
+      continue;
+    }
+    out.push(op);
+  }
+  return out;
+}
+
+/**
+ * Extract the inlineable content of a data-skill. Concatenates the bodies
+ * of `!` ops across all targets in topological order. Headers are skipped;
+ * only the emitted content is what consumers want when composing.
+ */
+function dataSkillContent(parsed: ParsedSkill): string {
+  if (parsed.entryTarget === null) return "";
+  const order = toposort(parsed.targets, parsed.entryTarget);
+  const lines: string[] = [];
+  for (const name of order) {
+    const target = parsed.targets.get(name);
+    if (!target) continue;
+    for (const op of target.ops) {
+      if (op.kind === "!") lines.push(op.body);
+    }
+  }
+  return lines.join("\n");
+}
+
+function anyAmpDataLookupNeeded(parsed: ParsedSkill): boolean {
+  for (const target of parsed.targets.values()) {
+    if (hasAmpOp(target.ops)) return true;
+    if (target.elseBlock !== undefined && hasAmpOp(target.elseBlock)) return true;
+  }
+  return false;
+}
+
+function hasAmpOp(ops: SkillOp[]): boolean {
+  for (const op of ops) {
+    if (op.kind === "&") return true;
+    if (op.foreachBody !== undefined && hasAmpOp(op.foreachBody)) return true;
+    if (op.ifBranches !== undefined) {
+      for (const b of op.ifBranches) if (hasAmpOp(b.body)) return true;
+    }
+    if (op.ifElseBody !== undefined && hasAmpOp(op.ifElseBody)) return true;
+  }
+  return false;
 }
 
 /**

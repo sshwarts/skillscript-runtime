@@ -200,3 +200,206 @@ default: t
     expect(result.errors[0]!.message).toMatch(/unresolved|compile/i);
   });
 });
+
+describe("Data-skill inlining — THE LOAD-BEARING DEMO", () => {
+  let dir: string;
+  let registry: Registry;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "skillscript-inline-"));
+    registry = new Registry();
+    registry.registerSkillStore("primary", new FilesystemSkillStore(dir));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  /**
+   * THE CRITICAL MILESTONE Perry called out: author voice-guide (data-typed)
+   * + support-response-draft (procedural) where the latter references the
+   * former via `&`. Compile support-response-draft and observe voice-guide
+   * content inlined into the rendered artifact.
+   */
+  it("inlines a data-skill's content where a & references it; rendered prompt contains the data content", async () => {
+    const VOICE_GUIDE = `# Skill: voice-guide
+# Type: data
+
+content:
+    ! Always use second-person perspective.
+    ! Lead with technical accuracy over marketing tone.
+    ! No emoji.
+
+default: content
+`;
+    const SUPPORT = `# Skill: support-response-draft
+# Vars: QUERY=hello
+
+build:
+    & voice-guide
+    ! Now respond to: $(QUERY)
+
+default: build
+`;
+    await registry.getSkillStore().store("voice-guide", VOICE_GUIDE);
+    await registry.getSkillStore().store("support-response-draft", SUPPORT);
+
+    const compiled = await compile(SUPPORT, { skillStore: registry.getSkillStore() });
+
+    // Content is inlined in the rendered prompt.
+    expect(compiled.output).toContain("Always use second-person perspective.");
+    expect(compiled.output).toContain("Lead with technical accuracy over marketing tone.");
+    expect(compiled.output).toContain("No emoji.");
+    // Original `& voice-guide` reference is gone from the output (resolved at compile).
+    expect(compiled.output).not.toContain("Invoke skill: voice-guide");
+
+    // Provenance: data-skill recorded with content_hash for staleness detection.
+    expect(compiled.dataSkillsInlined).toHaveLength(1);
+    expect(compiled.dataSkillsInlined[0]!.name).toBe("voice-guide");
+    expect(compiled.dataSkillsInlined[0]!.content_hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("data-skill inlining with output binding produces $set", async () => {
+    const VOICE_GUIDE = `# Skill: voice-guide
+# Type: data
+
+content:
+    ! formal tone
+
+default: content
+`;
+    const CALLER = `# Skill: caller
+t:
+    & voice-guide -> GUIDE
+    ! using $(GUIDE)
+
+default: t
+`;
+    await registry.getSkillStore().store("voice-guide", VOICE_GUIDE);
+
+    const compiled = await compile(CALLER, { skillStore: registry.getSkillStore() });
+
+    // The output should show GUIDE bound to the voice-guide content.
+    expect(compiled.output).toContain("Bind variable: GUIDE = formal tone");
+    expect(compiled.output).toContain("Tell the user: using $(GUIDE)");
+  });
+
+  it("procedural-skill & ref stays as runtime invocation (not inlined)", async () => {
+    const PROC = `# Skill: summarizer
+t:
+    ! summarize logic
+
+default: t
+`;
+    const CALLER = `# Skill: caller
+t:
+    & summarizer -> RESULT
+
+default: t
+`;
+    await registry.getSkillStore().store("summarizer", PROC);
+
+    const compiled = await compile(CALLER, { skillStore: registry.getSkillStore() });
+
+    // No data-skill recorded (procedural).
+    expect(compiled.dataSkillsInlined).toEqual([]);
+    // Rendered output shows the invocation, not inlined content.
+    expect(compiled.output).toContain("Invoke skill: summarizer");
+    expect(compiled.output).toContain("bind result to $(RESULT)");
+  });
+
+  it("recursive data-skill composition: data A references data B; both inline", async () => {
+    const TONE = `# Skill: tone
+# Type: data
+
+t:
+    ! formal voice only
+
+default: t
+`;
+    const VOICE_GUIDE = `# Skill: voice-guide
+# Type: data
+
+t:
+    & tone
+    ! plus: no emoji
+
+default: t
+`;
+    const CALLER = `# Skill: caller
+t:
+    & voice-guide
+
+default: t
+`;
+    const store = registry.getSkillStore();
+    await store.store("tone", TONE);
+    await store.store("voice-guide", VOICE_GUIDE);
+
+    const compiled = await compile(CALLER, { skillStore: store });
+
+    expect(compiled.output).toContain("formal voice only");
+    expect(compiled.output).toContain("plus: no emoji");
+    // Both data-skills recorded for staleness detection.
+    expect(compiled.dataSkillsInlined.map((d) => d.name).sort()).toEqual(["tone", "voice-guide"]);
+  });
+
+  it("detects skill-dep cycle: a → b → a errors at compile", async () => {
+    const A = `# Skill: a
+# Type: data
+
+t:
+    & b
+
+default: t
+`;
+    const B = `# Skill: b
+# Type: data
+
+t:
+    & a
+
+default: t
+`;
+    const CALLER = `# Skill: caller
+t:
+    & a
+
+default: t
+`;
+    const store = registry.getSkillStore();
+    await store.store("a", A);
+    await store.store("b", B);
+
+    await expect(compile(CALLER, { skillStore: store })).rejects.toThrow(/cycle detected/i);
+  });
+
+  it("inlined data-skill compiled artifact has no & op in the AST", async () => {
+    const VOICE_GUIDE = `# Skill: voice-guide
+# Type: data
+
+t:
+    ! data content
+
+default: t
+`;
+    const CALLER = `# Skill: caller
+t:
+    & voice-guide
+
+default: t
+`;
+    await registry.getSkillStore().store("voice-guide", VOICE_GUIDE);
+    const compiled = await compile(CALLER, { skillStore: registry.getSkillStore() });
+
+    // The parsed AST has been mutated by inlining — no & ops should remain.
+    const remainingAmpOps = Array.from(compiled.parsed.targets.values())
+      .flatMap((t) => t.ops)
+      .filter((op) => op.kind === "&");
+    expect(remainingAmpOps).toEqual([]);
+
+    // Runtime now succeeds on the inlined AST (no & op to reject).
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry,
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.emissions).toContain("data content");
+  });
+});
