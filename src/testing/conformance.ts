@@ -313,18 +313,18 @@ async function expectThrows(
   }
 }
 
-function methodExistence<F extends { build: () => object }>(
+function methodExistence<I extends object>(
   name: string,
-  fixture: F,
+  fixture: { build(): I; teardown?: (i: I) => Promise<void> },
   method: string,
 ): ConformanceTest {
   return {
     category: "method-existence",
     name,
-    run: async () => {
-      const instance = fixture.build() as Record<string, unknown>;
-      assert(typeof instance[method] === "function", `instance.${method} must be a function`);
-    },
+    run: withInstance(fixture, async (instance) => {
+      const obj = instance as unknown as Record<string, unknown>;
+      assert(typeof obj[method] === "function", `instance.${method} must be a function`);
+    }),
   };
 }
 
