@@ -12,6 +12,12 @@ export interface LintDiagnostic {
   rule: string;
   message: string;
   block?: string;
+  /** Tier-1 violations carry "error"; tier-2 "warning"; tier-3 "info". Defaults to "error" when omitted (legacy shape). */
+  severity?: "error" | "warning" | "info";
+  /** Canned remediation guidance per rule. */
+  remediation?: string;
+  /** Rule-specific structured extras. */
+  extras?: Record<string, unknown>;
 }
 
 /**

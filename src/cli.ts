@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import { compile } from "./compile.js";
 import { execute } from "./runtime.js";
-import { lint } from "./lint.js";
+import { lint, formatLintResult } from "./lint.js";
 import { audit, formatAuditResult } from "./audit.js";
 import type { ProvenanceBlock } from "./provenance.js";
 import { renderSidecarProvenance } from "./provenance.js";
@@ -237,20 +237,22 @@ async function cmdLint(args: string[]): Promise<number> {
     process.stderr.write(`skillfile lint: skill '${ref}' not found\n`);
     return 1;
   }
+  const jsonOutput = args.includes("--json");
+  const humanOutput = args.includes("--human");
   // Pass the bundled-default class set so capability `# Requires:`
-  // validation works against the standard connector surface.
-  const result = lint(source, {
+  // validation works against the standard connector surface. Pass the
+  // SkillStore so cross-skill rules (unknown-skill-reference,
+  // disabled-skill-reference) can resolve.
+  const result = await lint(source, {
     classes: [FilesystemSkillStore, SqliteMemoryStore, OllamaLocalModel],
+    skillStore: new FilesystemSkillStore(SKILLS_DIR),
+    callSite: "cli",
   });
-  if (result.findings.length === 0) {
-    process.stdout.write("OK: no findings.\n");
-    return 0;
+  if (jsonOutput) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } else if (humanOutput || !jsonOutput) {
+    process.stdout.write(`${formatLintResult(result)}\n`);
   }
-  for (const f of result.findings) {
-    const where = f.block ? ` (target: ${f.block})` : "";
-    process.stdout.write(`[${f.severity}] ${f.rule}${where}: ${f.message}\n`);
-  }
-  process.stdout.write(`\n${result.errorCount} error(s), ${result.warningCount} warning(s).\n`);
   return result.errorCount > 0 ? 1 : 0;
 }
 

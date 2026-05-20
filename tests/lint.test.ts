@@ -13,20 +13,20 @@ t:
 default: t
 `;
 
-describe("lint — baseline rules", () => {
-  it("reports parse-error for malformed grammar", () => {
+describe("lint — baseline rules", async () => {
+  it("reports parse-error for malformed grammar", async () => {
     const src = `t:
     if $(A) && $(B):
         ! both
 
 default: t
 `;
-    const r = lint(src);
+    const r = await lint(src);
     expect(r.errorCount).toBeGreaterThan(0);
     expect(r.findings.some((f) => f.rule === "parse-error")).toBe(true);
   });
 
-  it("reports orphan-target as warning", () => {
+  it("reports orphan-target as warning", async () => {
     const src = `a:
     ! a
 
@@ -35,19 +35,19 @@ orphan:
 
 default: a
 `;
-    const r = lint(src);
+    const r = await lint(src);
     expect(r.warningCount).toBe(1);
     expect(r.findings[0]!.rule).toBe("orphan-target");
   });
 
-  it("clean skill produces zero findings", () => {
-    const r = lint(TRIVIAL);
+  it("clean skill produces zero findings", async () => {
+    const r = await lint(TRIVIAL);
     expect(r.findings).toEqual([]);
   });
 });
 
-describe("lint — unknown-capability rule (offline validation)", () => {
-  it("ACCEPTS skill requiring a feature the registered class provides", () => {
+describe("lint — unknown-capability rule (offline validation)", async () => {
+  it("ACCEPTS skill requiring a feature the registered class provides", async () => {
     const src = `# Skill: needs-tag-filter
 # Requires: memory_store.supports_tag_filter
 
@@ -56,7 +56,7 @@ t:
 
 default: t
 `;
-    const r = lint(src, { classes: [SqliteMemoryStore] });
+    const r = await lint(src, { classes: [SqliteMemoryStore] });
     expect(r.findings.filter((f) => f.rule === "unknown-capability")).toEqual([]);
     expect(r.errorCount).toBe(0);
   });
@@ -73,7 +73,7 @@ default: t
    * split. If this passes, the adoption-story argument (offline lint =
    * fast iteration loop) is materially demonstrated.
    */
-  it("REJECTS skill requiring an unavailable feature — without constructing the connector", () => {
+  it("REJECTS skill requiring an unavailable feature — without constructing the connector", async () => {
     const src = `# Skill: needs-semantic
 # Requires: memory_store.supports_semantic
 
@@ -84,7 +84,7 @@ default: t
 `;
     // Pass the CLASS, not an instance. The linter calls staticCapabilities()
     // directly. No SqliteMemoryStore constructor is invoked.
-    const r = lint(src, { classes: [SqliteMemoryStore] });
+    const r = await lint(src, { classes: [SqliteMemoryStore] });
 
     expect(r.errorCount).toBe(1);
     const finding = r.findings.find((f) => f.rule === "unknown-capability");
@@ -93,7 +93,7 @@ default: t
     expect(finding!.message).toMatch(/no registered connector class provides/);
   });
 
-  it("multiple capabilities on one # Requires: line all validated", () => {
+  it("multiple capabilities on one # Requires: line all validated", async () => {
     const src = `# Skill: multi
 # Requires: local_model.supports_max_tokens local_model.supports_streaming
 
@@ -102,14 +102,14 @@ t:
 
 default: t
 `;
-    const r = lint(src, { classes: [OllamaLocalModel] });
+    const r = await lint(src, { classes: [OllamaLocalModel] });
     // supports_max_tokens: true; supports_streaming: false → one error.
     expect(r.errorCount).toBe(1);
     const finding = r.findings.find((f) => f.rule === "unknown-capability");
     expect(finding!.message).toMatch(/local_model\.supports_streaming/);
   });
 
-  it("multiple # Requires: lines accumulate independently", () => {
+  it("multiple # Requires: lines accumulate independently", async () => {
     const src = `# Skill: multi
 # Requires: memory_store.supports_tag_filter
 # Requires: local_model.supports_streaming
@@ -119,13 +119,13 @@ t:
 
 default: t
 `;
-    const r = lint(src, { classes: [SqliteMemoryStore, OllamaLocalModel] });
+    const r = await lint(src, { classes: [SqliteMemoryStore, OllamaLocalModel] });
     // First clause satisfied; second not.
     expect(r.errorCount).toBe(1);
     expect(r.findings[0]!.message).toMatch(/local_model\.supports_streaming/);
   });
 
-  it("registry option resolves classes from registered instances", () => {
+  it("registry option resolves classes from registered instances", async () => {
     const registry = new Registry();
     registry.registerLocalModel("default", new OllamaLocalModel({ defaultModelTag: "gemma2:9b" }));
     const src = `# Skill: t
@@ -136,12 +136,12 @@ t:
 
 default: t
 `;
-    const r = lint(src, { registry });
+    const r = await lint(src, { registry });
     expect(r.errorCount).toBe(1);
     expect(r.findings[0]!.rule).toBe("unknown-capability");
   });
 
-  it("with no classes + no registry, capability check is skipped (no false errors)", () => {
+  it("with no classes + no registry, capability check is skipped (no false errors)", async () => {
     const src = `# Skill: t
 # Requires: memory_store.supports_semantic
 
@@ -150,11 +150,11 @@ t:
 
 default: t
 `;
-    const r = lint(src);
+    const r = await lint(src);
     expect(r.findings.filter((f) => f.rule === "unknown-capability")).toEqual([]);
   });
 
-  it("variable-resolution # Requires: doesn't interfere with capability parsing", () => {
+  it("variable-resolution # Requires: doesn't interfere with capability parsing", async () => {
     const src = `# Skill: mixed
 # Requires: user-var:location -> LOCATION (fallback: ip-based)
 # Requires: memory_store.supports_tag_filter
@@ -164,11 +164,11 @@ t:
 
 default: t
 `;
-    const r = lint(src, { classes: [SqliteMemoryStore] });
+    const r = await lint(src, { classes: [SqliteMemoryStore] });
     expect(r.errorCount).toBe(0);
   });
 
-  it("doesn't construct any class — staticCapabilities call only", () => {
+  it("doesn't construct any class — staticCapabilities call only", async () => {
     // Side-effect-free assertion: an Ollama class won't try to fetch /api/tags
     // when only staticCapabilities is called (instance fetchInstalledModels
     // never runs because no instance exists).
@@ -181,7 +181,7 @@ default: t
     // construct time, so this isn't a perfect side-effect proof. The
     // structural argument from reading lint.ts is what makes the claim airtight.)
     const src = `# Requires: local_model.supports_max_tokens\nt:\n    ! ok\ndefault: t\n`;
-    const r = lint(src, { classes: [FilesystemSkillStore, SqliteMemoryStore, OllamaLocalModel, CallbackMcpConnector] });
+    const r = await lint(src, { classes: [FilesystemSkillStore, SqliteMemoryStore, OllamaLocalModel, CallbackMcpConnector] });
     expect(r.errorCount).toBe(0);
   });
 });

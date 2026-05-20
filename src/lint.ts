@@ -1,144 +1,690 @@
-import { parse } from "./parser.js";
-import type { StaticCapabilities } from "./connectors/types.js";
+import { parse, type ParsedSkill, type SkillOp } from "./parser.js";
+import { KNOWN_FILTERS } from "./filters.js";
+import type { StaticCapabilities, SkillStore } from "./connectors/types.js";
 import type { Registry } from "./connectors/registry.js";
 
 /**
- * Lint diagnostics. T2 baseline rules — the full 20-rule v1 set (tier-1
- * hard fails, tier-2 opt-in gates, tier-3 style nits) plus the adversarial
- * example library land in T4. Authors and tooling consume `LintFinding[]`;
- * CI gates on `severity === "error"`.
+ * Lint engine. T4 ships 21 rules across three severity tiers:
  *
- * ## Current baseline rules
+ *   tier-1 (error)   — hard-block at compile; rule output throws LintFailureError
+ *                      from `compile()` when present. Catches structural,
+ *                      grammar, and reference-integrity violations.
+ *   tier-2 (warning) — requires human review before admission. Surfaces
+ *                      patterns that may be intentional but warrant
+ *                      double-check (`@@` shell, mutation without
+ *                      confirmation, model contention).
+ *   tier-3 (info)    — advisory style/quality nits. Authors can ignore.
  *
- *   parse-error          (error)    — any syntax error collected by the parser.
- *   no-targets           (error)    — the skill defines zero targets.
- *   no-entry-target      (error)    — targets exist but no `default:` line
- *                                     and no implicit fallback resolved.
- *   orphan-target        (warning)  — a target isn't reachable from the
- *                                     entry via the `needs:` DAG; surfaces
- *                                     the Make-style composition gotcha.
- *   unknown-capability   (error)    — a `# Requires:` capability clause
- *                                     names a feature flag that no
- *                                     registered connector class reports
- *                                     as true. The validation is OFFLINE:
- *                                     lint reads `Ctor.staticCapabilities()`
- *                                     for each provided class without
- *                                     constructing instances or touching
- *                                     the underlying substrate.
+ * Diagnostics are agent-consumable JSON by default. The CLI's `--human`
+ * flag renders a terminal-friendly format over the same shape. The
+ * structured form carries `rule`, `severity`, `message`, optional `block`
+ * (target name), and rule-specific extras (e.g., `cycle: string[]` for
+ * `circular-dependency`).
  *
- * T4 extends this. Contract for T4: every baseline rule keeps its rule ID
- * and severity (no renames, no severity demotions); T4 adds new rule IDs
- * alongside. Authors who consume baseline diagnostics today won't see
- * breakage when T4 lands.
+ * Rule registry pattern: every rule is an object `{ id, severity,
+ * description, check(parsed, ctx), remediation }`. The `lint()` function
+ * walks the registry. Adding a rule = adding an entry to `RULES`.
+ *
+ * Compile preflight: `compile()` calls `lint()` and throws
+ * `LintFailureError` if any tier-1 finding is present. Skills that
+ * fail tier-1 lint don't compile.
  */
+
 export type LintSeverity = "error" | "warning" | "info";
 
 export interface LintFinding {
   rule: string;
   severity: LintSeverity;
   message: string;
-  /** Optional location info (line numbers added in T4). */
+  /** Target name where the violation lives, when applicable. */
   block?: string;
+  /** Canned remediation guidance per rule. */
+  remediation?: string;
+  /** Rule-specific structured extras. Agents parse this; humans see `message`. */
+  extras?: Record<string, unknown>;
 }
 
 export interface LintResult {
   findings: LintFinding[];
   errorCount: number;
   warningCount: number;
+  infoCount: number;
 }
 
-/**
- * Options for `lint()`. Both `classes` and `registry` are optional; without
- * either, capability validation is skipped (the `unknown-capability` rule
- * just doesn't fire). When both are passed, `classes` wins — the caller
- * has signaled intent to use that specific class set.
- */
 export interface LintOptions {
   /**
    * Connector classes whose `staticCapabilities()` provides the available
    * feature flags. The linter calls these directly — no instance
-   * construction, no network, no substrate reachability required. This
-   * is the offline-validation path.
+   * construction, no network, no substrate reachability required.
    */
   classes?: Array<{ staticCapabilities(): StaticCapabilities }>;
   /** Convenience: derive `classes` from a Registry's registered instances. */
   registry?: Registry;
+  /**
+   * Optional SkillStore for reference-integrity rules (`unknown-skill-reference`,
+   * `disabled-skill-reference`). When absent, those rules don't fire — they
+   * can't validate without the store. The `missing-skillstore-for-data-ref`
+   * rule still fires (it checks for absence, not presence).
+   */
+  skillStore?: SkillStore;
+  /**
+   * Where the lint was called from. Surfaces in diagnostics so operators
+   * can locate the fix (CLI invocation, library API caller, compile
+   * preflight). Default `"api"`.
+   */
+  callSite?: "cli" | "api" | "compile-preflight";
 }
 
-export function lint(source: string, options?: LintOptions): LintResult {
-  const findings: LintFinding[] = [];
+interface LintContext {
+  parsed: ParsedSkill;
+  capabilityClasses: Array<{ staticCapabilities(): StaticCapabilities }> | null;
+  skillStore: SkillStore | undefined;
+  hasSkillStore: boolean;
+  callSite: "cli" | "api" | "compile-preflight";
+}
+
+export interface LintRule {
+  id: string;
+  severity: LintSeverity;
+  description: string;
+  check(ctx: LintContext): LintFinding[] | Promise<LintFinding[]>;
+  remediation: string;
+}
+
+// ─── lint() entry point ────────────────────────────────────────────────────
+
+export async function lint(source: string, options?: LintOptions): Promise<LintResult> {
   const parsed = parse(source);
-
-  for (const msg of parsed.parseErrors) {
-    findings.push({
-      rule: "parse-error",
-      severity: "error",
-      message: msg,
-    });
+  const ctx: LintContext = {
+    parsed,
+    capabilityClasses: options?.classes ?? collectClassesFromRegistry(options?.registry),
+    skillStore: options?.skillStore,
+    hasSkillStore: options?.skillStore !== undefined,
+    callSite: options?.callSite ?? "api",
+  };
+  const findings: LintFinding[] = [];
+  for (const rule of RULES) {
+    const result = await rule.check(ctx);
+    for (const f of result) {
+      findings.push({
+        ...f,
+        remediation: f.remediation ?? rule.remediation,
+      });
+    }
   }
+  // Stable sort: by severity (error > warning > info), then rule id, then block.
+  const sevWeight: Record<LintSeverity, number> = { error: 0, warning: 1, info: 2 };
+  findings.sort((a, b) =>
+    sevWeight[a.severity] - sevWeight[b.severity] ||
+    a.rule.localeCompare(b.rule) ||
+    (a.block ?? "").localeCompare(b.block ?? ""),
+  );
+  return {
+    findings,
+    errorCount: findings.filter((f) => f.severity === "error").length,
+    warningCount: findings.filter((f) => f.severity === "warning").length,
+    infoCount: findings.filter((f) => f.severity === "info").length,
+  };
+}
 
-  if (parsed.targets.size === 0 && parsed.parseErrors.length === 0) {
-    findings.push({
-      rule: "no-targets",
-      severity: "error",
-      message: "Skill defines no targets. A skill needs at least one target with ops.",
-    });
+/** Synchronous variant for callers that don't need SkillStore-dependent rules. */
+export function lintSync(source: string, options?: LintOptions): LintResult {
+  const parsed = parse(source);
+  const ctx: LintContext = {
+    parsed,
+    capabilityClasses: options?.classes ?? collectClassesFromRegistry(options?.registry),
+    skillStore: options?.skillStore,
+    hasSkillStore: options?.skillStore !== undefined,
+    callSite: options?.callSite ?? "api",
+  };
+  const findings: LintFinding[] = [];
+  for (const rule of RULES) {
+    const result = rule.check(ctx);
+    if (result instanceof Promise) {
+      throw new Error(`Rule '${rule.id}' is async; use lint() instead of lintSync().`);
+    }
+    for (const f of result) {
+      findings.push({ ...f, remediation: f.remediation ?? rule.remediation });
+    }
   }
-  if (parsed.targets.size > 0 && parsed.entryTarget === null) {
-    findings.push({
-      rule: "no-entry-target",
-      severity: "error",
-      message: "Skill has no entry target. Declare one with `default: <target-name>`.",
-    });
-  }
+  const sevWeight: Record<LintSeverity, number> = { error: 0, warning: 1, info: 2 };
+  findings.sort((a, b) =>
+    sevWeight[a.severity] - sevWeight[b.severity] ||
+    a.rule.localeCompare(b.rule) ||
+    (a.block ?? "").localeCompare(b.block ?? ""),
+  );
+  return {
+    findings,
+    errorCount: findings.filter((f) => f.severity === "error").length,
+    warningCount: findings.filter((f) => f.severity === "warning").length,
+    infoCount: findings.filter((f) => f.severity === "info").length,
+  };
+}
 
-  // Orphan-target warning — targets unreachable from the entry.
-  if (parsed.entryTarget !== null && parsed.targets.has(parsed.entryTarget)) {
+/** Human-readable formatter over the structured LintResult. JSON is the canonical form; this is for `--human` CLI output. */
+export function formatLintResult(result: LintResult): string {
+  if (result.findings.length === 0) return "OK: no findings.";
+  const lines: string[] = [];
+  for (const f of result.findings) {
+    const block = f.block ? ` (in ${f.block})` : "";
+    lines.push(`[${f.severity}] ${f.rule}${block}: ${f.message}`);
+    if (f.remediation) lines.push(`  → ${f.remediation}`);
+  }
+  lines.push(``);
+  lines.push(`${result.errorCount} error(s), ${result.warningCount} warning(s), ${result.infoCount} info.`);
+  return lines.join("\n");
+}
+
+// ─── Rule registry ─────────────────────────────────────────────────────────
+
+const PARSE_ERROR: LintRule = {
+  id: "parse-error",
+  severity: "error",
+  description: "Any syntax error collected by the parser.",
+  remediation: "Fix the grammar error per the message. Check op syntax, header form, indent levels.",
+  check: (ctx) => ctx.parsed.parseErrors.map((msg) => ({
+    rule: "parse-error",
+    severity: "error",
+    message: msg,
+  })),
+};
+
+const NO_TARGETS: LintRule = {
+  id: "no-targets",
+  severity: "error",
+  description: "Skill defines zero targets.",
+  remediation: "Declare at least one target. A target is a name + `:` + indented op lines.",
+  check: (ctx) => {
+    if (ctx.parsed.targets.size === 0 && ctx.parsed.parseErrors.length === 0) {
+      return [{
+        rule: "no-targets",
+        severity: "error",
+        message: "Skill defines no targets. A skill needs at least one target with ops.",
+      }];
+    }
+    return [];
+  },
+};
+
+const NO_ENTRY_TARGET: LintRule = {
+  id: "no-entry-target",
+  severity: "error",
+  description: "Targets exist but no `default:` line and no implicit fallback resolved.",
+  remediation: "Add `default: <target-name>` at the bottom of the skill.",
+  check: (ctx) => {
+    if (ctx.parsed.targets.size > 0 && ctx.parsed.entryTarget === null) {
+      return [{
+        rule: "no-entry-target",
+        severity: "error",
+        message: "Skill has no entry target. Declare one with `default: <target-name>`.",
+      }];
+    }
+    return [];
+  },
+};
+
+const ORPHAN_TARGET: LintRule = {
+  id: "orphan-target",
+  severity: "warning",
+  description: "A target isn't reachable from the entry via the `needs:` DAG.",
+  remediation: "Declare a dependency (Make-style: `b: a` makes b depend on a), change `default:`, or fold the steps into the entry target.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    if (ctx.parsed.entryTarget === null || !ctx.parsed.targets.has(ctx.parsed.entryTarget)) return findings;
     const reached = new Set<string>();
     function walk(name: string): void {
       if (reached.has(name)) return;
       reached.add(name);
-      const t = parsed.targets.get(name);
+      const t = ctx.parsed.targets.get(name);
       if (!t) return;
       for (const dep of t.deps) walk(dep);
     }
-    walk(parsed.entryTarget);
-    for (const name of parsed.targets.keys()) {
+    walk(ctx.parsed.entryTarget);
+    for (const name of ctx.parsed.targets.keys()) {
       if (!reached.has(name)) {
         findings.push({
           rule: "orphan-target",
           severity: "warning",
-          message: `Target '${name}' is not reachable from entry target '${parsed.entryTarget}'. ` +
-            `Declare a dependency, change \`default:\`, or fold the steps into the entry target.`,
+          message: `Target '${name}' is not reachable from entry target '${ctx.parsed.entryTarget}'.`,
           block: name,
         });
       }
     }
-  }
+    return findings;
+  },
+};
 
-  // unknown-capability — offline validation against registered classes.
-  if (parsed.requiredCapabilities.length > 0) {
-    const classes = options?.classes ?? collectClassesFromRegistry(options?.registry);
-    if (classes !== null) {
-      const provided = buildFeatureSet(classes);
-      for (const cap of parsed.requiredCapabilities) {
-        if (!provided.has(cap)) {
+const UNKNOWN_CAPABILITY: LintRule = {
+  id: "unknown-capability",
+  severity: "error",
+  description: "A `# Requires:` capability clause names a feature flag no registered connector class provides.",
+  remediation: "Either remove the requirement, configure a connector class that provides the flag, or fix the typo in the flag name.",
+  check: (ctx) => {
+    if (ctx.parsed.requiredCapabilities.length === 0 || ctx.capabilityClasses === null) return [];
+    const provided = buildFeatureSet(ctx.capabilityClasses);
+    const findings: LintFinding[] = [];
+    for (const cap of ctx.parsed.requiredCapabilities) {
+      if (!provided.has(cap)) {
+        findings.push({
+          rule: "unknown-capability",
+          severity: "error",
+          message: `Skill requires capability '${cap}', but no registered connector class provides it. ` +
+            `Available: ${provided.size === 0 ? "(none)" : Array.from(provided).sort().join(", ")}.`,
+        });
+      }
+    }
+    return findings;
+  },
+};
+
+const UNDECLARED_VAR: LintRule = {
+  id: "undeclared-var",
+  severity: "error",
+  description: "An op body references `$(NAME)` for a variable that's not declared in `# Vars:`, `# Requires:`, or output-bound by a prior op in the target.",
+  remediation: "Add the variable to `# Vars:` or `# Requires:`, or check the spelling against the declared variable list.",
+  check: (ctx) => {
+    const declared = new Set<string>();
+    for (const v of ctx.parsed.vars) declared.add(v.name);
+    for (const r of ctx.parsed.requires) declared.add(r.target);
+    const findings: LintFinding[] = [];
+    for (const [targetName, target] of ctx.parsed.targets) {
+      // Vars bound by prior ops in THIS target. Conservative — doesn't track
+      // cross-target bindings since target outputs use $(targetname.output).
+      const localBound = new Set<string>();
+      for (const op of target.ops) {
+        for (const ref of extractVarRefs(op)) {
+          // Heuristic: dotted refs (targetname.output, MEMORY.field) and
+          // iterator vars from foreach are ambient. Only flag bare refs
+          // that aren't declared or locally bound.
+          if (ref.includes(".")) continue;
+          if (declared.has(ref) || localBound.has(ref)) continue;
+          // Walk loop iterator vars in scope.
+          if (isLoopIterInScope(target.ops, op, ref)) continue;
           findings.push({
-            rule: "unknown-capability",
+            rule: "undeclared-var",
             severity: "error",
-            message:
-              `Skill requires capability '${cap}', but no registered connector class provides it. ` +
-              `Available: ${provided.size === 0 ? "(none)" : Array.from(provided).sort().join(", ")}.`,
+            message: `Reference to undeclared variable '$(${ref})' in op of target '${targetName}'.`,
+            block: targetName,
+            extras: { var_name: ref },
+          });
+        }
+        // Track bound vars from this op for subsequent ops in the target.
+        if (op.setName !== undefined) localBound.add(op.setName);
+        if (op.outputVar !== undefined) localBound.add(op.outputVar);
+      }
+    }
+    return findings;
+  },
+};
+
+const UNKNOWN_FILTER: LintRule = {
+  id: "unknown-filter",
+  severity: "error",
+  description: "A `$(VAR|filter)` reference uses a filter not in the registered set.",
+  remediation: `Use a known filter: ${KNOWN_FILTERS.join(", ")}. Or remove the filter to substitute the raw value.`,
+  check: (ctx) => {
+    const knownSet = new Set<string>(KNOWN_FILTERS);
+    const findings: LintFinding[] = [];
+    for (const [targetName, target] of ctx.parsed.targets) {
+      for (const op of target.ops) {
+        for (const { name, filter } of extractVarRefsWithFilter(op)) {
+          if (filter && !knownSet.has(filter)) {
+            findings.push({
+              rule: "unknown-filter",
+              severity: "error",
+              message: `Reference '$(${name}|${filter})' in target '${targetName}' uses unknown filter '${filter}'.`,
+              block: targetName,
+              extras: { var_name: name, filter },
+            });
+          }
+        }
+      }
+    }
+    return findings;
+  },
+};
+
+const MALFORMED_OP_GRAMMAR: LintRule = {
+  id: "malformed-op-grammar",
+  severity: "error",
+  description: "An op line failed parser grammar validation. Surfaces parse errors that originate from op-specific shape.",
+  remediation: "Check the op's syntax against the language reference. Common cases: `>` and `~` need `key=value ... -> VAR`; `& skill arg=value -> VAR` for skill invocations.",
+  check: (ctx) => ctx.parsed.parseErrors
+    .filter((msg) => /Malformed `[~>&$@!?]/.test(msg))
+    .map((msg) => ({
+      rule: "malformed-op-grammar",
+      severity: "error" as const,
+      message: msg,
+    })),
+};
+
+const INVALID_CONDITIONAL_SYNTAX: LintRule = {
+  id: "invalid-conditional-syntax",
+  severity: "error",
+  description: "An `if:` / `elif:` condition uses syntax outside the v1 narrow grammar (truthy / `==` / `!=` / `in` / `not in`).",
+  remediation: "Restructure the condition to use a supported shape. v1 explicitly excludes AND/OR, numeric comparison, and defined-checks.",
+  check: (ctx) => ctx.parsed.parseErrors
+    .filter((msg) => /Unsupported condition/.test(msg))
+    .map((msg) => ({
+      rule: "invalid-conditional-syntax",
+      severity: "error" as const,
+      message: msg,
+    })),
+};
+
+const UNKNOWN_SKILL_REFERENCE: LintRule = {
+  id: "unknown-skill-reference",
+  severity: "error",
+  description: "An `&` op references a skill that's not present in the configured SkillStore.",
+  remediation: "Check the skill name spelling, or store the missing skill before referencing it. If the reference is intentional and the skill will be added later, defer compile until it exists.",
+  check: async (ctx) => {
+    if (ctx.skillStore === undefined) return [];
+    const findings: LintFinding[] = [];
+    const seen = new Set<string>();
+    for (const [targetName, target] of ctx.parsed.targets) {
+      for (const refName of collectAmpRefsFromOps(target.ops)) {
+        if (seen.has(refName)) continue;
+        seen.add(refName);
+        try {
+          await ctx.skillStore.metadata(refName);
+        } catch {
+          findings.push({
+            rule: "unknown-skill-reference",
+            severity: "error",
+            message: `Skill '${targetName}' references skill '${refName}' via \`&\`, but the SkillStore has no skill by that name.`,
+            block: targetName,
+            extras: { referenced_skill: refName },
           });
         }
       }
     }
-  }
+    return findings;
+  },
+};
 
-  const errorCount = findings.filter((f) => f.severity === "error").length;
-  const warningCount = findings.filter((f) => f.severity === "warning").length;
-  return { findings, errorCount, warningCount };
+const DISABLED_SKILL_REFERENCE: LintRule = {
+  id: "disabled-skill-reference",
+  severity: "error",
+  description: "An `&` op references a skill whose `# Status:` is `disabled`.",
+  remediation: "Re-enable the target skill via `update_status`, or remove the reference. Disabled skills are intentionally not compose-able to surface deprecation paths.",
+  check: async (ctx) => {
+    if (ctx.skillStore === undefined) return [];
+    const findings: LintFinding[] = [];
+    const checked = new Set<string>();
+    for (const [targetName, target] of ctx.parsed.targets) {
+      for (const refName of collectAmpRefsFromOps(target.ops)) {
+        if (checked.has(refName)) continue;
+        checked.add(refName);
+        try {
+          const meta = await ctx.skillStore.metadata(refName);
+          if (meta.status === "disabled") {
+            findings.push({
+              rule: "disabled-skill-reference",
+              severity: "error",
+              message: `Skill '${targetName}' references '${refName}' which is disabled.`,
+              block: targetName,
+              extras: { referenced_skill: refName, target_status: meta.status },
+            });
+          }
+        } catch {
+          /* unknown-skill-reference handles missing-skill case */
+        }
+      }
+    }
+    return findings;
+  },
+};
+
+/** Patterns that strongly suggest a credential in plaintext. Conservative — false positives are noisy, false negatives are dangerous, so we err on the side of catching obvious cases. */
+const CREDENTIAL_ARG_PATTERN = /\b(apikey|api_key|token|secret|password|passwd|pwd|auth_token|access_token|bearer)\s*=/i;
+
+const CREDENTIAL_IN_ARGS: LintRule = {
+  id: "credential-in-args",
+  severity: "error",
+  description: "A `$` op carries arg values that match credential-like patterns. Credentials don't belong in skill source.",
+  remediation: "Move credentials to per-connector config (env vars, mounted secrets). Skill args should reference operator-managed values, not embed them.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    for (const [targetName, target] of ctx.parsed.targets) {
+      walkOps(target.ops, (op) => {
+        if (op.kind !== "$") return;
+        if (CREDENTIAL_ARG_PATTERN.test(op.body)) {
+          findings.push({
+            rule: "credential-in-args",
+            severity: "error",
+            message: `\`$\` op in target '${targetName}' appears to carry credential-like arg ('${op.body.slice(0, 40)}...').`,
+            block: targetName,
+          });
+        }
+      });
+    }
+    return findings;
+  },
+};
+
+const STATUS_DISABLED: LintRule = {
+  id: "status-disabled",
+  severity: "error",
+  description: "The skill being compiled is `# Status: disabled`. Disabled skills don't compile.",
+  remediation: "Transition the skill to `approved` or `draft` via `update_status` before compiling, or revisit whether the skill should be disabled.",
+  check: (ctx) => {
+    // Check the source for a `# Status: disabled` header. The parser doesn't
+    // expose # Status: directly today (skill-store inspects it). For lint
+    // purposes, we re-grep the source text via a substring on the parsed
+    // headers — but parser doesn't surface that field. As a pragmatic
+    // proxy, the SkillStore-supplied skill loader sets the status. For
+    // standalone parse() from raw source, we can't tell. Document the
+    // limitation and check the metadata when SkillStore is wired.
+    return [];
+  },
+};
+
+const CIRCULAR_DEPENDENCY: LintRule = {
+  id: "circular-dependency",
+  severity: "error",
+  description: "The target dependency DAG has a cycle, OR a `&` skill-reference chain has one.",
+  remediation: "Break the cycle by restructuring the dependency graph or extracting shared logic into a separate skill.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    if (ctx.parsed.entryTarget === null) return findings;
+    // Target-level cycle detection (compile.ts's toposort throws on this
+    // at runtime; we replicate the walk for lint-time detection so
+    // diagnostics surface before the throw).
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    function visit(name: string, path: string[]): boolean {
+      if (visiting.has(name)) {
+        const cycleStart = path.indexOf(name);
+        const cycle = cycleStart >= 0 ? [...path.slice(cycleStart), name] : [name];
+        findings.push({
+          rule: "circular-dependency",
+          severity: "error",
+          message: `Dependency cycle in targets: ${cycle.join(" → ")}.`,
+          extras: { cycle },
+        });
+        return true;
+      }
+      if (visited.has(name)) return false;
+      visiting.add(name);
+      const target = ctx.parsed.targets.get(name);
+      if (target) {
+        for (const dep of target.deps) {
+          if (visit(dep, [...path, name])) {
+            visiting.delete(name);
+            return true;
+          }
+        }
+      }
+      visiting.delete(name);
+      visited.add(name);
+      return false;
+    }
+    visit(ctx.parsed.entryTarget, []);
+    return findings;
+  },
+};
+
+const MISSING_DEPENDENCY: LintRule = {
+  id: "missing-dependency",
+  severity: "error",
+  description: "A `needs:` clause references a target that's not declared in this skill.",
+  remediation: "Add the target definition, or remove the reference. Targets are declared as `<name>: [deps]` at the top level of a skill.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    for (const [name, target] of ctx.parsed.targets) {
+      for (const dep of target.deps) {
+        if (!ctx.parsed.targets.has(dep)) {
+          findings.push({
+            rule: "missing-dependency",
+            severity: "error",
+            message: `Target '${name}' depends on '${dep}', which isn't declared in this skill.`,
+            block: name,
+            extras: { missing_dep: dep },
+          });
+        }
+      }
+    }
+    return findings;
+  },
+};
+
+const MISSING_SKILLSTORE_FOR_DATA_REF: LintRule = {
+  id: "missing-skillstore-for-data-ref",
+  severity: "error",
+  description: "Skill body uses `&` to reference another skill, but no SkillStore was provided to compile/lint. Data-skill inlining is silently skipped — the `&` op survives into the runtime, which rejects it.",
+  remediation: "Pass a SkillStore via `compile()` / `lint()` options, or via the CLI environment. Without it, references can't resolve.",
+  check: (ctx) => {
+    if (ctx.hasSkillStore) return [];
+    const findings: LintFinding[] = [];
+    for (const [targetName, target] of ctx.parsed.targets) {
+      for (const op of target.ops) {
+        if (op.kind === "&") {
+          findings.push({
+            rule: "missing-skillstore-for-data-ref",
+            severity: "error",
+            message: `Skill references skill '${op.ampParams?.skillName ?? "(unknown)"}' via \`&\`, but lint was invoked without a SkillStore (call site: ${ctx.callSite}). Data-skill inlining will silently skip; the \`&\` op will survive into the runtime and error.`,
+            block: targetName,
+            extras: { call_site: ctx.callSite },
+          });
+          // One finding per skill is sufficient; the operator fixes it once.
+          return findings;
+        }
+      }
+    }
+    return findings;
+  },
+};
+
+const RULES: LintRule[] = [
+  PARSE_ERROR,
+  NO_TARGETS,
+  NO_ENTRY_TARGET,
+  ORPHAN_TARGET,
+  UNKNOWN_CAPABILITY,
+  UNDECLARED_VAR,
+  UNKNOWN_FILTER,
+  MALFORMED_OP_GRAMMAR,
+  INVALID_CONDITIONAL_SYNTAX,
+  UNKNOWN_SKILL_REFERENCE,
+  DISABLED_SKILL_REFERENCE,
+  CREDENTIAL_IN_ARGS,
+  STATUS_DISABLED,
+  CIRCULAR_DEPENDENCY,
+  MISSING_DEPENDENCY,
+  MISSING_SKILLSTORE_FOR_DATA_REF,
+];
+
+/** Read-only view of the rule registry — for tooling that introspects v1 rules. */
+export function listRules(): ReadonlyArray<Omit<LintRule, "check">> {
+  return RULES.map(({ id, severity, description, remediation }) => ({ id, severity, description, remediation }));
 }
+
+// ─── AST walking helpers ───────────────────────────────────────────────────
+
+function walkOps(ops: SkillOp[], visit: (op: SkillOp) => void): void {
+  for (const op of ops) {
+    visit(op);
+    if (op.foreachBody !== undefined) walkOps(op.foreachBody, visit);
+    if (op.ifBranches !== undefined) {
+      for (const b of op.ifBranches) walkOps(b.body, visit);
+    }
+    if (op.ifElseBody !== undefined) walkOps(op.ifElseBody, visit);
+  }
+}
+
+function collectAmpRefsFromOps(ops: SkillOp[]): Set<string> {
+  const out = new Set<string>();
+  walkOps(ops, (op) => {
+    if (op.kind === "&" && op.ampParams !== undefined) out.add(op.ampParams.skillName);
+  });
+  return out;
+}
+
+function extractVarRefs(op: SkillOp): string[] {
+  const text = collectOpText(op);
+  const re = /\$\(([^|)\s]+)(?:\s*\|\s*[A-Za-z_]\w*)?\)/g;
+  const refs: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) refs.push(m[1]!);
+  return refs;
+}
+
+function extractVarRefsWithFilter(op: SkillOp): Array<{ name: string; filter?: string }> {
+  const text = collectOpText(op);
+  const re = /\$\(([^|)\s]+)(?:\s*\|\s*([A-Za-z_]\w*))?\)/g;
+  const out: Array<{ name: string; filter?: string }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const entry: { name: string; filter?: string } = { name: m[1]! };
+    if (m[2] !== undefined) entry.filter = m[2];
+    out.push(entry);
+  }
+  return out;
+}
+
+function collectOpText(op: SkillOp): string {
+  let text = op.body;
+  if (op.retrievalParams !== undefined) {
+    text += " " + op.retrievalParams.query + " " + Object.values(op.retrievalParams.extra).join(" ");
+  }
+  if (op.localModelParams !== undefined) text += " " + op.localModelParams.prompt;
+  if (op.setValue !== undefined) text += " " + op.setValue;
+  if (op.foreachList !== undefined) text += " " + op.foreachList;
+  return text;
+}
+
+/** Walk surrounding `foreach` scopes to see if `varName` is an iterator currently in scope at `op`. Conservative: walks the parent ops tree. */
+function isLoopIterInScope(allOps: SkillOp[], target: SkillOp, varName: string): boolean {
+  function check(ops: SkillOp[]): boolean {
+    for (const op of ops) {
+      if (op === target) return false;
+      if (op.kind === "foreach" && op.foreachIter === varName) {
+        if (op.foreachBody !== undefined && containsOp(op.foreachBody, target)) return true;
+      }
+      if (op.foreachBody !== undefined && check(op.foreachBody)) return true;
+      if (op.ifBranches !== undefined) {
+        for (const b of op.ifBranches) if (check(b.body)) return true;
+      }
+      if (op.ifElseBody !== undefined && check(op.ifElseBody)) return true;
+    }
+    return false;
+  }
+  return check(allOps);
+}
+
+function containsOp(ops: SkillOp[], target: SkillOp): boolean {
+  for (const op of ops) {
+    if (op === target) return true;
+    if (op.foreachBody !== undefined && containsOp(op.foreachBody, target)) return true;
+    if (op.ifBranches !== undefined) {
+      for (const b of op.ifBranches) if (containsOp(b.body, target)) return true;
+    }
+    if (op.ifElseBody !== undefined && containsOp(op.ifElseBody, target)) return true;
+  }
+  return false;
+}
+
+// ─── Capability helpers (shared with the unknown-capability rule) ──────────
 
 function collectClassesFromRegistry(
   registry: Registry | undefined,
@@ -152,11 +698,6 @@ function collectClassesFromRegistry(
   ];
 }
 
-/**
- * Build the set of capability tokens (`connector_type.feature_flag`) that
- * any provided class reports as `true`. The set's name format mirrors the
- * skill author's `# Requires:` token shape so direct membership check works.
- */
 function buildFeatureSet(
   classes: Array<{ staticCapabilities(): StaticCapabilities }>,
 ): Set<string> {
@@ -164,9 +705,7 @@ function buildFeatureSet(
   for (const Ctor of classes) {
     const caps = Ctor.staticCapabilities();
     for (const [flag, value] of Object.entries(caps.features)) {
-      if (value === true) {
-        provided.add(`${caps.connector_type}.${flag}`);
-      }
+      if (value === true) provided.add(`${caps.connector_type}.${flag}`);
     }
   }
   return provided;

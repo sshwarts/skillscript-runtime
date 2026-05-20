@@ -1,4 +1,8 @@
 // Pipe-filter implementations. `$(NAME|filter)` syntax dispatches here.
+
+/** The names of every registered filter. Lint's `unknown-filter` rule consults this. */
+export const KNOWN_FILTERS = ["url", "shell", "json", "trim"] as const;
+export type KnownFilter = (typeof KNOWN_FILTERS)[number];
 //
 // Adding a new filter:
 //   1. Add a case in `applyFilter` below.

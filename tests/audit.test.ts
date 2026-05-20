@@ -138,7 +138,10 @@ describe("compile — provenance block", () => {
   });
 
   it("provenance includes language_version + compiler_version", async () => {
-    const compiled = await compile(SUPPORT);
+    // SUPPORT references voice-guide via & — without a SkillStore, the
+    // missing-skillstore-for-data-ref lint rule would block. For this
+    // test (provenance-shape-only), bypass the preflight.
+    const compiled = await compile(SUPPORT, { skipLintPreflight: true });
     expect(compiled.provenance.language_version).toBe("1.0");
     expect(compiled.provenance.compiler_version).toMatch(/^\d/);
     expect(compiled.provenance.compiled_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);

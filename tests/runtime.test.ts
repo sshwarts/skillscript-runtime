@@ -5,7 +5,10 @@ import { Registry } from "../src/connectors/registry.js";
 import { CallbackMcpConnector } from "../src/connectors/mcp.js";
 
 async function run(source: string, inputs: Record<string, string> = {}, registry = new Registry()) {
-  const compiled = await compile(source);
+  // Tests in this file exercise runtime behavior directly; bypass the
+  // tier-1 lint preflight so test sources that intentionally violate
+  // (out-of-scope vars, etc.) reach the runtime layer being tested.
+  const compiled = await compile(source, { skipLintPreflight: true });
   return execute(compiled.parsed, { ...compiled.resolvedVariables, ...inputs }, compiled.targetOrder, { registry });
 }
 

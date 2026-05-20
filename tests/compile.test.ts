@@ -59,13 +59,16 @@ default: a
     expect(result.warnings[0]).toMatch(/orphan/);
   });
 
-  it("rejects skills with parse errors", async () => {
+  it("rejects skills with parse errors via lint preflight", async () => {
     const src = `t:
     if $(A) && $(B):
         ! both
 
 default: t
 `;
-    await expect(compile(src)).rejects.toThrow(/parse errors/);
+    // Lint preflight catches parse errors via the `parse-error` rule
+    // (and the more specific `invalid-conditional-syntax` rule). Throws
+    // LintFailureError, not the legacy generic error.
+    await expect(compile(src)).rejects.toThrow(/Tier-1 lint failure/);
   });
 });

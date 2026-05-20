@@ -13,6 +13,8 @@ import {
   buildProvenance,
   renderInlineProvenance,
 } from "./provenance.js";
+import { lint } from "./lint.js";
+import { LintFailureError } from "./errors.js";
 
 /**
  * Semantic analysis + render. Four phases:
@@ -49,6 +51,12 @@ export interface CompileOptions {
   skillStore?: SkillStore;
   /** When true, embed the provenance block at the bottom of the rendered artifact instead of returning it as a sidecar. Default false (sidecar shape). */
   inlineProvenance?: boolean;
+  /**
+   * Skip the tier-1 lint preflight. Default false (preflight runs). Setting
+   * true is mostly useful for tests that exercise compile paths the lint
+   * would reject — production callers should let preflight run.
+   */
+  skipLintPreflight?: boolean;
 }
 
 /**
@@ -95,6 +103,31 @@ export async function compile(
   options: CompileOptions = {},
 ): Promise<CompileResult> {
   const { inputs, format = "prompt", requireResolver, skillStore, inlineProvenance = false } = options;
+
+  // Lint preflight — tier-1 violations block compilation per ERD §3.
+  // Parse errors surface here too (as parse-error rule findings) before the
+  // legacy error throw below; preserving the throw shape keeps existing
+  // catchers working while giving lint-aware callers a richer diagnostic.
+  if (options.skipLintPreflight !== true) {
+    const lintResult = await lint(source, {
+      ...(skillStore !== undefined ? { skillStore } : {}),
+      callSite: "compile-preflight",
+    });
+    const tier1 = lintResult.findings.filter((f) => f.severity === "error");
+    if (tier1.length > 0) {
+      throw new LintFailureError(
+        tier1.map((f) => ({
+          rule: f.rule,
+          message: f.message,
+          ...(f.block !== undefined ? { block: f.block } : {}),
+          severity: f.severity,
+          ...(f.remediation !== undefined ? { remediation: f.remediation } : {}),
+          ...(f.extras !== undefined ? { extras: f.extras } : {}),
+        })),
+        "compile",
+      );
+    }
+  }
 
   const parsed = parse(source);
   if (parsed.parseErrors.length > 0) {

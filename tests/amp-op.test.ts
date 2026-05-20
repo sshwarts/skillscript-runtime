@@ -189,7 +189,11 @@ t:
 
 default: t
 `;
-    const compiled = await compile(src);
+    // Bypass lint preflight; this test exercises the runtime guard for
+    // when an `&` op slips through to execution (a defense-in-depth path).
+    // In normal usage, lint's missing-skillstore-for-data-ref rule catches
+    // this earlier — see tests/lint.test.ts.
+    const compiled = await compile(src, { skipLintPreflight: true });
     const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
       registry: new Registry(),
     });
