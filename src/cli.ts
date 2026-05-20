@@ -14,6 +14,9 @@ import { fileURLToPath } from "node:url";
 import { compile } from "./compile.js";
 import { execute } from "./runtime.js";
 import { lint } from "./lint.js";
+import { audit, formatAuditResult } from "./audit.js";
+import type { ProvenanceBlock } from "./provenance.js";
+import { renderSidecarProvenance } from "./provenance.js";
 import { Registry } from "./connectors/registry.js";
 import { FilesystemSkillStore } from "./connectors/skill-store.js";
 import { OllamaLocalModel } from "./connectors/local-model.js";
@@ -34,6 +37,7 @@ Usage:
   skillfile init                        Scaffold ~/.skillscript/ tree + bundled example
   skillfile run <path|name> [opts]      Compile + execute a skill end-to-end
   skillfile compile <path|name> [opts]  Render the compiled artifact (no execution)
+  skillfile audit <provenance-path>     Detect recompile-staleness via .provenance.json sidecar
   skillfile lint <path|name>            Run static validation, print findings
   skillfile list [--status STATUS]      List available skills in the configured SkillStore
 
@@ -41,12 +45,18 @@ Run/compile options:
   --input KEY=value (repeatable)        Provide a value for a declared input
   --format prompt|prose                 Render format (default: prompt)
   --mechanical                          Preview mode — \`$\`/\`~\`/\`>\` ops don't dispatch (run only)
+  --inline-provenance                   Embed provenance block in artifact (compile only; default: sidecar)
+  --sidecar <path>                      Write provenance to this path (compile only; default: <output>.provenance.json)
+
+Audit options:
+  --json                                Emit structured JSON instead of pretty-printed text
 
 Examples:
   skillfile init
   skillfile run examples/hello.skill
   skillfile run hello --input WHO=Scott
   skillfile compile examples/hello.skill --format prose
+  skillfile audit support-response.provenance.json
 
 Config:
   SKILLSCRIPT_HOME    Override config root (default ~/.skillscript)
@@ -72,6 +82,7 @@ async function main(): Promise<number> {
     case "init":    return await cmdInit();
     case "run":     return await cmdRun(rest);
     case "compile": return await cmdCompile(rest);
+    case "audit":   return await cmdAudit(rest);
     case "lint":    return await cmdLint(rest);
     case "list":    return await cmdList(rest);
     default:
@@ -157,8 +168,15 @@ async function cmdCompile(args: string[]): Promise<number> {
     const compiled = await compile(source, {
       inputs: opts.inputs,
       format: opts.format,
+      skillStore: new FilesystemSkillStore(SKILLS_DIR),
+      inlineProvenance: opts.inlineProvenance,
     });
     process.stdout.write(`${compiled.output}\n`);
+    // Sidecar provenance — written unless `--inline-provenance` chose embed.
+    if (!opts.inlineProvenance && opts.sidecarPath !== undefined) {
+      await writeFile(opts.sidecarPath, renderSidecarProvenance(compiled.provenance), "utf8");
+      process.stderr.write(`Provenance written to ${opts.sidecarPath}\n`);
+    }
     if (compiled.warnings.length > 0) {
       process.stderr.write(`\nWarnings:\n`);
       for (const w of compiled.warnings) process.stderr.write(`  ${w}\n`);
@@ -166,6 +184,43 @@ async function cmdCompile(args: string[]): Promise<number> {
     return 0;
   } catch (err) {
     process.stderr.write(`skillfile compile: ${(err as Error).message}\n`);
+    return 1;
+  }
+}
+
+async function cmdAudit(args: string[]): Promise<number> {
+  const provenancePath = args[0];
+  if (provenancePath === undefined) {
+    process.stderr.write("skillfile audit: missing provenance path\n");
+    return 64;
+  }
+  const jsonOutput = args.includes("--json");
+  let body: string;
+  try {
+    body = await readFile(resolve(process.cwd(), provenancePath), "utf8");
+  } catch {
+    process.stderr.write(`skillfile audit: cannot read '${provenancePath}'\n`);
+    return 1;
+  }
+  let block: ProvenanceBlock;
+  try {
+    block = JSON.parse(body) as ProvenanceBlock;
+  } catch {
+    process.stderr.write(`skillfile audit: '${provenancePath}' is not valid JSON\n`);
+    return 1;
+  }
+  const store = new FilesystemSkillStore(SKILLS_DIR);
+  try {
+    const result = await audit(block, store);
+    if (jsonOutput) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else {
+      process.stdout.write(`${formatAuditResult(result)}\n`);
+    }
+    // Exit code: 0 if clean, 1 if any findings (consistent with lint).
+    return result.findings.length === 0 ? 0 : 1;
+  } catch (err) {
+    process.stderr.write(`skillfile audit: ${(err as Error).message}\n`);
     return 1;
   }
 }
@@ -222,11 +277,13 @@ interface RunCompileOpts {
   inputs: Record<string, string>;
   format: "prompt" | "prose";
   mechanical: boolean;
+  inlineProvenance: boolean;
+  sidecarPath?: string;
   error?: string;
 }
 
 function parseRunCompileArgs(args: string[]): RunCompileOpts {
-  const opts: RunCompileOpts = { inputs: {}, format: "prompt", mechanical: false };
+  const opts: RunCompileOpts = { inputs: {}, format: "prompt", mechanical: false, inlineProvenance: false };
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === "--input") {
@@ -243,6 +300,12 @@ function parseRunCompileArgs(args: string[]): RunCompileOpts {
       opts.format = v;
     } else if (a === "--mechanical") {
       opts.mechanical = true;
+    } else if (a === "--inline-provenance") {
+      opts.inlineProvenance = true;
+    } else if (a === "--sidecar") {
+      const v = args[++i];
+      if (v === undefined) return { ...opts, error: "--sidecar requires a path" };
+      opts.sidecarPath = v;
     } else if (a.startsWith("--")) {
       return { ...opts, error: `unknown flag '${a}'` };
     } else if (opts.skillRef === undefined) {
@@ -252,6 +315,13 @@ function parseRunCompileArgs(args: string[]): RunCompileOpts {
     }
   }
   if (opts.skillRef === undefined) return { ...opts, error: "missing skill path or name" };
+  // Default sidecar path when not inlining and not explicitly named.
+  if (!opts.inlineProvenance && opts.sidecarPath === undefined) {
+    const ref = opts.skillRef;
+    opts.sidecarPath = ref.endsWith(".skill")
+      ? ref.replace(/\.skill$/, ".provenance.json")
+      : `${ref}.provenance.json`;
+  }
   return opts;
 }
 

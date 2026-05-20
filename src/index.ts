@@ -27,7 +27,16 @@ export type {
 } from "./parser.js";
 
 export { compile } from "./compile.js";
-export type { CompileOptions, CompileResult, RenderFormat, RequireResolver } from "./compile.js";
+export type { CompileOptions, CompileResult, RenderFormat, RequireResolver, InlinedDataSkillRef } from "./compile.js";
+export {
+  buildProvenance,
+  renderInlineProvenance,
+  renderSidecarProvenance,
+  PROVENANCE_VERSION,
+  LANGUAGE_VERSION,
+  COMPILER_VERSION,
+} from "./provenance.js";
+export type { ProvenanceBlock, SourceSkillRef, BuildProvenanceInput } from "./provenance.js";
 
 export { lint } from "./lint.js";
 export type { LintFinding, LintResult, LintSeverity } from "./lint.js";
@@ -98,3 +107,6 @@ export {
   invalidateConnector,
 } from "./skill-manager.js";
 export type { DeleteSkillOptions } from "./skill-manager.js";
+
+export { audit, formatAuditResult } from "./audit.js";
+export type { AuditResult, AuditFinding, AuditRule } from "./audit.js";

@@ -8,6 +8,11 @@ import {
 } from "./parser.js";
 import { applyFilter } from "./filters.js";
 import type { SkillStore } from "./connectors/types.js";
+import {
+  type ProvenanceBlock,
+  buildProvenance,
+  renderInlineProvenance,
+} from "./provenance.js";
 
 /**
  * Semantic analysis + render. Four phases:
@@ -40,8 +45,10 @@ export interface CompileOptions {
   format?: RenderFormat;
   /** Optional resolver for `# Requires:` cascade. Without it, requires fall through to declared fallback or surface as missing. */
   requireResolver?: RequireResolver;
-  /** Optional SkillStore — used to validate `# OnError:` fallback skill exists at compile time. */
+  /** Optional SkillStore — used for `# OnError:` validation, data-skill inlining (T3), and source-skill provenance lookup. */
   skillStore?: SkillStore;
+  /** When true, embed the provenance block at the bottom of the rendered artifact instead of returning it as a sidecar. Default false (sidecar shape). */
+  inlineProvenance?: boolean;
 }
 
 /**
@@ -65,6 +72,13 @@ export interface CompileResult {
   outputs: OutputDecl[];
   /** Data-skill content_hashes recorded for recompile-staleness detection. Empty if no `&` data-skill refs. */
   dataSkillsInlined: InlinedDataSkillRef[];
+  /**
+   * Structured provenance block for the compiled artifact. Carries the
+   * source skill's identity + every inlined data-skill's `content_hash`
+   * + compiler/language versions + compile timestamp. Phase 4's
+   * `skillfile audit` consumes this to detect recompile-staleness.
+   */
+  provenance: ProvenanceBlock;
   onError: string | null;
   warnings: string[];
   /** Pass-through to the runtime — saves re-parsing. */
@@ -80,7 +94,7 @@ export async function compile(
   source: string,
   options: CompileOptions = {},
 ): Promise<CompileResult> {
-  const { inputs, format = "prompt", requireResolver, skillStore } = options;
+  const { inputs, format = "prompt", requireResolver, skillStore, inlineProvenance = false } = options;
 
   const parsed = parse(source);
   if (parsed.parseErrors.length > 0) {
@@ -188,9 +202,32 @@ export async function compile(
     );
   }
 
-  const output = format === "prose"
+  // Provenance: look up the source skill's version + content_hash via
+  // SkillStore if available, otherwise leave those fields undefined.
+  let sourceVersion: string | undefined;
+  let sourceContentHash: string | undefined;
+  if (skillStore !== undefined && parsed.name !== null) {
+    try {
+      const meta = await skillStore.metadata(parsed.name);
+      sourceVersion = meta.version;
+      sourceContentHash = meta.content_hash;
+    } catch {
+      // Skill not stored yet (compile-from-source path) — fields stay undefined.
+    }
+  }
+  const provenance = buildProvenance({
+    sourceSkillName: parsed.name,
+    ...(sourceVersion !== undefined ? { sourceVersion } : {}),
+    ...(sourceContentHash !== undefined ? { sourceContentHash } : {}),
+    dataSkillsInlined,
+  });
+
+  let output = format === "prose"
     ? renderProse(parsed, resolved, order)
     : renderPrompt(parsed, resolved, order);
+  if (inlineProvenance) {
+    output += renderInlineProvenance(provenance);
+  }
 
   return {
     skillName: parsed.name,
@@ -204,6 +241,7 @@ export async function compile(
     warnings,
     parsed,
     dataSkillsInlined,
+    provenance,
   };
 }
 
@@ -238,10 +276,16 @@ async function inlineOps(
     if (op.kind === "&" && op.ampParams !== undefined) {
       const refName = op.ampParams.skillName;
       if (chain.includes(refName)) {
-        throw new Error(
-          `Skill-dep cycle detected: ${[...chain, refName].join(" → ")}. ` +
+        const path = [...chain, refName];
+        const err = new Error(
+          `Skill-dep cycle detected: ${path.join(" → ")}. ` +
           `Data skills cannot inline through a reference loop.`,
-        );
+        ) as Error & { cycle?: string[]; rule?: string };
+        // Agent-parseable structure: caller code can inspect err.cycle as
+        // a JSON array of skill names without parsing the message string.
+        err.cycle = path;
+        err.rule = "skill-dep-cycle";
+        throw err;
       }
       const source = await store.load(refName);
       const refParsed = parse(source.source);
