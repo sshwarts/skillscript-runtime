@@ -21,12 +21,17 @@ import { Registry } from "./connectors/registry.js";
 import { FilesystemSkillStore } from "./connectors/skill-store.js";
 import { OllamaLocalModel } from "./connectors/local-model.js";
 import { SqliteMemoryStore } from "./connectors/memory-store.js";
+import { parse, type SkillOp } from "./parser.js";
+import { FilesystemTraceStore } from "./trace.js";
+import { healthMetrics } from "./metrics.js";
+import { createHash } from "node:crypto";
 
 const HOME_DIR = process.env["SKILLSCRIPT_HOME"] ?? join(homedir(), ".skillscript");
 const SKILLS_DIR = join(HOME_DIR, "skills");
 const MEMORY_DB = join(HOME_DIR, "memory.db");
 const EXAMPLES_DIR = join(HOME_DIR, "examples");
 const PLUGINS_DIR = join(HOME_DIR, "plugins");
+const TRACE_DIR = join(HOME_DIR, "traces");
 
 const VERSION = "0.1.0-dev";
 
@@ -40,6 +45,12 @@ Usage:
   skillfile audit <provenance-path>     Detect recompile-staleness via .provenance.json sidecar
   skillfile lint <path|name>            Run static validation, print findings
   skillfile list [--status STATUS]      List available skills in the configured SkillStore
+  skillfile fires <skill> [opts]        List recent trace records for a skill
+  skillfile diagram <skill>             Emit mermaid graph of the skill's control flow
+  skillfile sign <skill>                Content-hash sign the skill source
+  skillfile verify <skill> <hash>       Verify the skill matches a signature
+  skillfile replay <trace_id> [opts]    Re-run a recorded trace
+  skillfile health [opts]               Aggregate metrics across all traces
 
 Run/compile options:
   --input KEY=value (repeatable)        Provide a value for a declared input
@@ -47,6 +58,19 @@ Run/compile options:
   --mechanical                          Preview mode — \`$\`/\`~\`/\`>\` ops don't dispatch (run only)
   --inline-provenance                   Embed provenance block in artifact (compile only; default: sidecar)
   --sidecar <path>                      Write provenance to this path (compile only; default: <output>.provenance.json)
+
+Fires options:
+  --limit N                             Cap results (default: 20)
+  --human                               Pretty-print summary instead of JSON
+
+Replay options:
+  --connectors current                  Re-run against today's wired connectors (default; debug)
+
+Health options:
+  --skill X                             Restrict to one skill
+  --connector Y                         Restrict to one connector
+  --since-ms N                          Window start (default: 24h ago)
+  --human                               Pretty-print instead of JSON
 
 Audit options:
   --json                                Emit structured JSON instead of pretty-printed text
@@ -85,6 +109,12 @@ async function main(): Promise<number> {
     case "audit":   return await cmdAudit(rest);
     case "lint":    return await cmdLint(rest);
     case "list":    return await cmdList(rest);
+    case "fires":   return await cmdFires(rest);
+    case "diagram": return await cmdDiagram(rest);
+    case "sign":    return await cmdSign(rest);
+    case "verify":  return await cmdVerify(rest);
+    case "replay":  return await cmdReplay(rest);
+    case "health":  return await cmdHealth(rest);
     default:
       process.stderr.write(`skillfile: unknown command '${cmd}'\n\n${usage()}`);
       return 64;
@@ -410,6 +440,171 @@ async function copyScaffoldFile(src: string, dest: string): Promise<void> {
   await mkdir(dirname(dest), { recursive: true });
   const body = await readFile(src, "utf8");
   await writeFile(dest, body, "utf8");
+}
+
+async function cmdFires(args: string[]): Promise<number> {
+  const skill = args.find((a) => !a.startsWith("--"));
+  if (skill === undefined) {
+    process.stderr.write("Usage: skillfile fires <skill> [--limit N] [--human]\n");
+    return 64;
+  }
+  const limitStr = extractFlag(args, "--limit");
+  const limit = limitStr !== undefined ? parseInt(limitStr, 10) : 20;
+  const human = args.includes("--human");
+  const store = new FilesystemTraceStore(TRACE_DIR);
+  const records = await store.query({ skill_name: skill, limit });
+  if (human) {
+    if (records.length === 0) {
+      process.stdout.write(`No trace records for '${skill}' under ${TRACE_DIR}.\n`);
+      return 0;
+    }
+    for (const r of records) {
+      const ts = new Date(r.fired_at_ms).toISOString();
+      const status = r.errors.length === 0 ? "ok" : `err:${r.errors[0]!.class}`;
+      process.stdout.write(`${ts}  ${r.trace_id}  ${status}  ${r.duration_ms}ms  ${r.ops.length} ops\n`);
+    }
+  } else {
+    process.stdout.write(JSON.stringify(records, null, 2) + "\n");
+  }
+  return 0;
+}
+
+async function cmdDiagram(args: string[]): Promise<number> {
+  const ref = args[0];
+  if (ref === undefined) {
+    process.stderr.write("Usage: skillfile diagram <path|name>\n");
+    return 64;
+  }
+  const source = await loadSkillSource(ref);
+  if (source === null) {
+    process.stderr.write(`skillfile: could not locate skill '${ref}'\n`);
+    return 66;
+  }
+  const parsed = parse(source);
+  process.stdout.write(renderMermaid(parsed.name ?? "skill", parsed) + "\n");
+  return 0;
+}
+
+function renderMermaid(skillName: string, parsed: ReturnType<typeof parse>): string {
+  const lines: string[] = ["```mermaid", "flowchart TD", `  start(["${skillName}"])`];
+  for (const [name, target] of parsed.targets) {
+    const ops = target.ops.map((o) => o.kind).join(",");
+    lines.push(`  ${name}["${name}\\n[${ops}]"]`);
+    for (const dep of target.deps) {
+      lines.push(`  ${dep} --> ${name}`);
+    }
+  }
+  if (parsed.entryTarget !== null) {
+    lines.push(`  start --> ${parsed.entryTarget}`);
+  }
+  lines.push("```");
+  return lines.join("\n");
+}
+
+async function cmdSign(args: string[]): Promise<number> {
+  const ref = args[0];
+  if (ref === undefined) {
+    process.stderr.write("Usage: skillfile sign <path|name>\n");
+    return 64;
+  }
+  const source = await loadSkillSource(ref);
+  if (source === null) {
+    process.stderr.write(`skillfile: could not locate skill '${ref}'\n`);
+    return 66;
+  }
+  const hash = createHash("sha256").update(source, "utf8").digest("hex");
+  const signature = {
+    skill: ref,
+    content_hash: hash,
+    algorithm: "sha256",
+    signed_at_ms: Date.now(),
+    version: "v1",
+  };
+  process.stdout.write(JSON.stringify(signature, null, 2) + "\n");
+  return 0;
+}
+
+async function cmdVerify(args: string[]): Promise<number> {
+  const ref = args[0];
+  const expected = args[1];
+  if (ref === undefined || expected === undefined) {
+    process.stderr.write("Usage: skillfile verify <path|name> <expected-hash>\n");
+    return 64;
+  }
+  const source = await loadSkillSource(ref);
+  if (source === null) {
+    process.stderr.write(`skillfile: could not locate skill '${ref}'\n`);
+    return 66;
+  }
+  const actual = createHash("sha256").update(source, "utf8").digest("hex");
+  const result = { verified: actual === expected, expected, actual };
+  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+  return result.verified ? 0 : 1;
+}
+
+async function cmdReplay(args: string[]): Promise<number> {
+  const traceId = args.find((a) => !a.startsWith("--"));
+  if (traceId === undefined) {
+    process.stderr.write("Usage: skillfile replay <trace_id> [--connectors current]\n");
+    return 64;
+  }
+  // v1 ships `current` mode only — replay against today's wired connectors.
+  // `recorded` mode (deterministic replay against captured responses) requires
+  // TraceOpRecord to capture op results too; deferred to v1.x as a schema bump.
+  const mode = extractFlag(args, "--connectors") ?? "current";
+  if (mode !== "current") {
+    process.stderr.write(`replay: --connectors mode '${mode}' not supported in v1. 'current' only. 'recorded' lands in v1.x.\n`);
+    return 64;
+  }
+  const store = new FilesystemTraceStore(TRACE_DIR);
+  const record = await store.get(traceId);
+  if (record === null) {
+    process.stderr.write(`replay: trace '${traceId}' not found under ${TRACE_DIR}\n`);
+    return 66;
+  }
+  // Re-load the skill by name from SkillStore; compile + execute fresh.
+  const skillStore = new FilesystemSkillStore(SKILLS_DIR);
+  let loaded;
+  try {
+    loaded = await skillStore.load(record.skill_name);
+  } catch (err) {
+    process.stderr.write(`replay: skill '${record.skill_name}' no longer in SkillStore (${(err as Error).message})\n`);
+    return 66;
+  }
+  const compiled = await compile(loaded.source);
+  const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+    registry: new Registry(),
+    mechanical: true,
+  });
+  process.stdout.write(JSON.stringify({ replayed_trace_id: traceId, replay_skill_version: loaded.metadata.version, original_skill_version: record.skill_version, result }, null, 2) + "\n");
+  return result.errors.length === 0 ? 0 : 1;
+}
+
+async function cmdHealth(args: string[]): Promise<number> {
+  const human = args.includes("--human");
+  const skill = extractFlag(args, "--skill");
+  const connector = extractFlag(args, "--connector");
+  const sinceStr = extractFlag(args, "--since-ms");
+  const store = new FilesystemTraceStore(TRACE_DIR);
+  const filter: { skills?: string[]; connectors?: string[]; since_ms?: number } = {};
+  if (skill !== undefined) filter.skills = [skill];
+  if (connector !== undefined) filter.connectors = [connector];
+  if (sinceStr !== undefined) filter.since_ms = parseInt(sinceStr, 10);
+  const metrics = await healthMetrics(store, filter);
+  if (human) {
+    process.stdout.write(`Health metrics (${new Date(metrics.windowStart_ms).toISOString()} → ${new Date(metrics.windowEnd_ms).toISOString()}, ${metrics.totalFires} fires)\n\n`);
+    for (const [name, m] of Object.entries(metrics.perSkill)) {
+      process.stdout.write(`Skill: ${name}\n`);
+      process.stdout.write(`  fires=${m.fireCount} success=${m.successCount} errors=${m.errorCount} successRate=${(m.successRate * 100).toFixed(1)}%\n`);
+    }
+    for (const [name, m] of Object.entries(metrics.perConnector)) {
+      process.stdout.write(`Connector: ${name}\n`);
+      process.stdout.write(`  calls=${m.callCount} errors=${m.errorCount} errorRate=${(m.errorRate * 100).toFixed(1)}% p50=${m.latencyMs.p50}ms p95=${m.latencyMs.p95}ms p99=${m.latencyMs.p99}ms\n`);
+    }
+  } else {
+    process.stdout.write(JSON.stringify(metrics, null, 2) + "\n");
+  }
+  return 0;
 }
 
 main().then((code) => process.exit(code)).catch((err) => {
