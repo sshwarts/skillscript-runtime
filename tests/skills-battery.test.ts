@@ -91,9 +91,22 @@ describe("cold-agent skills battery", () => {
         ).toEqual([]);
       });
 
+      // Skills with required (no-default) inputs need placeholder values
+      // so compile() doesn't refuse with "Missing required variables". The
+      // battery validates structural correctness — the test caller stands
+      // in for the operator who'd normally provide the inputs.
+      const placeholderInputs = (): Record<string, string> => {
+        const parsed = parse(source);
+        const inputs: Record<string, string> = {};
+        for (const v of parsed.vars) {
+          if (v.default === undefined) inputs[v.name] = `__test_placeholder_${v.name}__`;
+        }
+        return inputs;
+      };
+
       it("compiles without LintFailureError", async () => {
         try {
-          await compile(source);
+          await compile(source, { inputs: placeholderInputs() });
         } catch (err) {
           if (err instanceof LintFailureError) {
             throw new Error(`compile preflight rejected ${fixture}: ${err.message}`);
@@ -103,12 +116,20 @@ describe("cold-agent skills battery", () => {
       });
 
       it("executes cleanly in mechanical mode", async () => {
-        const compiled = await compile(source);
+        const compiled = await compile(source, { inputs: placeholderInputs() });
         const result = await execute(
           compiled.parsed,
           compiled.resolvedVariables,
           compiled.targetOrder,
-          { registry: new Registry(), mechanical: true },
+          {
+            registry: new Registry(),
+            mechanical: true,
+            // Default approval for `??` interactive ops — the battery
+            // simulates the operator approving every prompt so skills
+            // using `??` can execute their happy path. Skills that
+            // explicitly test decline semantics belong in unit tests.
+            askUser: async () => "yes",
+          },
         );
         expect(
           result.errors,

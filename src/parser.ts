@@ -16,6 +16,12 @@ export interface SkillOp {
     limit: number | string;
     connector: string;
     extra: Record<string, string>;
+    /**
+     * Op-level fallback (per language reference §9). When the retrieval
+     * throws or returns an empty array, runtime binds this value (string)
+     * to the output var instead of propagating the error.
+     */
+    fallback?: string;
   };
   localModelParams?: {
     prompt: string;
@@ -28,6 +34,12 @@ export interface SkillOp {
      * header, connector default, and built-in fallback.
      */
     timeoutSeconds?: number | string;
+    /**
+     * Op-level fallback (per language reference §9). When the model call
+     * throws or returns an empty (trimmed) response, runtime binds this
+     * value to the output var instead of propagating the error.
+     */
+    fallback?: string;
   };
   /**
    * For `&` ops only: skill name + optional key=value args passed as inputs
@@ -50,6 +62,15 @@ export interface SkillOp {
   policy?: "unsafe";
   setName?: string;
   setValue?: string;
+  /**
+   * Top-level fallback (per language reference §9, extended 2026-05-21
+   * for `$` ops via cold-agent corpus). On `$` throw or empty result,
+   * runtime binds this value to the output var instead of propagating
+   * the error. `~` and `>` ops carry fallback on their params bag for
+   * type-specific coercion; `$` returns are heterogeneous (objects,
+   * arrays, strings) so it lives at the op level.
+   */
+  fallback?: string;
   foreachIter?: string;
   foreachList?: string;
   foreachBody?: SkillOp[];
@@ -157,18 +178,40 @@ const SET_OP_REGEX = /^\$set\s+([A-Za-z_]\w*)\s*=\s*(.*)$/;
 const FOREACH_OP_REGEX = /^foreach\s+([A-Za-z_]\w*)\s+in\s+(.+?):\s*$/;
 const IF_OP_REGEX = /^if\s+(.+?):\s*$/;
 const ELIF_OP_REGEX = /^elif\s+(.+?):\s*$/;
-const RETRIEVAL_OP_REGEX = /^>\s+(.+?)\s+->\s+([A-Za-z_]\w*)\s*$/;
-const LOCAL_MODEL_OP_REGEX = /^~\s+(.+?)\s+->\s+([A-Za-z_]\w*)\s*$/;
+/**
+ * `>` and `~` ops accept optional trailing `(fallback: <value>)` per
+ * language reference §9 (Error Handling, Layer 3). Fires when the op
+ * throws or returns empty — runtime binds the fallback value to the
+ * output var and continues without surfacing the error.
+ *
+ * Value is permissive (matching `# Requires:` cascade convention): bare
+ * identifiers (`ip-based`), quoted strings (`"weather unavailable"`),
+ * array literals (`[]`, `[a, b]`), and arbitrary text between the colon
+ * and the closing paren are all accepted. Parser stores the raw form;
+ * runtime applies `coerceLiteralValue` for `>` (binds array on `[...]`)
+ * and the raw string for `~` (model response shape).
+ */
+const RETRIEVAL_OP_REGEX = /^>\s+(.+?)\s+->\s+([A-Za-z_]\w*)(?:\s+\(fallback\s*:\s*(.+?)\))?\s*$/;
+const LOCAL_MODEL_OP_REGEX = /^~\s+(.+?)\s+->\s+([A-Za-z_]\w*)(?:\s+\(fallback\s*:\s*(.+?)\))?\s*$/;
 const MCP_CONNECTOR_PREFIX = /^([a-z_][a-z0-9_-]*)\.(?=[A-Za-z_])([\s\S]*)$/;
 
 // Narrow v1 condition grammar. AND/OR, numeric comparisons, defined-checks
 // are deliberately excluded — lint surfaces complexity-creep at authoring time.
 const COND_TRUTHY = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s*$/;
+/** `$(REF) ==/!= "literal"` — ref-vs-string equality. */
 const COND_EQ = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s*(?:==|!=)\s*"[^"]*"\s*$/;
+/**
+ * `$(REF) ==/!= $(REF)` — ref-vs-ref equality. Extended 2026-05-21 per
+ * language reference §5; surfaced by the cold-agent skills battery (a
+ * sub-agent reached for `$(FP|trim) == $(LAST_FP|trim)` unprompted as
+ * the natural change-detection pattern). Filters + dotted field access
+ * permitted on either side.
+ */
+const COND_EQ_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s*(?:==|!=)\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s*$/;
 const COND_IN = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s+(?:not\s+)?in\s+\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\)\s*$/;
 
 function validateCondition(cond: string): boolean {
-  return COND_TRUTHY.test(cond) || COND_EQ.test(cond) || COND_IN.test(cond);
+  return COND_TRUTHY.test(cond) || COND_EQ.test(cond) || COND_EQ_REF.test(cond) || COND_IN.test(cond);
 }
 
 /** Detects `$(REF) = "literal"` — a single `=` in condition position. */
@@ -644,8 +687,18 @@ export function parse(source: string): ParsedSkill {
       const colonIdx = line.indexOf(":");
       if (colonIdx === -1) continue;
       const name = line.slice(0, colonIdx).trim();
-      const depsStr = line.slice(colonIdx + 1).trim();
-      const deps = depsStr === "" ? [] : depsStr.split(/\s+/);
+      let depsStr = line.slice(colonIdx + 1).trim();
+      // Accept `target: needs: dep1 dep2` form per language reference §1
+      // overview ("declares targets and their dependencies (`needs:` keyword)").
+      // The keyword is optional — the canonical/terse form is just
+      // `target: dep1 dep2`. Both shapes parse to the same dep list.
+      if (/^needs\s*:\s*/.test(depsStr)) {
+        depsStr = depsStr.replace(/^needs\s*:\s*/, "");
+      }
+      // Separator: whitespace OR comma (or both). Cold-agent corpus
+      // surfaced `target: needs: a, b, c` as a natural form alongside
+      // `target: a b c`. Both shapes parse to the same dep list.
+      const deps = depsStr === "" ? [] : depsStr.split(/[\s,]+/).filter((s) => s !== "");
       if (name === "default") {
         result.entryTarget = deps[0] ?? null;
         currentTarget = null;
@@ -726,6 +779,16 @@ export function parse(source: string): ParsedSkill {
       continue;
     }
     const opBucket = topFrame.opsBucket;
+    // `needs: dep1 dep2` body-line form for declaring target deps. Only
+    // recognized at the main target-body scope (not inside foreach/if/else
+    // sub-blocks). Cold-agent corpus surfaced this as a natural authoring
+    // style alongside `target: dep1 dep2` and `target: needs: dep1`.
+    if (topFrame.kind === "main" && /^needs\s*:/.test(stripped0)) {
+      const depsTail = stripped0.replace(/^needs\s*:\s*/, "");
+      const newDeps = depsTail.split(/[\s,]+/).filter((s) => s !== "");
+      for (const d of newDeps) currentTarget.deps.push(d);
+      continue;
+    }
     if (stripped0.startsWith("elif ")) {
       result.parseErrors.push(`\`elif\` without preceding \`if:\` in target '${currentTarget.name}'`);
       continue;
@@ -765,15 +828,16 @@ export function parse(source: string): ParsedSkill {
     if (stripped0.startsWith("> ")) {
       const match = RETRIEVAL_OP_REGEX.exec(stripped0);
       if (!match) {
-        result.parseErrors.push(`Malformed \`>\` op in target '${currentTarget.name}' — expected \`> key=value ... -> VARNAME\``);
+        result.parseErrors.push(`Malformed \`>\` op in target '${currentTarget.name}' — expected \`> key=value ... -> VARNAME [(fallback: "value")]\``);
         continue;
       }
-      const [, argsStr, outputVar] = match;
+      const [, argsStr, outputVar, fallback] = match;
       const parsed = parseRetrievalArgs(argsStr!, currentTarget.name);
       if (parsed.errors.length > 0) {
         for (const e of parsed.errors) result.parseErrors.push(e);
         continue;
       }
+      if (fallback !== undefined) parsed.params.fallback = processSetValue(fallback);
       opBucket.push({
         kind: ">",
         body: stripped0,
@@ -785,15 +849,16 @@ export function parse(source: string): ParsedSkill {
     if (stripped0.startsWith("~ ")) {
       const match = LOCAL_MODEL_OP_REGEX.exec(stripped0);
       if (!match) {
-        result.parseErrors.push(`Malformed \`~\` op in target '${currentTarget.name}' — expected \`~ key=value ... -> VARNAME\``);
+        result.parseErrors.push(`Malformed \`~\` op in target '${currentTarget.name}' — expected \`~ key=value ... -> VARNAME [(fallback: "value")]\``);
         continue;
       }
-      const [, argsStr, outputVar] = match;
+      const [, argsStr, outputVar, fallback] = match;
       const parsed = parseLocalModelArgs(argsStr!, currentTarget.name);
       if (parsed.errors.length > 0) {
         for (const e of parsed.errors) result.parseErrors.push(e);
         continue;
       }
+      if (fallback !== undefined) parsed.params.fallback = processSetValue(fallback);
       opBucket.push({
         kind: "~",
         body: stripped0,
@@ -886,15 +951,18 @@ export function parse(source: string): ParsedSkill {
       continue;
     } else if (stripped.startsWith("$ ") || stripped === "$") {
       const tail = stripped.slice(2).trim();
-      const dollarOutMatch = /^(.+?)\s+->\s+([A-Za-z_]\w*)\s*$/.exec(tail);
+      // `$ <tool> args -> VAR [(fallback: <value>)]` — fallback optional.
+      const dollarOutMatch = /^(.+?)\s+->\s+([A-Za-z_]\w*)(?:\s+\(fallback\s*:\s*(.+?)\))?\s*$/.exec(tail);
       if (dollarOutMatch !== null) {
         const bodyPart = dollarOutMatch[1]!.trim();
         const { connector, rest } = splitMcpConnectorPrefix(bodyPart);
+        const dollarFallback = dollarOutMatch[3];
         opBucket.push({
           kind: "$",
           body: rest,
           outputVar: dollarOutMatch[2]!,
           ...(connector !== undefined ? { mcpConnector: connector } : {}),
+          ...(dollarFallback !== undefined ? { fallback: processSetValue(dollarFallback) } : {}),
         });
         continue;
       }

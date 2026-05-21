@@ -277,13 +277,27 @@ const UNKNOWN_CAPABILITY: LintRule = {
   },
 };
 
+/**
+ * Tier-1 ambient refs per language reference §3 — runtime injects these
+ * automatically; authors don't declare them. The lint considers them
+ * pre-declared.
+ */
+const AMBIENT_VARS: readonly string[] = [
+  "NOW",
+  "USER",
+  "SESSION_CONTEXT",
+  "TRIGGER_TYPE",
+  "TRIGGER_PAYLOAD",
+  "ERROR_CONTEXT",
+];
+
 const UNDECLARED_VAR: LintRule = {
   id: "undeclared-var",
   severity: "error",
-  description: "An op body references `$(NAME)` for a variable that's not declared in `# Vars:`/`# Requires:`, not output-bound by any op anywhere in the skill, and not a foreach iterator in scope.",
+  description: "An op body references `$(NAME)` for a variable that's not declared in `# Vars:`/`# Requires:`, not output-bound by any op anywhere in the skill, not a foreach iterator in scope, and not a tier-1 ambient ref (NOW/USER/SESSION_CONTEXT/TRIGGER_TYPE/TRIGGER_PAYLOAD/ERROR_CONTEXT).",
   remediation: "Add the variable to `# Vars:` or `# Requires:`, or check the spelling against the declared variable list.",
   check: (ctx) => {
-    const declared = new Set<string>();
+    const declared = new Set<string>(AMBIENT_VARS);
     for (const v of ctx.parsed.vars) declared.add(v.name);
     for (const r of ctx.parsed.requires) declared.add(r.target);
     // Collect output-bound vars across the whole skill — once bound by any
@@ -292,11 +306,16 @@ const UNDECLARED_VAR: LintRule = {
     // by the time a downstream target executes, earlier targets' bindings
     // have populated `vars`.
     for (const target of ctx.parsed.targets.values()) {
-      walkOps(target.ops, (op) => {
+      const collect = (op: SkillOp): void => {
         if (op.setName !== undefined) declared.add(op.setName);
         if (op.outputVar !== undefined) declared.add(op.outputVar);
         if (op.foreachIter !== undefined) declared.add(op.foreachIter);
-      });
+      };
+      walkOps(target.ops, collect);
+      // Bindings inside `else:` error-handler blocks also become available
+      // downstream — the runtime executes the else: chain when the main
+      // body throws and propagates any $set bindings into the vars Map.
+      if (target.elseBlock !== undefined) walkOps(target.elseBlock, collect);
     }
     const findings: LintFinding[] = [];
     for (const [targetName, target] of ctx.parsed.targets) {
@@ -665,11 +684,16 @@ const UNSAFE_SHELL_AMBIGUOUS_SUBST: LintRule = {
     for (const v of ctx.parsed.vars) declared.add(v.name);
     for (const r of ctx.parsed.requires) declared.add(r.target);
     for (const target of ctx.parsed.targets.values()) {
-      walkOps(target.ops, (op) => {
+      const collect = (op: SkillOp): void => {
         if (op.setName !== undefined) declared.add(op.setName);
         if (op.outputVar !== undefined) declared.add(op.outputVar);
         if (op.foreachIter !== undefined) declared.add(op.foreachIter);
-      });
+      };
+      walkOps(target.ops, collect);
+      // Bindings inside `else:` error-handler blocks also become available
+      // downstream — the runtime executes the else: chain when the main
+      // body throws and propagates any $set bindings into the vars Map.
+      if (target.elseBlock !== undefined) walkOps(target.elseBlock, collect);
     }
     const findings: LintFinding[] = [];
     // Permissive — matches any `$(...)` in @ unsafe body that's not `$$(...)`.

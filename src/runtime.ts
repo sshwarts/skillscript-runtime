@@ -90,6 +90,23 @@ export async function execute(
   ctx: ExecuteContext,
 ): Promise<ExecuteResult> {
   const vars = new Map<string, unknown>();
+  // Tier-1 ambient refs per language reference §3. Runtime injects these
+  // by default; caller-provided initialVars override (e.g., scheduler's
+  // dispatchSkill pre-populates EVENT.* and TRIGGER_TYPE for cron/session
+  // fires; bare execute() callers still get clock-time defaults so
+  // `$(EVENT.fired_at_unix)` resolves uniformly across dispatch paths).
+  const nowMs = Date.now();
+  const nowSec = Math.floor(nowMs / 1000);
+  vars.set("NOW", nowMs);
+  vars.set("USER", ctx.agentId ?? "unknown");
+  vars.set("SESSION_CONTEXT", "");
+  vars.set("TRIGGER_TYPE", "manual");
+  vars.set("TRIGGER_PAYLOAD", "");
+  vars.set("EVENT.fired_at", nowMs);
+  vars.set("EVENT.fired_at_unix", nowSec);
+  vars.set("EVENT.fired_at_plus_1h_unix", nowSec + 3600);
+  vars.set("EVENT.fired_at_plus_1d_unix", nowSec + 86_400);
+  vars.set("EVENT.fired_at_plus_7d_unix", nowSec + 604_800);
   for (const v of parsed.vars) {
     if (v.default !== undefined) vars.set(v.name, coerceLiteralValue(v.default));
   }
@@ -265,7 +282,16 @@ async function execOpInner(
       if (ctx.mechanical === true) {
         const label = op.policy === "unsafe" ? "Would run unsafe shell" : "Would run shell";
         emissions.push(`${label}: ${body} (mechanical: true preview).`);
-        return { lastBoundVar: null, lastValue: undefined };
+        // Bind a placeholder so downstream `$(VAR)` substitutions resolve.
+        // Matches the convention used by `$`/`~`/`>` mechanical-mode binding.
+        const flatKey = `${targetName}.output`;
+        const placeholder = `[mechanical: would run ${body.slice(0, 40)}${body.length > 40 ? "..." : ""}]`;
+        vars.set(flatKey, placeholder);
+        if (op.outputVar !== undefined) vars.set(op.outputVar, placeholder);
+        return {
+          lastBoundVar: op.outputVar ?? flatKey,
+          lastValue: placeholder,
+        };
       }
       let stdout: string;
       if (op.policy === "unsafe") {
@@ -357,11 +383,15 @@ async function execOpInner(
         emissions.push(
           `Would call tool ${connectorLabel}${toolName} with ${JSON.stringify(args)} (mechanical: true preview).`,
         );
-        vars.set(flatKey, null);
-        if (op.outputVar !== undefined) vars.set(op.outputVar, null);
+        // Bind a placeholder that responds to dotted access (`$(X.field)`)
+        // so cold-agent skills using `$ tool -> X` then `$(X.title)` etc.
+        // can execute end-to-end without real dispatch.
+        const placeholder = makeMechanicalPlaceholder(op.outputVar ?? flatKey);
+        vars.set(flatKey, placeholder);
+        if (op.outputVar !== undefined) vars.set(op.outputVar, placeholder);
         return {
           lastBoundVar: op.outputVar ?? flatKey,
-          lastValue: null,
+          lastValue: placeholder,
         };
       }
 
@@ -369,19 +399,33 @@ async function execOpInner(
       let rawResult: unknown;
       let dispatched = false;
       const timeoutMs = resolveOpTimeoutMs(undefined, skillTimeoutSec, absoluteTimeoutMs, vars);
-      if (ctx.registry.hasMcpConnector(connectorName)) {
-        const connector = ctx.registry.getMcpConnector(connectorName);
-        rawResult = await dispatchWithTimeout(
-          () => connector.call(toolName, args, ctx.agentId !== undefined ? { agentId: ctx.agentId } : undefined),
-          timeoutMs,
-          "$",
-        );
-        dispatched = true;
-      } else if (op.mcpConnector === undefined && ctx.toolDispatch) {
-        rawResult = await dispatchWithTimeout(() => ctx.toolDispatch!(toolName, args), timeoutMs, "$");
-        dispatched = true;
-      } else if (op.mcpConnector !== undefined) {
-        throw new Error(`McpConnector '${connectorName}' not registered.`);
+      // Op-level fallback (per language reference §9, extended to `$` for
+      // cold-agent corpus consistency). On dispatch throw, bind the
+      // fallback value to the output var; on missing connector with
+      // fallback present, ditto.
+      const dollarFallback = op.fallback !== undefined ? coerceLiteralValue(op.fallback) : undefined;
+      try {
+        if (ctx.registry.hasMcpConnector(connectorName)) {
+          const connector = ctx.registry.getMcpConnector(connectorName);
+          rawResult = await dispatchWithTimeout(
+            () => connector.call(toolName, args, ctx.agentId !== undefined ? { agentId: ctx.agentId } : undefined),
+            timeoutMs,
+            "$",
+          );
+          dispatched = true;
+        } else if (op.mcpConnector === undefined && ctx.toolDispatch) {
+          rawResult = await dispatchWithTimeout(() => ctx.toolDispatch!(toolName, args), timeoutMs, "$");
+          dispatched = true;
+        } else if (op.mcpConnector !== undefined) {
+          throw new Error(`McpConnector '${connectorName}' not registered.`);
+        }
+      } catch (err) {
+        if (dollarFallback !== undefined) {
+          vars.set(flatKey, dollarFallback);
+          if (op.outputVar !== undefined) vars.set(op.outputVar, dollarFallback);
+          return { lastBoundVar: op.outputVar ?? flatKey, lastValue: dollarFallback };
+        }
+        throw err;
       }
 
       if (!dispatched) {
@@ -426,13 +470,20 @@ async function execOpInner(
         extraSub[k] = substituteRuntime(v, vars);
       }
       if (ctx.mechanical === true) {
+        // Bind a 1-element array of placeholders so foreach M in $(RESULTS)
+        // iterates once with a dotted-accessible M (matches common author
+        // patterns like `$(M.id)`, `$(M.summary)`). Authors expecting empty
+        // result sets test the empty case in unit tests, not mechanical mode.
+        const mechanicalValue: unknown = p.fallback !== undefined
+          ? p.fallback
+          : [makeMechanicalPlaceholder(`${op.outputVar}[0]`)];
         emissions.push(
           `Would query MemoryStore \`${p.connector}\` with mode=${p.mode}, ` +
           `query="${querySub}", limit=${p.limit} (mechanical: true preview). ` +
-          `Binding $(${op.outputVar}) = [] (empty result set).`,
+          `Binding $(${op.outputVar}) = placeholder result set.`,
         );
-        vars.set(op.outputVar!, []);
-        return { lastBoundVar: op.outputVar!, lastValue: [] };
+        vars.set(op.outputVar!, mechanicalValue);
+        return { lastBoundVar: op.outputVar!, lastValue: mechanicalValue };
       }
       const store = ctx.registry.getMemoryStore(p.connector);
       const limitResolved = resolveIntParam(p.limit, vars, "limit");
@@ -443,7 +494,26 @@ async function execOpInner(
         ...extraSub,
       };
       const retrievalTimeoutMs = resolveOpTimeoutMs(undefined, skillTimeoutSec, absoluteTimeoutMs, vars);
-      const results = await dispatchWithTimeout(() => store.query(filters), retrievalTimeoutMs, ">");
+      // Op-level fallback (per language reference §9): on throw OR empty
+      // result, bind the fallback value and continue. Without a fallback,
+      // throws propagate to `else:` / `# OnError:` / target error.
+      // coerceLiteralValue parses array-shaped literals (`[]`, `[a, b]`)
+      // into actual arrays so downstream `foreach M in $(VAR)` iterates
+      // correctly on the empty/sentinel case.
+      const coercedFallback = p.fallback !== undefined ? coerceLiteralValue(p.fallback) : undefined;
+      let results: unknown;
+      try {
+        results = await dispatchWithTimeout(() => store.query(filters), retrievalTimeoutMs, ">");
+        if (coercedFallback !== undefined && Array.isArray(results) && results.length === 0) {
+          results = coercedFallback;
+        }
+      } catch (err) {
+        if (coercedFallback !== undefined) {
+          results = coercedFallback;
+        } else {
+          throw err;
+        }
+      }
       vars.set(op.outputVar!, results);
       return { lastBoundVar: op.outputVar!, lastValue: results };
     }
@@ -457,13 +527,36 @@ async function execOpInner(
         vars.set(op.outputVar!, placeholder);
         return { lastBoundVar: op.outputVar!, lastValue: placeholder };
       }
-      const model = ctx.registry.getLocalModel(p.model);
+      let model;
+      try {
+        model = ctx.registry.getLocalModel(p.model);
+      } catch (err) {
+        if (p.fallback !== undefined) {
+          vars.set(op.outputVar!, p.fallback);
+          return { lastBoundVar: op.outputVar!, lastValue: p.fallback };
+        }
+        throw err;
+      }
       const runOpts: { maxTokens?: number; model?: string } = {};
       if (p.maxTokens !== undefined) {
         runOpts.maxTokens = resolveIntParam(p.maxTokens, vars, "maxTokens");
       }
       const tildeTimeoutMs = resolveOpTimeoutMs(p.timeoutSeconds, skillTimeoutSec, absoluteTimeoutMs, vars);
-      const response = await dispatchWithTimeout(() => model.run(promptSub, runOpts), tildeTimeoutMs, "~");
+      // Op-level fallback (per language reference §9): on throw OR empty
+      // (trimmed) response, bind the fallback value.
+      let response: string;
+      try {
+        response = await dispatchWithTimeout(() => model.run(promptSub, runOpts), tildeTimeoutMs, "~");
+        if (p.fallback !== undefined && response.trim() === "") {
+          response = p.fallback;
+        }
+      } catch (err) {
+        if (p.fallback !== undefined) {
+          response = p.fallback;
+        } else {
+          throw err;
+        }
+      }
       vars.set(op.outputVar!, response);
       return { lastBoundVar: op.outputVar!, lastValue: response };
     }
@@ -821,6 +914,39 @@ export function substituteRuntime(text: string, vars: Map<string, unknown>): str
 }
 
 /**
+ * Marker symbol for mechanical-mode placeholder objects. Tagged proxies
+ * stringify to their label when consumed by `stringifyValue` (used by
+ * substituteRuntime), so dotted access like `$(ISSUE.title)` works in
+ * mechanical mode even though no real dispatch happened — every property
+ * access produces a child placeholder.
+ */
+const MECHANICAL_PLACEHOLDER = Symbol.for("skillscript.mechanical_placeholder");
+
+/**
+ * Build a mechanical-mode placeholder. Acts like an object whose properties
+ * are also placeholders (recursive), but `stringifyValue` unwraps it to
+ * the literal label string. Lets cold-agent skills that use `$(VAR.field)`
+ * patterns execute end-to-end in mechanical mode without infrastructure.
+ */
+function makeMechanicalPlaceholder(label: string): unknown {
+  const target = { [MECHANICAL_PLACEHOLDER]: label };
+  return new Proxy(target, {
+    get(target, key) {
+      if (key === MECHANICAL_PLACEHOLDER) return label;
+      // Symbol-keyed access (Symbol.iterator, Symbol.toPrimitive, etc.):
+      // return the target's own value so JS internals see a plain object.
+      if (typeof key === "symbol") return Reflect.get(target, key);
+      // String-keyed access: synthesize a deeper placeholder.
+      return makeMechanicalPlaceholder(`${label}.${String(key)}`);
+    },
+  });
+}
+
+function isMechanicalPlaceholder(v: unknown): v is { [k: symbol]: string } {
+  return v !== null && typeof v === "object" && (v as Record<symbol, unknown>)[MECHANICAL_PLACEHOLDER] !== undefined;
+}
+
+/**
  * Resolve `$(NAME)` or `$(NAME.path)` against the variable map. Two strategies:
  *   1. Flat-key match (full ref including dots). Handles `targetname.output`.
  *   2. Dot-path traversal — split, descend.
@@ -849,11 +975,14 @@ export function stringifyValue(v: unknown): string {
   if (typeof v === "string") return v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
   if (v === null) return "null";
+  if (isMechanicalPlaceholder(v)) return (v as Record<symbol, unknown>)[MECHANICAL_PLACEHOLDER] as string;
   return JSON.stringify(v);
 }
 
 const TRUTHY = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*$/;
 const EQ = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*(==|!=)\s*"([^"]*)"\s*$/;
+/** Ref-vs-ref equality (per language reference §5 + 2026-05-21 grammar extension). Filter + dotted-field-access permitted on either side. */
+const EQ_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*(==|!=)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*$/;
 const IN = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s+(not\s+)?in\s+\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\)\s*$/;
 
 export function evalCondition(cond: string, vars: Map<string, unknown>): boolean {
@@ -874,12 +1003,46 @@ export function evalCondition(cond: string, vars: Map<string, unknown>): boolean
     const final = filter !== undefined ? applyFilter(valStr, filter) : valStr;
     return op === "==" ? final === lit : final !== lit;
   }
+  const eRef = EQ_REF.exec(cond);
+  if (eRef) {
+    const [, lhsRef, lhsFilter, op, rhsRef, rhsFilter] = eRef;
+    // Both sides resolve via the same path as `EQ` LHS — undefined → ""
+    // (matches the existing tolerance for unresolved refs in conditions).
+    const lhsVal = resolveRef(lhsRef!, vars);
+    const rhsVal = resolveRef(rhsRef!, vars);
+    const lhsStr = lhsVal === undefined ? "" : stringifyValue(lhsVal);
+    const rhsStr = rhsVal === undefined ? "" : stringifyValue(rhsVal);
+    const lhsFinal = lhsFilter !== undefined ? applyFilter(lhsStr, lhsFilter) : lhsStr;
+    const rhsFinal = rhsFilter !== undefined ? applyFilter(rhsStr, rhsFilter) : rhsStr;
+    return op === "==" ? lhsFinal === rhsFinal : lhsFinal !== rhsFinal;
+  }
   const i = IN.exec(cond);
   if (i) {
     const [, lhsRef, lhsFilter, notKey, rhsRef] = i;
-    const rhsVal = resolveRef(rhsRef!, vars);
+    let rhsVal = resolveRef(rhsRef!, vars);
     if (rhsVal === undefined) {
       throw new Error(`Runtime error in \`in\` condition: RHS \`$(${rhsRef})\` is unresolved`);
+    }
+    // Cold-agent corpus tolerance: model responses (`~` op) are strings;
+    // when the author prompts for a JSON array and uses it as `in` RHS,
+    // auto-parse the string to its array form. Matches how foreach's
+    // resolveListExpr tolerates JSON-string list expressions. Strings
+    // that don't JSON-parse to an array still error below as before.
+    //
+    // Mechanical-mode special-case: placeholder strings ("[mechanical:...]")
+    // are treated as single-element arrays so `in` checks execute
+    // structurally without false errors during dry-run validation.
+    if (typeof rhsVal === "string") {
+      if (rhsVal.startsWith("[mechanical:")) {
+        rhsVal = [rhsVal];
+      } else {
+        try {
+          const parsed = JSON.parse(rhsVal) as unknown;
+          if (Array.isArray(parsed)) rhsVal = parsed;
+        } catch {
+          /* not JSON — fall through to the array-check error */
+        }
+      }
     }
     if (!Array.isArray(rhsVal)) {
       const got = rhsVal === null ? "null" : typeof rhsVal;
