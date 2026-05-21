@@ -339,11 +339,10 @@ default: t
 });
 
 describe("tier-2: unsafe-shell-op", () => {
-  it("flags @@ shell opt-in", async () => {
-    // Parser treats `@@ ...` as an `@` op whose body starts with `@`.
+  it("flags `@ unsafe` shell opt-in", async () => {
     const src = `# Skill: t
 t:
-    @ @rm -rf /tmp/something
+    @ unsafe rm -rf /tmp/something
 
 default: t
 `;

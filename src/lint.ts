@@ -302,6 +302,11 @@ const UNDECLARED_VAR: LintRule = {
     for (const [targetName, target] of ctx.parsed.targets) {
       const reported = new Set<string>(); // dedupe per target
       for (const op of target.ops) {
+        // `@ unsafe` ops use bash `$(...)` syntax — handled by
+        // unsafe-shell-ambiguous-subst, which offers the dual rewrite
+        // (`$$(NAME)` for bash, `$(KNOWN_VAR)` for skillscript). Skip here
+        // to avoid double-reporting.
+        if (op.kind === "@" && op.policy === "unsafe") continue;
         for (const ref of extractVarRefs(op)) {
           // Heuristic: dotted refs (targetname.output, MEMORY.field) pass
           // as ambient — runtime substitution handles dotted lookups.
@@ -650,22 +655,69 @@ const DEPRECATED_QUESTION: LintRule = {
   },
 };
 
+const UNSAFE_SHELL_AMBIGUOUS_SUBST: LintRule = {
+  id: "unsafe-shell-ambiguous-subst",
+  severity: "warning",
+  description: "An `@ unsafe` op body contains `$(NAME)` where NAME isn't a declared skillscript variable. Collides with bash's `$(command)` command-substitution syntax.",
+  remediation: "Use `$$(...)` to send the `$(...)` literally to bash (command-substitution), or `$(KNOWN_VAR)` to reference a declared skillscript variable.",
+  check: (ctx) => {
+    const declared = new Set<string>();
+    for (const v of ctx.parsed.vars) declared.add(v.name);
+    for (const r of ctx.parsed.requires) declared.add(r.target);
+    for (const target of ctx.parsed.targets.values()) {
+      walkOps(target.ops, (op) => {
+        if (op.setName !== undefined) declared.add(op.setName);
+        if (op.outputVar !== undefined) declared.add(op.outputVar);
+        if (op.foreachIter !== undefined) declared.add(op.foreachIter);
+      });
+    }
+    const findings: LintFinding[] = [];
+    // Permissive — matches any `$(...)` in @ unsafe body that's not `$$(...)`.
+    // Skillscript vars are strict identifiers; bash command-subs can contain
+    // anything. The rule wants to fire on both.
+    const REF_RE = /(?<!\$)\$\(([^)]+)\)/g;
+    for (const [targetName, target] of ctx.parsed.targets) {
+      const reported = new Set<string>();
+      walkOps(target.ops, (op) => {
+        if (op.kind !== "@" || op.policy !== "unsafe") return;
+        const re = new RegExp(REF_RE.source, "g");
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(op.body)) !== null) {
+          const inner = m[1]!;
+          // A declared skillscript variable is safe. Strict-identifier match
+          // — anything else (spaces, special chars, etc.) is implicitly bash.
+          const trimmed = inner.trim();
+          if (/^[A-Za-z_]\w*$/.test(trimmed) && declared.has(trimmed)) continue;
+          if (reported.has(inner)) continue;
+          reported.add(inner);
+          findings.push({
+            rule: "unsafe-shell-ambiguous-subst",
+            severity: "warning",
+            message: `\`$(${inner})\` in \`@ unsafe\` body of target '${targetName}' is ambiguous — either send literally to bash via \`$$(${inner})\`, or use a declared skillscript variable.`,
+            block: targetName,
+            extras: { ref: inner },
+          });
+        }
+      });
+    }
+    return findings;
+  },
+};
+
 const UNSAFE_SHELL_OP: LintRule = {
   id: "unsafe-shell-op",
   severity: "warning",
-  description: "Skill uses `@@` (opt-in unsafe shell execution). Requires human review.",
-  remediation: "Confirm the operator deployment has `runtime.enable_unsafe_shell = true` and the shell content is reviewed. Prefer `@` (echo-only, no exec) when possible.",
+  description: "Skill uses `@ unsafe` (opt-in full-shell exec). Requires human review every time.",
+  remediation: "Confirm the operator deployment has `runtime.enable_unsafe_shell = true` and the shell content is reviewed. Prefer the default `@ <binary> <args>` form (structured-spawn sandbox) when the work can decompose to single binaries.",
   check: (ctx) => {
     const findings: LintFinding[] = [];
     for (const [targetName, target] of ctx.parsed.targets) {
       walkOps(target.ops, (op) => {
-        // `@@` isn't yet a distinct op-kind in the v1 parser; detected via
-        // raw body inspection of `@` ops whose body starts with the second @.
-        if (op.kind === "@" && op.body.startsWith("@")) {
+        if (op.kind === "@" && op.policy === "unsafe") {
           findings.push({
             rule: "unsafe-shell-op",
             severity: "warning",
-            message: `\`@@\` shell op in target '${targetName}': '${op.body.slice(0, 60)}...'`,
+            message: `\`@ unsafe\` shell op in target '${targetName}': '${op.body.slice(0, 60)}${op.body.length > 60 ? "..." : ""}'`,
             block: targetName,
           });
         }
@@ -861,6 +913,7 @@ const RULES: LintRule[] = [
   MISSING_SKILLSTORE_FOR_DATA_REF,
   // Tier-2 (warning)
   DEPRECATED_QUESTION,
+  UNSAFE_SHELL_AMBIGUOUS_SUBST,
   UNSAFE_SHELL_OP,
   UNCONFIRMED_MUTATION,
   MODEL_CONTENTION,

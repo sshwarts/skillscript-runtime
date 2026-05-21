@@ -5,11 +5,15 @@
 //
 // This script counts ALL of src/ (not just the named core components) for
 // simplicity — broader than the spec calls for but a useful overall
-// constraint. T4 (lint engine + adversarial-library shape) pushed the
-// strict 5K ceiling up; raising to 5500 with explanatory note so the
-// ceiling enforcement keeps pressure on size without blocking T4's
-// shipping shape. ERD §1's strict 5K interpretation applies narrowly to
-// the 5 named core files — those remain well under 3K combined.
+// constraint. T4 raised the original 5K to 5500 for the lint engine +
+// adversarial-library shape. T5 (runtime + 7 footgun acceptance criteria
+// per memory 59f6aa76) raises again to 6500 / 22 files per the T5 kickoff
+// criterion #9. ERD §1's strict 5K interpretation still applies narrowly
+// to parser + compiler + executor + connector registry + lint — those
+// remain well under that even at T5.
+//
+// T7 distribution polish: tighten the script's scope to the 5 named core
+// components rather than all of src/, per Perry's T4 acceptance note.
 //
 // Run: `pnpm run loc-check`. CI fails the build if the ceiling is breached.
 
@@ -18,8 +22,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SRC_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "..", "src");
-const MAX_LOC = 5500;
-const MAX_FILES = 20;
+const MAX_LOC = 6500;
+const MAX_FILES = 22;
 
 async function walk(dir) {
   const entries = await readdir(dir, { withFileTypes: true });

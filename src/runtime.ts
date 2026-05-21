@@ -33,6 +33,15 @@ export interface ExecuteContext {
   ) => Promise<ExecuteResult>;
   /** Mechanical-only preview: `$` / `~` / `>` ops skip real dispatch and bind a placeholder. */
   mechanical?: boolean;
+  /**
+   * Interactive-mode user-input callback. When provided, `??` ops invoke it
+   * with the prompt and bind the response to the output variable. When
+   * omitted, `??` fails fast (autonomous mode per decision 6). Per Section 2
+   * Ops `??` decline semantics: a `no`/`n`/empty/falsey response binds the
+   * value AND short-circuits downstream targets via soft op-error so
+   * `else:` fires.
+   */
+  askUser?: (prompt: string) => Promise<string>;
 }
 
 export interface ExecutionError {
@@ -227,21 +236,47 @@ async function execOpInner(
       return { lastBoundVar: null, lastValue: undefined };
     }
     case "@": {
-      // Echo-only: runtime never shell-execs. Calling agent dispatches via
-      // its own Bash tool. The rendered artifact names the command and the
-      // consuming agent runs it.
-      const body = substituteRuntime(op.body, vars);
-      emissions.push(`Run shell: ${body}`);
+      // Echo-only path (Phase 2b will replace with real spawn sandbox).
+      // `@ unsafe` uses the substitution variant that respects `$$(` escapes
+      // — `$$(date)` collapses to `$(date)` so bash command-substitution
+      // survives intact.
+      const body = op.policy === "unsafe"
+        ? substituteRuntimeUnsafe(op.body, vars)
+        : substituteRuntime(op.body, vars);
+      const label = op.policy === "unsafe" ? "Run unsafe shell" : "Run shell";
+      emissions.push(`${label}: ${body}`);
       return { lastBoundVar: null, lastValue: undefined };
     }
     case "??": {
-      const body = substituteRuntime(op.body, vars);
-      throw makeOpError(
-        "??",
-        `\`??\` ask-user encountered in autonomous execution: ${body}. ` +
-        `Skills dispatched by the runtime cannot prompt mid-run — restructure ` +
-        `the skill to take the value as an input or via \`# Requires:\`.`,
-      );
+      const promptStr = substituteRuntime(op.body, vars);
+      if (ctx.askUser === undefined) {
+        // Autonomous mode — no interactive surface wired. Per decision 6 +
+        // §6 dispatcher routing, `??` fails fast so dependent targets don't
+        // silently fall through.
+        throw makeOpError(
+          "??",
+          `\`??\` ask-user encountered in autonomous execution: ${promptStr}. ` +
+          `Restructure the skill to take the value as an input or via \`# Requires:\`, ` +
+          `or invoke from an interactive context that wires \`askUser\`.`,
+        );
+      }
+      const response = await ctx.askUser(promptStr);
+      const outName = op.outputVar;
+      if (outName !== undefined) vars.set(outName, response);
+      // Decline semantics (per Section 2 Ops + §13 Open Q #2 resolution):
+      // bind the response AND short-circuit downstream via soft op-error
+      // routed through else: / # OnError:. Closes the silent-fall-through
+      // security bug pattern (subsequent `apply:` running on a "no").
+      if (isDeclineResponse(response)) {
+        throw makeOpError(
+          "??",
+          `User declined at \`??\` prompt: '${promptStr}' (response: '${response}'). Dependent targets short-circuited.`,
+        );
+      }
+      return {
+        lastBoundVar: outName ?? null,
+        lastValue: response,
+      };
     }
     case "&": {
       // `&` ops are resolved at compile time — data-skill content is
@@ -416,6 +451,17 @@ function makeOpError(opKind: string, message: string): Error & { opKind: string 
 }
 
 /**
+ * Decline detection for `??` interactive responses. A response is declining
+ * when trimmed-lowercase matches `no`/`n`/`false`/`0` or is empty. Anything
+ * else (including "yes", "y", or any non-empty positive content) is treated
+ * as approval.
+ */
+function isDeclineResponse(raw: string): boolean {
+  const t = raw.trim().toLowerCase();
+  return t === "" || t === "no" || t === "n" || t === "false" || t === "0";
+}
+
+/**
  * Resolve an integer parameter that may be a literal number or a string
  * containing a `$(VAR)` ref. Substitutes any refs then parseInts. Throws
  * a clear runtime error if the resolved value isn't a positive integer —
@@ -546,6 +592,22 @@ function coerceLiteralValue(raw: string): unknown {
 }
 
 // ─── Substitution and condition evaluation (runtime-side) ─────────────────
+
+/**
+ * Variant for `@ unsafe` op bodies. The `$$(...)` escape lets authors send
+ * `$(...)` literally to bash (for bash command-substitution); skillscript
+ * substitution sees `$$` and collapses to `$`. `$(NAME)` (single `$`)
+ * remains a skillscript variable substitution.
+ */
+export function substituteRuntimeUnsafe(text: string, vars: Map<string, unknown>): string {
+  // Step 1: pull `$$(` escapes out so step 2's regex doesn't see the inner $.
+  const ESCAPE = " DOLLAR_DOLLAR_PAREN ";
+  const escaped = text.replace(/\$\$\(/g, ESCAPE);
+  // Step 2: normal skillscript substitution against the de-escaped text.
+  const substituted = substituteRuntime(escaped, vars);
+  // Step 3: restore the escape as literal `$(` for bash.
+  return substituted.replace(new RegExp(ESCAPE, "g"), "$(");
+}
 
 /**
  * Runtime `$(NAME[|filter])` substitution. At runtime the full variable

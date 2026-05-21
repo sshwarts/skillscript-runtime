@@ -145,6 +145,79 @@ default: t
     expect(result.emissions).toEqual(["3"]);
   });
 
+  it("`??` interactive mode binds response when user approves", async () => {
+    const src = `t:
+    ?? approve fix? -> APPROVED
+    ! got $(APPROVED)
+
+default: t
+`;
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry: new Registry(),
+      askUser: async () => "yes",
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.emissions).toEqual(["got yes"]);
+  });
+
+  it("`??` decline ('no') binds response AND short-circuits dependent target via else:", async () => {
+    // Footgun #20: decline binds the value AND throws soft op-error so
+    // `else:` fires. Closes the silent-fall-through to subsequent `apply:`.
+    const src = `apply:
+    ?? proceed? -> CONFIRMED
+    ! applying $(CONFIRMED)
+else:
+    ! declined, no-op
+
+default: apply
+`;
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry: new Registry(),
+      askUser: async () => "no",
+    });
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]!.opKind).toBe("??");
+    expect(result.errors[0]!.message).toMatch(/User declined/);
+    expect(result.emissions).toEqual(["declined, no-op"]);
+    expect(result.finalVars["CONFIRMED"]).toBe("no");
+  });
+
+  it("`??` decline treats empty/n/false/0 as falsey", async () => {
+    const declineInputs = ["", "n", "no", "NO", "false", "0", "  "];
+    for (const input of declineInputs) {
+      const src = `t:
+    ?? confirm -> R
+else:
+    ! declined
+
+default: t
+`;
+      const compiled = await compile(src, { skipLintPreflight: true });
+      const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+        registry: new Registry(),
+        askUser: async () => input,
+      });
+      expect(result.errors.length, `decline expected for input ${JSON.stringify(input)}`).toBe(1);
+      expect(result.emissions, `else: expected to fire for input ${JSON.stringify(input)}`).toEqual(["declined"]);
+    }
+  });
+
+  it("`??` without askUser still fails fast in autonomous mode", async () => {
+    const src = `t:
+    ?? prompt -> R
+
+default: t
+`;
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry: new Registry(),
+    });
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]!.message).toMatch(/autonomous execution/);
+  });
+
   it("mechanical mode skips $/~/> dispatch", async () => {
     const src = `t:
     $ would_dispatch x=1

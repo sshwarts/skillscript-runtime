@@ -33,6 +33,15 @@ export interface SkillOp {
     skillName: string;
     args: Record<string, string>;
   };
+  /**
+   * For `@` ops only: when the literal first token of the body is `unsafe`,
+   * the parser attaches `policy: "unsafe"` and strips the keyword from the
+   * body. Lint flags every `@ unsafe` (tier-2); runtime refuses unless
+   * `runtime.enable_unsafe_shell = true` (default false). Default `@` ops
+   * (without the keyword) route through the structured-spawn sandbox per
+   * decision 2 — one binary, no shell interpretation.
+   */
+  policy?: "unsafe";
   setName?: string;
   setValue?: string;
   foreachIter?: string;
@@ -824,10 +833,17 @@ export function parse(source: string): ParsedSkill {
     let kind: OpKind | null = null;
     let body = "";
     let mcpConnectorForOp: string | undefined = undefined;
+    let atPolicy: "unsafe" | undefined = undefined;
     // Check `??` before `?`, `$set` before `$`.
     if (stripped.startsWith("?? ") || stripped === "??") {
-      kind = "??";
-      body = stripped.slice(3).trim();
+      const tail = stripped.slice(3).trim();
+      const m = /^(.+?)\s+->\s+([A-Za-z_]\w*)\s*$/.exec(tail);
+      if (m !== null) {
+        opBucket.push({ kind: "??", body: m[1]!.trim(), outputVar: m[2]! });
+      } else {
+        opBucket.push({ kind: "??", body: tail });
+      }
+      continue;
     } else if (stripped.startsWith("$set ") || stripped === "$set") {
       const match = SET_OP_REGEX.exec(stripped);
       if (match) {
@@ -863,7 +879,16 @@ export function parse(source: string): ParsedSkill {
       body = stripped.slice(2).trim();
     } else if (stripped.startsWith("@ ") || stripped === "@") {
       kind = "@";
-      body = stripped.slice(2).trim();
+      const tail = stripped.slice(2).trim();
+      // `@ unsafe <command>` — `unsafe` as literal first token signals
+      // opt-in full-shell exec (vs default structured-spawn sandbox).
+      const unsafeMatch = /^unsafe(?:\s+(.*))?$/.exec(tail);
+      if (unsafeMatch !== null) {
+        atPolicy = "unsafe";
+        body = (unsafeMatch[1] ?? "").trim();
+      } else {
+        body = tail;
+      }
     } else if (stripped.startsWith("! ") || stripped === "!") {
       kind = "!";
       body = stripped.slice(2).trim();
@@ -873,6 +898,7 @@ export function parse(source: string): ParsedSkill {
         kind,
         body,
         ...(mcpConnectorForOp !== undefined ? { mcpConnector: mcpConnectorForOp } : {}),
+        ...(atPolicy !== undefined ? { policy: atPolicy } : {}),
       });
     }
   }
