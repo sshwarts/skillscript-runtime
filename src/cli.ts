@@ -539,13 +539,18 @@ async function cmdListTriggers(args: string[]): Promise<number> {
 async function cmdDashboard(args: string[]): Promise<number> {
   const portStr = extractFlag(args, "--port");
   const port = portStr !== undefined ? parseInt(portStr, 10) : 7878;
+  // --host is the bind address inside the running process. 127.0.0.1 is
+  // the safe default for local invocation; container deployments pass
+  // --host 0.0.0.0 so the host-side port-forward can reach the listener
+  // (host port mapping still enforces 127.0.0.1 externally).
+  const host = extractFlag(args, "--host") ?? "127.0.0.1";
   const skillStore = new FilesystemSkillStore(SKILLS_DIR);
   const traceStore = new FilesystemTraceStore(TRACE_DIR);
   const scheduler = new Scheduler({ registry: new Registry(), skillStore, traceStore });
   const mcpServer = new McpServer({ skillStore, scheduler, traceStore });
-  const server = new DashboardServer({ mcpServer, port });
+  const server = new DashboardServer({ mcpServer, port, bindAddress: host });
   await server.start();
-  process.stdout.write(`dashboard running on http://127.0.0.1:${port}\nctrl-C to stop\n`);
+  process.stdout.write(`dashboard running on http://${host}:${port}\nctrl-C to stop\n`);
   // Hold open until SIGINT/SIGTERM.
   await new Promise<void>((resolve) => {
     process.on("SIGINT", () => { void server.stop().then(resolve); });

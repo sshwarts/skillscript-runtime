@@ -47,8 +47,13 @@ ENV SKILLSCRIPT_HOME=/data
 # trade-off — no auth in v1).
 EXPOSE 7878
 
-# Default: launch the dashboard. Override CMD for other usage:
-#   docker run skillscript-runtime skillfile run examples/hello.skill.md
-#   docker run skillscript-runtime skillfile lint <skill>
+# Default: launch the dashboard. Container binds 0.0.0.0 so the host
+# port-forward (`-p 127.0.0.1:7878:7878`) can reach the listener.
+# External access to the dashboard is still restricted to localhost
+# by the host port mapping per kickoff criterion #12.
+#
+# Override CMD for other usage:
+#   container run skillscript-runtime run examples/hello.skill.md
+#   container run skillscript-runtime lint <skill>
 ENTRYPOINT ["node", "dist/cli.js"]
-CMD ["dashboard", "--port", "7878"]
+CMD ["dashboard", "--host", "0.0.0.0", "--port", "7878"]
