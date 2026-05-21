@@ -153,3 +153,6 @@ export type {
   JsonRpcSuccessResponse,
   JsonRpcErrorResponse,
 } from "./mcp-server.js";
+
+export { DashboardServer } from "./dashboard/server.js";
+export type { DashboardServerConfig } from "./dashboard/server.js";

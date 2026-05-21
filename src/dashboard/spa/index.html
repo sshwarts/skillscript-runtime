@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>skillscript-runtime · dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>skillscript-runtime</h1>
+      <nav id="nav">
+        <a href="#overview">Overview</a>
+        <a href="#skills">Skills</a>
+        <a href="#triggers">Triggers</a>
+        <a href="#connectors">Connectors</a>
+      </nav>
+      <div id="poll-status" aria-live="polite"></div>
+    </header>
+    <main id="main"></main>
+    <footer>
+      <small>Polling every 30s · localhost-only</small>
+    </footer>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

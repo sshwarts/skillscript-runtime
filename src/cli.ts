@@ -24,6 +24,9 @@ import { SqliteMemoryStore } from "./connectors/memory-store.js";
 import { parse, type SkillOp } from "./parser.js";
 import { FilesystemTraceStore } from "./trace.js";
 import { healthMetrics } from "./metrics.js";
+import { McpServer } from "./mcp-server.js";
+import { DashboardServer } from "./dashboard/server.js";
+import { Scheduler } from "./scheduler.js";
 import { createHash } from "node:crypto";
 
 const HOME_DIR = process.env["SKILLSCRIPT_HOME"] ?? join(homedir(), ".skillscript");
@@ -51,6 +54,7 @@ Usage:
   skillfile verify <skill> <hash>       Verify the skill matches a signature
   skillfile replay <trace_id> [opts]    Re-run a recorded trace
   skillfile health [opts]               Aggregate metrics across all traces
+  skillfile dashboard [--port N]        Start the browser dashboard (localhost-only)
 
 Run/compile options:
   --input KEY=value (repeatable)        Provide a value for a declared input
@@ -115,6 +119,7 @@ async function main(): Promise<number> {
     case "verify":  return await cmdVerify(rest);
     case "replay":  return await cmdReplay(rest);
     case "health":  return await cmdHealth(rest);
+    case "dashboard": return await cmdDashboard(rest);
     default:
       process.stderr.write(`skillfile: unknown command '${cmd}'\n\n${usage()}`);
       return 64;
@@ -457,6 +462,24 @@ async function copyScaffoldFile(src: string, dest: string): Promise<void> {
   await mkdir(dirname(dest), { recursive: true });
   const body = await readFile(src, "utf8");
   await writeFile(dest, body, "utf8");
+}
+
+async function cmdDashboard(args: string[]): Promise<number> {
+  const portStr = extractFlag(args, "--port");
+  const port = portStr !== undefined ? parseInt(portStr, 10) : 7878;
+  const skillStore = new FilesystemSkillStore(SKILLS_DIR);
+  const traceStore = new FilesystemTraceStore(TRACE_DIR);
+  const scheduler = new Scheduler({ registry: new Registry(), skillStore, traceStore });
+  const mcpServer = new McpServer({ skillStore, scheduler, traceStore });
+  const server = new DashboardServer({ mcpServer, port });
+  await server.start();
+  process.stdout.write(`dashboard running on http://127.0.0.1:${port}\nctrl-C to stop\n`);
+  // Hold open until SIGINT/SIGTERM.
+  await new Promise<void>((resolve) => {
+    process.on("SIGINT", () => { void server.stop().then(resolve); });
+    process.on("SIGTERM", () => { void server.stop().then(resolve); });
+  });
+  return 0;
 }
 
 async function cmdFires(args: string[]): Promise<number> {
