@@ -4,9 +4,18 @@
 # Verifies: npm auth, package.json version, git tree clean, tag present.
 # Then runs `pnpm publish` (auto-fires prepublishOnly = build + loc-check + test).
 #
+# Usage:
+#   ./scripts/publish-v0.2.0.sh <6-digit-OTP>
+#
 # Re-runnable: bails cleanly on each precondition with a clear message.
 
 set -euo pipefail
+
+if [ $# -lt 1 ]; then
+  echo "✗ Missing OTP. Usage: $0 <6-digit-OTP-from-authenticator>"
+  exit 1
+fi
+OTP="$1"
 
 cd "$(dirname "$0")/.."
 
@@ -40,7 +49,7 @@ echo "  ok: tag v$EXPECTED_VERSION present"
 echo
 echo "→ Running pnpm publish (prepublishOnly will run build + loc-check + test)..."
 echo
-pnpm publish --access public
+pnpm publish --access public --otp="$OTP"
 
 echo
 echo "✓ Published. Verify at https://www.npmjs.com/package/skillscript-runtime"
