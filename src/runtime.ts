@@ -2,6 +2,7 @@ import type { ParsedSkill, SkillOp, OutputDecl } from "./parser.js";
 import { tokenizeKeywordArgs, processSetValue } from "./parser.js";
 import { applyFilter } from "./filters.js";
 import type { Registry } from "./connectors/registry.js";
+import { spawn } from "node:child_process";
 
 /**
  * Runtime executor. Pure mechanical execution: walks the parsed skill
@@ -42,6 +43,20 @@ export interface ExecuteContext {
    * `else:` fires.
    */
   askUser?: (prompt: string) => Promise<string>;
+  /**
+   * Runtime absolute timeout (milliseconds) — the built-in fallback when no
+   * per-op, skill, or connector default applies. Per ERD §6 decision 7,
+   * default is 300_000ms (5 minutes). Configurable for tests + deployments
+   * with shorter cancellation windows.
+   */
+  absoluteTimeoutMs?: number;
+  /**
+   * Enables `@ unsafe <command>` dispatch via full bash shell. Default
+   * `false` — `@ unsafe` ops fail with `UnsafeShellDisabledError`. Per
+   * Section 4 Security: operators opt in explicitly per deployment; lint
+   * flags every `@ unsafe` op regardless.
+   */
+  enableUnsafeShell?: boolean;
 }
 
 export interface ExecutionError {
@@ -85,6 +100,7 @@ export async function execute(
   const errors: ExecutionError[] = [];
   let lastBoundVar: string | null = null;
 
+  const absoluteTimeoutMs = ctx.absoluteTimeoutMs ?? DEFAULT_RUNTIME_ABSOLUTE_TIMEOUT_MS;
   for (const targetName of order) {
     const target = parsed.targets.get(targetName);
     if (!target) continue;
@@ -93,7 +109,7 @@ export async function execute(
     let targetLastValue: unknown = undefined;
 
     try {
-      const r = await execOps(target.ops, vars, emissions, ctx, targetName);
+      const r = await execOps(target.ops, vars, emissions, ctx, targetName, parsed.timeout, absoluteTimeoutMs);
       targetLastBound = r.lastBoundVar;
       targetLastValue = r.lastBoundVar !== null ? vars.get(r.lastBoundVar) : r.lastValue;
     } catch (err) {
@@ -105,7 +121,7 @@ export async function execute(
       });
       if (target.elseBlock !== undefined) {
         try {
-          const r = await execOps(target.elseBlock, vars, emissions, ctx, targetName);
+          const r = await execOps(target.elseBlock, vars, emissions, ctx, targetName, parsed.timeout, absoluteTimeoutMs);
           targetLastBound = r.lastBoundVar;
           targetLastValue = r.lastBoundVar !== null ? vars.get(r.lastBoundVar) : r.lastValue;
         } catch (innerErr) {
@@ -179,11 +195,13 @@ async function execOps(
   emissions: string[],
   ctx: ExecuteContext,
   targetName: string,
+  skillTimeoutSec: number | string | null,
+  absoluteTimeoutMs: number,
 ): Promise<ExecOpsResult> {
   let lastBoundVar: string | null = null;
   let lastValue: unknown = undefined;
   for (const op of ops) {
-    const r = await execOp(op, vars, emissions, ctx, targetName);
+    const r = await execOp(op, vars, emissions, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs);
     if (r.lastBoundVar !== null) {
       lastBoundVar = r.lastBoundVar;
       lastValue = r.lastValue;
@@ -200,9 +218,11 @@ async function execOp(
   emissions: string[],
   ctx: ExecuteContext,
   targetName: string,
+  skillTimeoutSec: number | string | null,
+  absoluteTimeoutMs: number,
 ): Promise<ExecOpsResult> {
   try {
-    return await execOpInner(op, vars, emissions, ctx, targetName);
+    return await execOpInner(op, vars, emissions, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs);
   } catch (err) {
     // Default-tag any escaping error with `op.kind`. Explicit makeOpError()
     // tags take precedence. Fixes the case where `~` failures classified as `?`.
@@ -218,6 +238,8 @@ async function execOpInner(
   emissions: string[],
   ctx: ExecuteContext,
   targetName: string,
+  skillTimeoutSec: number | string | null,
+  absoluteTimeoutMs: number,
 ): Promise<ExecOpsResult> {
   switch (op.kind) {
     case "$set": {
@@ -236,16 +258,39 @@ async function execOpInner(
       return { lastBoundVar: null, lastValue: undefined };
     }
     case "@": {
-      // Echo-only path (Phase 2b will replace with real spawn sandbox).
-      // `@ unsafe` uses the substitution variant that respects `$$(` escapes
-      // — `$$(date)` collapses to `$(date)` so bash command-substitution
-      // survives intact.
       const body = op.policy === "unsafe"
         ? substituteRuntimeUnsafe(op.body, vars)
         : substituteRuntime(op.body, vars);
-      const label = op.policy === "unsafe" ? "Run unsafe shell" : "Run shell";
-      emissions.push(`${label}: ${body}`);
-      return { lastBoundVar: null, lastValue: undefined };
+      const shellTimeoutMs = resolveOpTimeoutMs(undefined, skillTimeoutSec, absoluteTimeoutMs, vars);
+      if (ctx.mechanical === true) {
+        const label = op.policy === "unsafe" ? "Would run unsafe shell" : "Would run shell";
+        emissions.push(`${label}: ${body} (mechanical: true preview).`);
+        return { lastBoundVar: null, lastValue: undefined };
+      }
+      let stdout: string;
+      if (op.policy === "unsafe") {
+        if (ctx.enableUnsafeShell !== true) {
+          throw makeOpError(
+            "@",
+            `\`@ unsafe\` op refused: \`runtime.enable_unsafe_shell\` is false. Set ctx.enableUnsafeShell = true to permit (after reviewing the shell content). Command was: '${body.slice(0, 80)}${body.length > 80 ? "..." : ""}'`,
+          );
+        }
+        stdout = await execShellCommand("bash", ["-c", body], shellTimeoutMs);
+      } else {
+        const tokens = tokenizeShellArgs(body);
+        if (tokens.length === 0) {
+          throw makeOpError("@", `Empty \`@\` op body in target '${targetName}'.`);
+        }
+        const [bin, ...args] = tokens;
+        stdout = await execShellCommand(bin!, args, shellTimeoutMs);
+      }
+      const flatKey = `${targetName}.output`;
+      vars.set(flatKey, stdout);
+      if (op.outputVar !== undefined) vars.set(op.outputVar, stdout);
+      return {
+        lastBoundVar: op.outputVar ?? flatKey,
+        lastValue: stdout,
+      };
     }
     case "??": {
       const promptStr = substituteRuntime(op.body, vars);
@@ -323,12 +368,17 @@ async function execOpInner(
       const connectorName = op.mcpConnector ?? "primary";
       let rawResult: unknown;
       let dispatched = false;
+      const timeoutMs = resolveOpTimeoutMs(undefined, skillTimeoutSec, absoluteTimeoutMs, vars);
       if (ctx.registry.hasMcpConnector(connectorName)) {
         const connector = ctx.registry.getMcpConnector(connectorName);
-        rawResult = await connector.call(toolName, args, ctx.agentId !== undefined ? { agentId: ctx.agentId } : undefined);
+        rawResult = await dispatchWithTimeout(
+          () => connector.call(toolName, args, ctx.agentId !== undefined ? { agentId: ctx.agentId } : undefined),
+          timeoutMs,
+          "$",
+        );
         dispatched = true;
       } else if (op.mcpConnector === undefined && ctx.toolDispatch) {
-        rawResult = await ctx.toolDispatch(toolName, args);
+        rawResult = await dispatchWithTimeout(() => ctx.toolDispatch!(toolName, args), timeoutMs, "$");
         dispatched = true;
       } else if (op.mcpConnector !== undefined) {
         throw new Error(`McpConnector '${connectorName}' not registered.`);
@@ -392,7 +442,8 @@ async function execOpInner(
         limit: limitResolved,
         ...extraSub,
       };
-      const results = await store.query(filters);
+      const retrievalTimeoutMs = resolveOpTimeoutMs(undefined, skillTimeoutSec, absoluteTimeoutMs, vars);
+      const results = await dispatchWithTimeout(() => store.query(filters), retrievalTimeoutMs, ">");
       vars.set(op.outputVar!, results);
       return { lastBoundVar: op.outputVar!, lastValue: results };
     }
@@ -411,7 +462,8 @@ async function execOpInner(
       if (p.maxTokens !== undefined) {
         runOpts.maxTokens = resolveIntParam(p.maxTokens, vars, "maxTokens");
       }
-      const response = await model.run(promptSub, runOpts);
+      const tildeTimeoutMs = resolveOpTimeoutMs(p.timeoutSeconds, skillTimeoutSec, absoluteTimeoutMs, vars);
+      const response = await dispatchWithTimeout(() => model.run(promptSub, runOpts), tildeTimeoutMs, "~");
       vars.set(op.outputVar!, response);
       return { lastBoundVar: op.outputVar!, lastValue: response };
     }
@@ -422,7 +474,7 @@ async function execOpInner(
       let last: ExecOpsResult = { lastBoundVar: null, lastValue: undefined };
       for (const item of listVal) {
         vars.set(iterName, item);
-        last = await execOps(op.foreachBody!, vars, emissions, ctx, targetName);
+        last = await execOps(op.foreachBody!, vars, emissions, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs);
       }
       for (const k of Array.from(vars.keys())) {
         if (!before.has(k)) vars.delete(k);
@@ -432,11 +484,11 @@ async function execOpInner(
     case "if": {
       for (const branch of op.ifBranches!) {
         if (evalCondition(branch.cond, vars)) {
-          return execOps(branch.body, vars, emissions, ctx, targetName);
+          return execOps(branch.body, vars, emissions, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs);
         }
       }
       if (op.ifElseBody !== undefined) {
-        return execOps(op.ifElseBody, vars, emissions, ctx, targetName);
+        return execOps(op.ifElseBody, vars, emissions, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs);
       }
       return { lastBoundVar: null, lastValue: undefined };
     }
@@ -450,12 +502,151 @@ function makeOpError(opKind: string, message: string): Error & { opKind: string 
   return err;
 }
 
+const DEFAULT_RUNTIME_ABSOLUTE_TIMEOUT_MS = 300_000;
+
+/**
+ * Per-op timeout resolution chain (ERD §6 decision 7) — top wins:
+ *   1. Per-op override (`~ ... timeoutSeconds=30 ...`)
+ *   2. Skill-level `# Timeout: N` header
+ *   3. Connector instance default (v1: not yet declared by impls — collapses
+ *      to built-in fallback when no per-op or skill-level value is present)
+ *   4. Built-in language fallback (`absoluteTimeoutMs`, default 300000ms)
+ *
+ * Both per-op and skill-level values are in seconds (per author convention)
+ * and converted to milliseconds here.
+ */
+function resolveOpTimeoutMs(
+  perOpTimeoutSec: number | string | undefined,
+  skillTimeoutSec: number | string | null,
+  absoluteTimeoutMs: number,
+  vars: Map<string, unknown>,
+): number {
+  if (perOpTimeoutSec !== undefined) {
+    return resolveIntParam(perOpTimeoutSec, vars, "timeoutSeconds") * 1000;
+  }
+  if (skillTimeoutSec !== null) {
+    return resolveIntParam(skillTimeoutSec, vars, "# Timeout:") * 1000;
+  }
+  return absoluteTimeoutMs;
+}
+
+/**
+ * Race the op against a timer. On timeout, throws `OpTimeoutError`-shaped
+ * op-error so the existing else: / # OnError: machinery catches it.
+ *
+ * v1 caveat: timeout returns control to the executor promptly, but the
+ * underlying request may still complete in the background — its result is
+ * discarded. v2 should thread AbortSignal through connector contracts so
+ * implementations can cancel cleanly.
+ */
+async function dispatchWithTimeout<T>(
+  fn: () => Promise<T>,
+  timeoutMs: number,
+  opKind: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(makeOpError(opKind, `Op '${opKind}' timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([fn(), timeoutPromise]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /**
  * Decline detection for `??` interactive responses. A response is declining
  * when trimmed-lowercase matches `no`/`n`/`false`/`0` or is empty. Anything
  * else (including "yes", "y", or any non-empty positive content) is treated
  * as approval.
  */
+/**
+ * Tokenize a shell-style command body into binary + args. Respects matching
+ * single/double quotes; strips outer quotes. No metachar interpretation —
+ * the structural-spawn sandbox forbids shell processing per decision 2.
+ */
+function tokenizeShellArgs(body: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let inQuote: '"' | "'" | null = null;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]!;
+    if (inQuote) {
+      if (ch === inQuote) {
+        inQuote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inQuote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current !== "") {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current !== "") tokens.push(current);
+  return tokens;
+}
+
+/**
+ * Spawn a child process and capture stdout. SIGKILL on timeout via the
+ * process group (kills child + descendants). Non-zero exit → op-error with
+ * stderr preserved per ERD §6 dispatcher routing.
+ */
+async function execShellCommand(bin: string, args: string[], timeoutMs: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      // Send SIGKILL to the process group on POSIX. Windows lacks process
+      // groups; fall back to direct child kill (descendants leak — out of
+      // v1 scope to fix).
+      if (process.platform !== "win32" && child.pid !== undefined) {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+      } else {
+        child.kill("SIGKILL");
+      }
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(makeOpError("@", `Failed to spawn '${bin}': ${err.message}`));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (killed) {
+        reject(makeOpError("@", `Op '@' timed out after ${timeoutMs}ms.`));
+        return;
+      }
+      if (code !== 0) {
+        const trimmed = stderr.trim();
+        reject(makeOpError(
+          "@",
+          `Shell command '${bin}' exited with code ${code}${trimmed ? `: ${trimmed.slice(0, 200)}` : ""}.`,
+        ));
+        return;
+      }
+      // Strip trailing newline — convention for shell command output.
+      resolve(stdout.replace(/\n$/, ""));
+    });
+  });
+}
+
 function isDeclineResponse(raw: string): boolean {
   const t = raw.trim().toLowerCase();
   return t === "" || t === "no" || t === "n" || t === "false" || t === "0";

@@ -3,6 +3,21 @@ import { compile } from "../src/compile.js";
 import { execute } from "../src/runtime.js";
 import { Registry } from "../src/connectors/registry.js";
 import { CallbackMcpConnector } from "../src/connectors/mcp.js";
+import type { LocalModel, StaticCapabilities, ManifestInfo } from "../src/connectors/types.js";
+
+class SlowLocalModel implements LocalModel {
+  static staticCapabilities(): StaticCapabilities {
+    return { connector_type: "local_model", implementation: "SlowTestModel", contract_version: "1.0.0", features: {} };
+  }
+  constructor(private readonly delayMs: number) {}
+  async run(_prompt: string): Promise<string> {
+    await new Promise((r) => setTimeout(r, this.delayMs));
+    return "ok";
+  }
+  async manifest(): Promise<ManifestInfo> {
+    return { capabilities_version: "1", manifest: {} };
+  }
+}
 
 async function run(source: string, inputs: Record<string, string> = {}, registry = new Registry()) {
   // Tests in this file exercise runtime behavior directly; bypass the
@@ -95,15 +110,85 @@ default: t
     expect(result.emissions).toContain("handled");
   });
 
-  it("emits @ shell ops without executing", async () => {
+  it("executes `@` ops via structured-spawn sandbox", async () => {
     const src = `t:
-    @ ls -la /tmp
+    @ echo hello
 
 default: t
 `;
     const result = await run(src);
-    expect(result.emissions).toEqual(["Run shell: ls -la /tmp"]);
     expect(result.errors).toEqual([]);
+    expect(result.finalVars["t.output"]).toBe("hello");
+  });
+
+  it("`@` op binds stdout to -> VAR", async () => {
+    const src = `t:
+    @ echo skillscript -> OUT
+    ! got $(OUT)
+
+default: t
+`;
+    const result = await run(src);
+    expect(result.errors).toEqual([]);
+    expect(result.emissions).toEqual(["got skillscript"]);
+  });
+
+  it("`@` op non-zero exit surfaces stderr in op-error", async () => {
+    const src = `t:
+    @ false
+
+default: t
+`;
+    const result = await run(src);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]!.opKind).toBe("@");
+    expect(result.errors[0]!.message).toMatch(/exited with code/);
+  });
+
+  it("`@ unsafe` refused when enableUnsafeShell is false (default)", async () => {
+    const src = `t:
+    @ unsafe echo "should fail"
+
+default: t
+`;
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry: new Registry(),
+    });
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]!.message).toMatch(/enable_unsafe_shell.*false/);
+  });
+
+  it("`@ unsafe` runs via bash when enableUnsafeShell is true", async () => {
+    const src = `t:
+    @ unsafe echo "shell features: $$(echo hi)"
+
+default: t
+`;
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry: new Registry(),
+      enableUnsafeShell: true,
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.finalVars["t.output"]).toBe("shell features: hi");
+  });
+
+  it("`@` op timeout fires when child hangs", async () => {
+    const src = `# Skill: t
+# Timeout: 1
+t:
+    @ sleep 5
+
+default: t
+`;
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry: new Registry(),
+    });
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]!.opKind).toBe("@");
+    expect(result.errors[0]!.message).toMatch(/timed out after 1000ms/);
   });
 
   it("surfaces inner-tool isError:true as op error (c580de5)", async () => {
@@ -216,6 +301,82 @@ default: t
     });
     expect(result.errors.length).toBe(1);
     expect(result.errors[0]!.message).toMatch(/autonomous execution/);
+  });
+
+  it("`# Timeout:` skill header fires on slow `~` op", async () => {
+    const src = `# Skill: t
+# Timeout: 1
+
+t:
+    ~ prompt="hi" -> R
+
+default: t
+`;
+    const registry = new Registry();
+    registry.registerLocalModel("default", new SlowLocalModel(3000));
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry,
+    });
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]!.opKind).toBe("~");
+    expect(result.errors[0]!.message).toMatch(/timed out after 1000ms/);
+  });
+
+  it("per-op `timeoutSeconds` kwarg overrides skill header", async () => {
+    const src = `# Skill: t
+# Timeout: 30
+
+t:
+    ~ prompt="hi" timeoutSeconds=1 -> R
+
+default: t
+`;
+    const registry = new Registry();
+    registry.registerLocalModel("default", new SlowLocalModel(3000));
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry,
+    });
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]!.message).toMatch(/timed out after 1000ms/);
+  });
+
+  it("`# Timeout: $(SECS)` substitution resolves at runtime (lesson ab6c19db)", async () => {
+    const src = `# Skill: t
+# Vars: TIMEOUT_SECS=1
+# Timeout: $(TIMEOUT_SECS)
+
+t:
+    ~ prompt="hi" -> R
+
+default: t
+`;
+    const registry = new Registry();
+    registry.registerLocalModel("default", new SlowLocalModel(3000));
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry,
+    });
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]!.message).toMatch(/timed out after 1000ms/);
+  });
+
+  it("absoluteTimeoutMs ctx override fires when no skill/op timeout present", async () => {
+    const src = `t:
+    ~ prompt="hi" -> R
+
+default: t
+`;
+    const registry = new Registry();
+    registry.registerLocalModel("default", new SlowLocalModel(3000));
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry,
+      absoluteTimeoutMs: 500,
+    });
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]!.message).toMatch(/timed out after 500ms/);
   });
 
   it("mechanical mode skips $/~/> dispatch", async () => {

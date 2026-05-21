@@ -22,6 +22,12 @@ export interface SkillOp {
     model?: string;
     /** Integer literal OR a `$(VAR)`-style ref string. Runtime substitutes refs then parses to int. */
     maxTokens?: number | string;
+    /**
+     * Per-op timeout override in SECONDS (per decision 7 resolution chain).
+     * Integer literal OR `$(VAR)` ref. Per-op wins over skill `# Timeout:`
+     * header, connector default, and built-in fallback.
+     */
+    timeoutSeconds?: number | string;
   };
   /**
    * For `&` ops only: skill name + optional key=value args passed as inputs
@@ -115,6 +121,13 @@ export interface ParsedSkill {
   type: SkillType;
   /** `# Status:` header value. Null when omitted; lint defaults to `Draft` semantics. */
   status: SkillStatusLiteral | null;
+  /**
+   * `# Timeout:` header value in SECONDS. Number literal OR `$(VAR)` ref
+   * string (resolved at runtime). Null when omitted; runtime resolves via
+   * the 4-level chain (per-op kwarg > skill header > connector default >
+   * built-in 300s fallback).
+   */
+  timeout: number | string | null;
   vars: SkillVar[];
   /** Variable resolution declarations — `user-var:key -> VAR (fallback: X)` shape. */
   requires: SkillRequire[];
@@ -372,35 +385,35 @@ function parseLocalModelArgs(
     const rawValue = tok.slice(eq + 1);
     map[key] = processSetValue(rawValue);
   }
-  const recognized = new Set(["prompt", "model", "maxTokens"]);
+  const recognized = new Set(["prompt", "model", "maxTokens", "timeoutSeconds"]);
   for (const key of Object.keys(map)) {
     if (!recognized.has(key)) {
-      errors.push(`\`~\` op in target '${targetName}': unrecognized param '${key}' — strict grammar allows prompt/model/maxTokens only. Interpolate context into the prompt string via $(...) instead.`);
+      errors.push(`\`~\` op in target '${targetName}': unrecognized param '${key}' — strict grammar allows prompt/model/maxTokens/timeoutSeconds only. Interpolate context into the prompt string via $(...) instead.`);
     }
   }
   if (!("prompt" in map) || map["prompt"] === "") {
     errors.push(`\`~\` op in target '${targetName}' missing required param 'prompt'`);
   }
   // Defer integer validation when the value contains a `$(VAR)` ref.
-  let maxTokens: number | string | undefined;
-  if ("maxTokens" in map) {
-    const raw = map["maxTokens"]!;
-    if (/\$\(/.test(raw)) {
-      maxTokens = raw;
-    } else {
-      const n = parseInt(raw, 10);
-      if (!Number.isFinite(n) || n <= 0) {
-        errors.push(`\`~\` op in target '${targetName}': 'maxTokens' must be a positive integer or a \`$(VAR)\` ref (got '${raw}')`);
-      } else {
-        maxTokens = n;
-      }
+  function deferInt(key: string): number | string | undefined {
+    if (!(key in map)) return undefined;
+    const raw = map[key]!;
+    if (/\$\(/.test(raw)) return raw;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      errors.push(`\`~\` op in target '${targetName}': '${key}' must be a positive integer or a \`$(VAR)\` ref (got '${raw}')`);
+      return undefined;
     }
+    return n;
   }
+  const maxTokens = deferInt("maxTokens");
+  const timeoutSeconds = deferInt("timeoutSeconds");
   const params: NonNullable<SkillOp["localModelParams"]> = {
     prompt: map["prompt"] ?? "",
   };
   if ("model" in map && map["model"] !== "") params.model = map["model"]!;
   if (maxTokens !== undefined) params.maxTokens = maxTokens;
+  if (timeoutSeconds !== undefined) params.timeoutSeconds = timeoutSeconds;
   return { params, errors };
 }
 
@@ -429,6 +442,7 @@ export function parse(source: string): ParsedSkill {
     description: null,
     type: "procedural",
     status: null,
+    timeout: null,
     vars: [],
     requires: [],
     requiredCapabilities: [],
@@ -483,6 +497,19 @@ export function parse(source: string): ParsedSkill {
           result.status = norm;
         } else {
           result.parseErrors.push(`\`# Status:\` value must be 'Draft', 'Approved', or 'Disabled' (got '${value}')`);
+        }
+      } else if (key === "timeout") {
+        // Per lesson ab6c19db: defer integer validation when value contains
+        // `$(VAR)` ref. Runtime resolves via resolveIntParam at op dispatch.
+        if (/\$\(/.test(value)) {
+          result.timeout = value;
+        } else {
+          const n = parseInt(value, 10);
+          if (!Number.isFinite(n) || n <= 0) {
+            result.parseErrors.push(`\`# Timeout:\` must be a positive integer (seconds) or a \`$(VAR)\` ref (got '${value}').`);
+          } else {
+            result.timeout = n;
+          }
         }
       } else if (key === "vars") {
         if (value.toLowerCase() === "(none)" || value === "") {
@@ -834,6 +861,7 @@ export function parse(source: string): ParsedSkill {
     let body = "";
     let mcpConnectorForOp: string | undefined = undefined;
     let atPolicy: "unsafe" | undefined = undefined;
+    let atOutputVar: string | undefined = undefined;
     // Check `??` before `?`, `$set` before `$`.
     if (stripped.startsWith("?? ") || stripped === "??") {
       const tail = stripped.slice(3).trim();
@@ -879,7 +907,13 @@ export function parse(source: string): ParsedSkill {
       body = stripped.slice(2).trim();
     } else if (stripped.startsWith("@ ") || stripped === "@") {
       kind = "@";
-      const tail = stripped.slice(2).trim();
+      let tail = stripped.slice(2).trim();
+      // Optional output binding: `-> VAR` at end of line.
+      const outMatch = /^(.+?)\s+->\s+([A-Za-z_]\w*)\s*$/.exec(tail);
+      if (outMatch !== null) {
+        atOutputVar = outMatch[2]!;
+        tail = outMatch[1]!.trim();
+      }
       // `@ unsafe <command>` — `unsafe` as literal first token signals
       // opt-in full-shell exec (vs default structured-spawn sandbox).
       const unsafeMatch = /^unsafe(?:\s+(.*))?$/.exec(tail);
@@ -899,6 +933,7 @@ export function parse(source: string): ParsedSkill {
         body,
         ...(mcpConnectorForOp !== undefined ? { mcpConnector: mcpConnectorForOp } : {}),
         ...(atPolicy !== undefined ? { policy: atPolicy } : {}),
+        ...(atOutputVar !== undefined ? { outputVar: atOutputVar } : {}),
       });
     }
   }
