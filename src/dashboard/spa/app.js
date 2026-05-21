@@ -151,8 +151,9 @@ function renderSkills() {
 
 async function renderSkillDetail(name) {
   try {
-    const { metadata, versions } = await callTool("skill_metadata", { name });
-    const traces = state.metrics?.perSkill?.[name];
+    const { metadata, versions, source, recent_fires } = await callTool("skill_metadata", { name });
+    const metrics = state.metrics?.perSkill?.[name];
+    const triggersForSkill = state.triggers.filter((t) => t.skillName === name);
     return `
       <h2>Skill: ${esc(metadata.name)} <span class="badge ${esc(metadata.status)}">${esc(metadata.status)}</span></h2>
 
@@ -169,19 +170,70 @@ async function renderSkillDetail(name) {
       </section>
 
       <section>
+        <h2>Source</h2>
+        ${source ? `<pre>${esc(source)}</pre>` : `<div class="empty">Source not available.</div>`}
+      </section>
+
+      <section>
+        <h2>Triggers (${triggersForSkill.length})</h2>
+        ${triggersForSkill.length === 0
+          ? `<div class="empty">No triggers registered for this skill.</div>`
+          : `<table>
+              <thead><tr><th>Source</th><th>Name</th><th>Registered</th></tr></thead>
+              <tbody>
+                ${triggersForSkill.map((t) => `
+                  <tr>
+                    <td>${esc(t.source)}</td>
+                    <td><code>${esc(t.name)}</code></td>
+                    <td>${new Date(t.registeredAt * 1000).toLocaleString()}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>`}
+      </section>
+
+      <section>
         <h2>Metrics (24h)</h2>
-        ${traces
+        ${metrics
           ? `<dl class="kv">
-              <dt>Fires</dt><dd>${traces.fireCount}</dd>
-              <dt>Success</dt><dd>${traces.successCount}</dd>
-              <dt>Errors</dt><dd>${traces.errorCount}</dd>
-              <dt>Success rate</dt><dd>${(traces.successRate * 100).toFixed(1)}%</dd>
+              <dt>Fires</dt><dd>${metrics.fireCount}</dd>
+              <dt>Success</dt><dd>${metrics.successCount}</dd>
+              <dt>Errors</dt><dd>${metrics.errorCount}</dd>
+              <dt>Success rate</dt><dd>${(metrics.successRate * 100).toFixed(1)}%</dd>
             </dl>`
           : `<div class="empty">No traces recorded in window.</div>`}
       </section>
 
       <section>
-        <h2>Version history</h2>
+        <h2>Recent fires (${recent_fires.length})</h2>
+        ${recent_fires.length === 0
+          ? `<div class="empty">No fires recorded.</div>`
+          : recent_fires.map((fire) => {
+              const ts = new Date(fire.fired_at_ms).toLocaleString();
+              const status = fire.errors.length === 0
+                ? `<span class="badge ok">ok</span>`
+                : `<span class="badge error">err</span>`;
+              return `
+                <div style="border-bottom: 1px solid #e6e8eb; padding: 12px 0;">
+                  <div style="display: flex; align-items: center; gap: 12px;">
+                    ${status}
+                    <code style="font-size: 11px; color: #6c757d;">${esc(fire.trace_id.slice(0, 8))}</code>
+                    <span>${ts}</span>
+                    <span style="color: #6c757d; margin-left: auto;">${fire.duration_ms}ms · ${fire.ops.length} ops</span>
+                  </div>
+                  ${fire.errors.map((e) => `
+                    <div class="remediation">
+                      <strong>${esc(e.class)}</strong> in ${esc(e.target)}/${esc(e.opKind)}: ${esc(e.message)}
+                      ${e.remediation ? `<div style="margin-top: 4px; color: #4a5158;">→ ${esc(e.remediation)}</div>` : ""}
+                    </div>
+                  `).join("")}
+                </div>
+              `;
+            }).join("")}
+      </section>
+
+      <section>
+        <h2>Version history (${versions.length})</h2>
         <table>
           <thead><tr><th>Version</th><th>Status</th><th>Changed at</th></tr></thead>
           <tbody>

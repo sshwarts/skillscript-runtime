@@ -192,19 +192,30 @@ export class McpServer {
 
     this.registerTool({
       name: "skill_metadata",
-      description: "Get metadata + version history for a specific skill by name.",
+      description: "Get metadata + version history + source body + recent fires for a specific skill by name.",
       inputSchema: {
         type: "object",
-        properties: { name: { type: "string" } },
+        properties: {
+          name: { type: "string" },
+          fire_limit: { type: "number", default: 20 },
+        },
         required: ["name"],
       },
       handler: async (args) => {
         const name = args["name"] as string;
-        const [metadata, versions] = await Promise.all([
+        const fireLimit = typeof args["fire_limit"] === "number" ? args["fire_limit"] : 20;
+        const [metadata, versions, loaded, recent_fires] = await Promise.all([
           this.deps.skillStore.metadata(name),
           this.deps.skillStore.versions(name),
+          this.deps.skillStore.load(name).catch(() => null),
+          this.deps.traceStore.query({ skill_name: name, limit: fireLimit }),
         ]);
-        return { metadata, versions };
+        return {
+          metadata,
+          versions,
+          source: loaded?.source ?? null,
+          recent_fires,
+        };
       },
     });
 
