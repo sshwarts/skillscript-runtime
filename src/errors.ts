@@ -123,3 +123,131 @@ export class TimeoutError extends ConnectorError {
     this.name = "TimeoutError";
   }
 }
+
+// ─── Op-level error hierarchy (executor layer) ──────────────────────────────
+//
+// Distinct from `ConnectorError` (substrate layer). OpError + subclasses are
+// thrown at runtime by the executor / dispatcher, caught by the `else:` /
+// `# OnError:` machinery, and surfaced in `result.errors[]` with structured
+// metadata + canned remediation strings per ERD §8 + lesson `a3ba4149`
+// (agent-authored output).
+
+/**
+ * Base class for any error thrown during op dispatch. Carries the op kind,
+ * the target where the op lived, an optional inner cause (preserved when
+ * an underlying connector / spawn / etc. error propagates upward), and an
+ * actionable remediation string per `a3ba4149`.
+ */
+export class OpError extends Error {
+  constructor(
+    message: string,
+    public readonly opKind: string,
+    public readonly remediation: string,
+    public readonly target?: string,
+    public readonly innerCause?: string,
+  ) {
+    super(message);
+    this.name = "OpError";
+  }
+}
+
+/** A `$` / `~` / `>` op references a connector name not registered with the runtime. */
+export class ConnectorNotFoundError extends OpError {
+  constructor(
+    public readonly connectorName: string,
+    public readonly connectorType: ConnectorType,
+    opKind: string,
+    target?: string,
+  ) {
+    const message = `${connectorType} '${connectorName}' not registered with the runtime.`;
+    const remediation =
+      `Configure the connector via the registry (\`registry.register${connectorType.replace(/_./g, (m) => m[1]!.toUpperCase())}\` API), ` +
+      `or check the spelling against the registered connector names. ` +
+      `Bare \`${opKind} ...\` routes through the 'primary'/'default' connector; ` +
+      `\`${opKind} <name>.<tool>\` routes through the named instance.`;
+    super(message, opKind, remediation, target);
+    this.name = "ConnectorNotFoundError";
+  }
+}
+
+/** An op exceeded its resolved timeout (per-op > skill > built-in). */
+export class OpTimeoutError extends OpError {
+  constructor(
+    public readonly timeoutMs: number,
+    opKind: string,
+    target?: string,
+  ) {
+    const message = `Op '${opKind}' timed out after ${timeoutMs}ms.`;
+    const remediation =
+      `Increase the timeout: per-op via \`${opKind === "~" ? "timeoutSeconds=N kwarg" : "(no per-op kwarg; use skill header)"}\`, ` +
+      `skill-level via \`# Timeout: N\` header (seconds), or runtime fallback via \`ctx.absoluteTimeoutMs\`. ` +
+      `If the op should be fast, investigate why it's slow — model service down, network partition, etc.`;
+    super(message, opKind, remediation, target);
+    this.name = "OpTimeoutError";
+  }
+}
+
+/** A `??` ask-user op fired in autonomous mode (no `askUser` callback wired). */
+export class InteractiveOpInAutonomousModeError extends OpError {
+  constructor(
+    public readonly prompt: string,
+    target?: string,
+  ) {
+    const message = `\`??\` ask-user encountered in autonomous execution: ${prompt}`;
+    const remediation =
+      `Restructure the skill to take the value as an input (\`# Vars:\`) or via \`# Requires:\` cascade, ` +
+      `or invoke from an interactive context that wires the \`askUser\` callback on ExecuteContext.`;
+    super(message, "??", remediation, target);
+    this.name = "InteractiveOpInAutonomousModeError";
+  }
+}
+
+/** An `@ unsafe` op fired with `runtime.enable_unsafe_shell = false` (default). */
+export class UnsafeShellDisabledError extends OpError {
+  constructor(
+    public readonly command: string,
+    target?: string,
+  ) {
+    const truncated = command.length > 80 ? `${command.slice(0, 80)}...` : command;
+    const message = `\`@ unsafe\` op refused: \`runtime.enable_unsafe_shell\` is false. Command: '${truncated}'`;
+    const remediation =
+      `Set \`ctx.enableUnsafeShell = true\` to permit (after reviewing the shell content), ` +
+      `or refactor to use the default \`@\` form with structured-spawn sandbox (one binary, no metacharacters). ` +
+      `\`@ unsafe\` is lint-flagged tier-2 every time it appears — confirm the shell content was reviewed.`;
+    super(message, "@", remediation, target);
+    this.name = "UnsafeShellDisabledError";
+  }
+}
+
+/** A `$(VAR)` reference couldn't be resolved at runtime. */
+export class UnresolvedVariableError extends OpError {
+  constructor(
+    public readonly varRef: string,
+    opKind: string,
+    target?: string,
+  ) {
+    const message = `Unresolved variable reference at runtime: $(${varRef})`;
+    const remediation =
+      `Declare the variable via \`# Vars:\`, \`# Requires:\`, or bind it from a prior op (\`-> ${varRef}\`). ` +
+      `Tier-1 ambient refs (NOW/USER/SESSION_CONTEXT/TRIGGER_TYPE/TRIGGER_PAYLOAD/ERROR_CONTEXT) ` +
+      `are auto-injected — check spelling. Dotted refs (\`$(X.field)\`) require the root \`X\` to be bound first.`;
+    super(message, opKind, remediation, target);
+    this.name = "UnresolvedVariableError";
+  }
+}
+
+/**
+ * Structured JSON shape for entries in `result.errors[]`. Surfaces in
+ * dispatch trace records, CLI diagnostics, and dashboard error views.
+ */
+export interface OpErrorMetadata {
+  class: string;
+  opKind: string;
+  target: string;
+  message: string;
+  remediation?: string;
+  innerCause?: string;
+  connector?: string;
+  skill?: string;
+  trace_id?: string;
+}

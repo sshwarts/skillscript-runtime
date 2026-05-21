@@ -443,6 +443,79 @@ default: b
     expect(r2.finalVars["X"]).toBe("second");
   });
 
+  it("ConnectorNotFoundError fires when McpConnector named explicitly isn't registered + carries remediation", async () => {
+    const src = `t:
+    $ unknown.some_tool key=value -> R
+
+default: t
+`;
+    const result = await run(src);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]!.class).toBe("ConnectorNotFoundError");
+    expect(result.errors[0]!.opKind).toBe("$");
+    expect(result.errors[0]!.remediation).toMatch(/registry\.register/);
+    expect(result.errors[0]!.remediation).toMatch(/spelling/);
+  });
+
+  it("OpTimeoutError fires + carries remediation for slow ~ op", async () => {
+    const src = `# Skill: t
+# Timeout: 1
+t:
+    ~ prompt="hi" -> R
+
+default: t
+`;
+    const registry = new Registry();
+    registry.registerLocalModel("default", new SlowLocalModel(3000));
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry,
+    });
+    expect(result.errors[0]!.class).toBe("OpTimeoutError");
+    expect(result.errors[0]!.remediation).toMatch(/timeoutSeconds|# Timeout:/);
+  });
+
+  it("InteractiveOpInAutonomousModeError fires when `??` has no askUser callback + carries remediation", async () => {
+    const src = `t:
+    ?? "approve?" -> R
+
+default: t
+`;
+    const result = await run(src);
+    expect(result.errors[0]!.class).toBe("InteractiveOpInAutonomousModeError");
+    expect(result.errors[0]!.opKind).toBe("??");
+    expect(result.errors[0]!.remediation).toMatch(/# Vars:|# Requires:|askUser/);
+  });
+
+  it("UnsafeShellDisabledError fires when `@ unsafe` runs without enableUnsafeShell + carries remediation", async () => {
+    const src = `t:
+    @ unsafe echo "should fail"
+
+default: t
+`;
+    const compiled = await compile(src, { skipLintPreflight: true });
+    const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, {
+      registry: new Registry(),
+    });
+    expect(result.errors[0]!.class).toBe("UnsafeShellDisabledError");
+    expect(result.errors[0]!.remediation).toMatch(/enableUnsafeShell = true|structured-spawn sandbox/);
+  });
+
+  it("ExecutionError shape locked: class + remediation + opKind + target + message", async () => {
+    const src = `t:
+    $ nonexistent.tool -> R
+
+default: t
+`;
+    const result = await run(src);
+    const err = result.errors[0]!;
+    expect(typeof err.class).toBe("string");
+    expect(typeof err.opKind).toBe("string");
+    expect(typeof err.target).toBe("string");
+    expect(typeof err.message).toBe("string");
+    expect(typeof err.remediation).toBe("string");
+  });
+
   it("mechanical mode skips $/~/> dispatch", async () => {
     const src = `t:
     $ would_dispatch x=1

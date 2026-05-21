@@ -3,6 +3,14 @@ import { tokenizeKeywordArgs, processSetValue } from "./parser.js";
 import { applyFilter } from "./filters.js";
 import type { Registry } from "./connectors/registry.js";
 import { spawn } from "node:child_process";
+import {
+  OpError,
+  ConnectorNotFoundError,
+  OpTimeoutError,
+  InteractiveOpInAutonomousModeError,
+  UnsafeShellDisabledError,
+  UnresolvedVariableError,
+} from "./errors.js";
 
 /**
  * Runtime executor. Pure mechanical execution: walks the parsed skill
@@ -59,10 +67,19 @@ export interface ExecuteContext {
   enableUnsafeShell?: boolean;
 }
 
+/**
+ * Structured op-error record in `result.errors[]`. Per ERD §8: each entry
+ * names the error class, op kind, target, message, and a canned remediation
+ * string for operators + agents to act on. `innerCause` preserves the
+ * underlying error when the error chain propagated through multiple layers.
+ */
 export interface ExecutionError {
   target: string;
   opKind: string;
   message: string;
+  class: string;
+  remediation?: string;
+  innerCause?: string;
 }
 
 export interface ExecuteResult {
@@ -130,23 +147,14 @@ export async function execute(
       targetLastBound = r.lastBoundVar;
       targetLastValue = r.lastBoundVar !== null ? vars.get(r.lastBoundVar) : r.lastValue;
     } catch (err) {
-      const e = err as Error & { opKind?: string };
-      errors.push({
-        target: targetName,
-        opKind: e.opKind ?? "?",
-        message: e.message,
-      });
+      errors.push(buildExecutionError(err, targetName));
       if (target.elseBlock !== undefined) {
         try {
           const r = await execOps(target.elseBlock, vars, emissions, ctx, targetName, parsed.timeout, absoluteTimeoutMs);
           targetLastBound = r.lastBoundVar;
           targetLastValue = r.lastBoundVar !== null ? vars.get(r.lastBoundVar) : r.lastValue;
         } catch (innerErr) {
-          errors.push({
-            target: targetName,
-            opKind: "else",
-            message: (innerErr as Error).message,
-          });
+          errors.push(buildExecutionError(innerErr, targetName, "else"));
         }
       } else if (parsed.onError !== null && ctx.fallbackSkillExecutor) {
         try {
@@ -157,11 +165,7 @@ export async function execute(
           for (const em of fbResult.emissions) emissions.push(em);
           for (const fe of fbResult.errors) errors.push(fe);
         } catch (fbErr) {
-          errors.push({
-            target: parsed.onError,
-            opKind: "skill-fallback",
-            message: (fbErr as Error).message,
-          });
+          errors.push(buildExecutionError(fbErr, parsed.onError, "skill-fallback"));
         }
         break;
       } else {
@@ -296,10 +300,7 @@ async function execOpInner(
       let stdout: string;
       if (op.policy === "unsafe") {
         if (ctx.enableUnsafeShell !== true) {
-          throw makeOpError(
-            "@",
-            `\`@ unsafe\` op refused: \`runtime.enable_unsafe_shell\` is false. Set ctx.enableUnsafeShell = true to permit (after reviewing the shell content). Command was: '${body.slice(0, 80)}${body.length > 80 ? "..." : ""}'`,
-          );
+          throw new UnsafeShellDisabledError(body, targetName);
         }
         stdout = await execShellCommand("bash", ["-c", body], shellTimeoutMs);
       } else {
@@ -324,12 +325,7 @@ async function execOpInner(
         // Autonomous mode — no interactive surface wired. Per decision 6 +
         // §6 dispatcher routing, `??` fails fast so dependent targets don't
         // silently fall through.
-        throw makeOpError(
-          "??",
-          `\`??\` ask-user encountered in autonomous execution: ${promptStr}. ` +
-          `Restructure the skill to take the value as an input or via \`# Requires:\`, ` +
-          `or invoke from an interactive context that wires \`askUser\`.`,
-        );
+        throw new InteractiveOpInAutonomousModeError(promptStr, targetName);
       }
       const response = await ctx.askUser(promptStr);
       const outName = op.outputVar;
@@ -417,7 +413,7 @@ async function execOpInner(
           rawResult = await dispatchWithTimeout(() => ctx.toolDispatch!(toolName, args), timeoutMs, "$");
           dispatched = true;
         } else if (op.mcpConnector !== undefined) {
-          throw new Error(`McpConnector '${connectorName}' not registered.`);
+          throw new ConnectorNotFoundError(connectorName, "mcp_connector", "$", targetName);
         }
       } catch (err) {
         if (dollarFallback !== undefined) {
@@ -595,6 +591,32 @@ function makeOpError(opKind: string, message: string): Error & { opKind: string 
   return err;
 }
 
+/**
+ * Build a structured ExecutionError from a thrown value. Recognizes OpError
+ * subclasses (preserves class name + canned remediation); falls back to
+ * generic Error inspection (message + opKind tag) per existing convention.
+ */
+function buildExecutionError(err: unknown, target: string, opKindOverride?: string): ExecutionError {
+  if (err instanceof OpError) {
+    const entry: ExecutionError = {
+      target: err.target ?? target,
+      opKind: opKindOverride ?? err.opKind,
+      message: err.message,
+      class: err.name,
+      remediation: err.remediation,
+    };
+    if (err.innerCause !== undefined) entry.innerCause = err.innerCause;
+    return entry;
+  }
+  const e = err as Error & { opKind?: string };
+  return {
+    target,
+    opKind: opKindOverride ?? e.opKind ?? "?",
+    message: e.message,
+    class: e.name ?? "Error",
+  };
+}
+
 const DEFAULT_RUNTIME_ABSOLUTE_TIMEOUT_MS = 300_000;
 
 /**
@@ -640,7 +662,7 @@ async function dispatchWithTimeout<T>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      reject(makeOpError(opKind, `Op '${opKind}' timed out after ${timeoutMs}ms.`));
+      reject(new OpTimeoutError(timeoutMs, opKind));
     }, timeoutMs);
   });
   try {
@@ -723,7 +745,7 @@ async function execShellCommand(bin: string, args: string[], timeoutMs: number):
     child.on("close", (code) => {
       clearTimeout(timer);
       if (killed) {
-        reject(makeOpError("@", `Op '@' timed out after ${timeoutMs}ms.`));
+        reject(new OpTimeoutError(timeoutMs, "@"));
         return;
       }
       if (code !== 0) {
@@ -904,7 +926,7 @@ export function substituteRuntime(text: string, vars: Map<string, unknown>): str
     (_match: string, ref: string, filter: string | undefined) => {
       const value = resolveRef(ref, vars);
       if (value === undefined) {
-        throw new Error(`Unresolved variable reference at runtime: $(${ref})`);
+        throw new UnresolvedVariableError(ref, "?");
       }
       const s = stringifyValue(value);
       if (!filter) return s;

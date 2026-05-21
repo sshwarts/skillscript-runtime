@@ -94,8 +94,14 @@ export {
   DispatchError,
   ModelError,
   TimeoutError,
+  OpError,
+  ConnectorNotFoundError,
+  OpTimeoutError,
+  InteractiveOpInAutonomousModeError,
+  UnsafeShellDisabledError,
+  UnresolvedVariableError,
 } from "./errors.js";
-export type { LintDiagnostic } from "./errors.js";
+export type { LintDiagnostic, OpErrorMetadata } from "./errors.js";
 
 export {
   ReferenceIndex,
