@@ -11,11 +11,12 @@ WORKDIR /work
 # Copy manifests first to cache the install layer.
 COPY package.json pnpm-lock.yaml* ./
 RUN corepack enable && corepack prepare pnpm@11.0.8 --activate \
-    && pnpm install --frozen-lockfile
+    && pnpm install --frozen-lockfile --ignore-scripts
 
 COPY tsconfig*.json ./
 COPY src ./src
 COPY scaffold ./scaffold
+COPY scripts ./scripts
 RUN pnpm run build
 
 # Prune dev deps for the runtime image.
