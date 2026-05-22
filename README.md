@@ -1,346 +1,283 @@
 # Skillscript
 
-> A small declarative language for authoring agent workflows.
+*A language for agents to write themselves in.*
 
-**Status: v1 in progress (current release: 0.2.4).** The public API, language syntax, and connector contracts may change before v1.0.0. Expect breakage until then.
+[![npm version](https://img.shields.io/npm/v/skillscript-runtime.svg)](https://www.npmjs.com/package/skillscript-runtime)
+[![tests](https://img.shields.io/badge/tests-559%2F559-green)](#)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![status](https://img.shields.io/badge/status-pre--1.0-orange)](#status)
 
-A skillscript is a declarative recipe — a small program with a dependency DAG of named targets, each composed of typed operations. Skills are authored once and executed many times, either by the interpreter (autonomous, cron-fired) or by an agent reading a compiled prompt artifact.
+> **TL;DR** — `npm install -g skillscript-runtime`, then `skillfile dashboard`. See [Quickstart](#quickstart).
 
-The runtime is substrate-neutral. Bundled reference connectors back filesystem, SQLite, Ollama, and an MCP scaffold; adapter implementations against other backings (cloud key-value stores, hosted LLMs, vector DBs) live in separate packages that consume the public connector contracts exported here.
+## Contents
+
+- [The problem](#the-problem)
+- [The frame](#the-frame)
+- [Why a new language](#why-a-new-language)
+- [Why not just have the agent write a Skill?](#why-not-just-have-the-agent-write-a-skill)
+- [Three kinds of skill](#three-kinds-of-skill)
+  - [Waking agents](#waking-agents)
+  - [Local models as tools for the frontier](#local-models-as-tools-for-the-frontier)
+- [What you get](#what-you-get)
+- [The bet](#the-bet)
+- [Quickstart](#quickstart)
+- [Connector model](#connector-model)
+- [CLI](#cli)
+- [MCP server surface](#mcp-server-surface)
+- [Examples](#examples)
+- [Architecture and deep documentation](#architecture-and-deep-documentation)
+- [Status](#status)
+- [Contributing](#contributing)
+- [License](#license)
 
 ---
 
-## Table of contents
+## The problem
 
-1. [Installation](#installation)
-2. [Quickstart: author and run a skill](#quickstart-author-and-run-a-skill)
-3. [CLI reference](#cli-reference)
-4. [Browser dashboard](#browser-dashboard)
-5. [Container deployment](#container-deployment)
-6. [Language overview](#language-overview)
-7. [Connector model](#connector-model)
-8. [External adapters](#external-adapters)
-9. [Library API](#library-api)
-10. [Contributing](#contributing)
-11. [License](#license)
+AI agents are mostly transient. Every routine task is re-derived from prose reasoning. The agent that summarized a thread yesterday will summarize one tomorrow by reasoning from scratch about how to summarize threads, burning frontier inference on a procedure with a known shape, a known output format, and known failure modes.
+
+The waste compounds in three directions: **cost** (every routine operation runs through the most expensive reasoning layer in the system), **latency** (every operation pays the full inference cost), and **drift** (the same task produces slightly different results each invocation because nothing crystallizes).
+
+The deeper problem is that *agents have no substrate to write themselves down in*. Agents are partly defined by what they can do and what they can do is currently held entirely in a soft, transient form of reasoning at inference time. There's no hard form. No place for an agent to crystallize a learned procedure into something cheap to execute, cheap to inspect, and cheap to improve.
+
+Most agent infrastructure projects today focus on **memory** — episodic recall, retrieval-augmented context, conversation summarization. Those projects answer *"what does the agent know."* They don't answer *"what can the agent do"* in any persistent, executable, inspectable form.
+
+Skillscript intends to answer the second question.
+
+## The frame
+
+**Agents are code, and skillscript is the language they write themselves in.** Not memory in the recall sense. Not prompt templates. Not configuration. Code, in the strict sense of named, typed, composable, executable artifacts that constitute capability.
+
+A skillscript skill is a declarative recipe, a small program with a dependency DAG of typed operations — that an agent authors once and the runtime fires many times. Where typical agent code is procedural (Python scripts, TypeScript handlers), skillscript is **orchestration-only**: it composes calls into tools, models, and memory stores through swappable connector contracts. Computation lives in tools; coordination lives in skills.
+
+```
+# Skill: hello
+# Status: Approved
+# Description: The canonical first-run example.
+# Vars: WHO=world
+
+greet:
+    ! Hello, $(WHO)!
+    ! Welcome to Skillscript.
+
+default: greet
+```
+
+That's a complete, runnable skill. Five lines, no dependencies, no boilerplate. The same shape scales to multi-stage DAGs that classify inputs, dispatch to local models, write to memory, branch on conditions, and orchestrate sub-agents, all in the same declarative grammar.
+
+## Why a new language
+
+The obvious alternative is "let the agent write Python." Python is Turing-complete, has mature tooling, and models write it well. For one-shot exploratory work or where computation matters, Python is the right tool, and we're not proposing anyone stop using it for that.
+
+But agent-authored *persistent* automation has a different shape:
+
+- An **agent** (not a human) writes the code.
+- The code runs **autonomously** — cron-fired, event-triggered — with no human in the loop at execution time.
+- The work is **dispatch-shaped**: call a tool, classify a result, branch, call another tool. Not algorithmic computation.
+- The code needs to be **auditable by humans at human tempo** even though it's authored at agent tempo.
+
+For this shape, Python's strengths invert into liabilities:
+
+- **Turing completeness becomes a liability.** An agent-authored script can do anything including things the agent didn't realize were dangerous. `subprocess.run`, arbitrary network calls, file writes. None of these are gated. The blast radius of a buggy agent-authored script is the whole host.
+- **Mature tooling doesn't help when the author isn't human.** Debuggers and REPLs are for human iteration. Agents don't iterate that way.
+- **Direct execution magnifies failure.** When an agent ships a broken Python script to production cron, there's no validation layer. The script fails silently at 3am and the human discovers it the next day.
+- **The package ecosystem becomes an unbounded attack surface.** Agents that can `pip install` anything can install anything — including supply-chain-compromised packages. The package ecosystem assumes human review before adoption; agent adoption breaks that assumption.
+
+Skillscript deliberately constrains expressiveness. It's not Turing complete. It can't `eval`, can't `subprocess`, can't import arbitrary code. **The constraint *is* the safety story** — enforced at the language level, not as an aspiration. In exchange:
+
+- **Sandboxed grammar.** The language can only do what configured connectors permit.
+- **Declarative legibility.** Skills are DAGs of typed dispatches. A human reading a skill sees exactly which tools get called, which memory writes happen, which model prompts fire. The same source produces the same audit diagram every time.
+- **Connector-mediated capability.** Skills don't import packages, they invoke connectors, gated artifacts with curated tool surfaces. Python doesn't disappear from the system; it moves out of the agent's hands and into the connector implementations adopters write deliberately. The safety boundary moves to the connector edge.
+- **Static validation before admission.** A skill that fails the linter can't enter the library. Structural issues , missing dependencies, undeclared variables, mutation paths without confirmation gates are caught at authorship time, not at 3am.
+- **Asymmetric cost.** Routine work (classify, dispatch, transform) costs local-model tokens. The frontier model is reserved for the small fraction of work that actually needs frontier judgment.
+
+## Why not just have the agent write a Skill?
+
+Skills (Anthropic/OpenAI) are the existing convention for giving agents named, reusable capabilities, hand-authored markdown that loads instructions into the model's context. They work, and skillscript is complementary to them, not competing.
+
+The problem with hand-authoring is that **both authoring populations produce badly-shaped artifacts when working in prose:**
+
+- **Agents authoring markdown produce artifacts shaped for humans, not agents** — verbose explanations, hedging language, redundant context-setting, prose where structure would do. The result is expensive to load, noisy to parse, and hard to maintain.
+- **Humans authoring markdown produce the opposite failure modes**. Either ultra-terse and missing context, or kitchen-sink comprehensive in ways that bury the actual procedure under hedges and edge cases.
+
+Making this a programming problem disciplines both populations into the right shape. The grammar doesn't permit rambling. The compiler emits structure, not prose-pretending-to-be-structure.
+
+A skillscript skill **compiles** into an artifact of the same shape as a hand-authored Skill — `# Skill: <name>` header, instructional markdown body — and that artifact can be loaded into an agent's context the same way. Skillscript is what you author *in*; the compiled Skill is what runs. Mature deployments use both: Skills as agent-facing capability descriptions, skillscript as the higher-leverage authoring layer underneath.
+
+## Three kinds of skill
+
+Every skillscript skill is one of three shapes, determined by the relationship to a frontier agent:
+
+| Kind | Output goes to | Use case |
+|---|---|---|
+| **Headless** | a downstream system or human, consumed asynchronously | Cron-fired monitors, batch processors, autonomous workflows |
+| **Augmenting** | a frontier agent's reasoning context, immediately at session start or wake | Session-start briefings, alerts, prepared context |
+| **Template** | a frontier agent's execution loop, as a prompt the agent runs itself | Reusable recipes the agent fetches and follows |
+
+The kinds compose. A Headless monitor fires on cron, evaluates a condition, and routes into an Augmenting skill that wakes an agent with context, which itself references a Template skill for the agent to execute. See the [Language Reference](https://github.com/sshwarts/skillscript-runtime/blob/main/docs/language-reference.md) §1 for the full taxonomy.
+
+### Waking agents
+
+Augmenting and Template skills don't just write somewhere; they deliver to a frontier agent through `AgentConnector`. The contract is substrate-neutral: a Headless monitor detects a condition, evaluates whether action is warranted, and either resolves silently or calls `AgentConnector.deliver(agent_id, payload)`. The implementation might write a memory the agent reads at next session, post to a chat thread the agent monitors, send a push notification, write to a tmux pane, or invoke a webhook. All the adopter's call.
+
+The runtime ships `NoOpAgentConnector` by default; production deployments wire their own.
+
+This is what makes *"Headless monitor → wake agent with context"* a real composition primitive, not just a pattern adopters bolt on. Skills don't know what substrate they're waking into; the substrate doesn't know what skill triggered it. The contract handles the seam.
+
+### Local models as tools for the frontier
+
+Most agent systems treat local models as *substitutes* for frontier inference. Call them instead of the frontier when latency or cost matters. Skillscript treats them as something different: *delegation targets the frontier orchestrates*. The frontier composes the workflow; each `~` op is the frontier dispatching a bounded sub-task (classify a message, extract a field, judge whether two strings refer to the same thing, summarize a chunk, format a response) to a local model and consuming the result.
+
+In skillscript, this isn't a separate "local-model interplay" pattern adopters bolt on — it's a *first-class language operation*. `~ prompt="..." model="qwen" -> RESULT` lives next to `$ tool.call args="..." -> RESULT` in the skill body, with the same op-level discipline, the same trace surface, the same lint coverage. Local models become tools the frontier model can wield through skills, on the same footing as MCP tools and memory reads.
+
+The cost shape that follows: routine work runs at local-model cost (free at scale, fast, private to the host); the frontier model intervenes only at orchestration boundaries and ambiguous cases. Customer data flowing through `~` ops never reaches an external API. The local-model layer becomes the privacy boundary, not a separate add-on.
+
+## What you get
+
+**For operators:**
+
+- *Cost reduction at scale.* Routine operations stop hitting frontier inference. As the library matures, an increasing fraction of agent work executes on cheaper substrate, with the frontier model invoked only for orchestration and judgment.
+- *Auditability.* Agent behavior becomes inspectable by reading skills, not by trusting agent narration. Renderer, linter, and conformance tests operate on parsed skillscript regardless of where it's stored.
+- *Safety boundaries that scale.* The runtime bounds what skills can do via connector configuration, independent of what the authoring agent's tool surface looks like. Mutating operations require explicit user confirmation as a language primitive — visible to static analysis, not dependent on author discipline.
+- *Behavioral consistency.* Procedures don't drift across invocations because the procedure is stored, not re-derived. When the procedure needs to change, the change is a versioned edit, not a hope that the agent reasons identically next time.
+
+**For agent capability:**
+
+- *Reduced token budget on routine work.* Authoring a skill is a one-time cost paid against an indefinite stream of cheap executions.
+- *Composition over re-derivation.* New tasks built by orchestrating existing skills rather than starting from scratch. Capability accumulates rather than evaporating at the end of each invocation.
+
+## The bet
+
+Skillscript bets that **the majority of agent-authored automation work is dispatch-shaped, not computation-shaped**. Neither agents nor humans produce well-shaped procedural artifacts when authoring in prose. Both populations need the structural discipline of a programming language to converge on the right shape for the work, the audience that runs it, and the audit tooling that has to operate on it.
+
+If that bet is wrong, skillscript stays a nice niche tool. If it's right, skillscript becomes a default substrate for agent-fired automation in the same way SQL became the default substrate for data access: declarative, composable, auditable, and outliving any specific runtime underneath it.
 
 ---
 
-## Installation
+## Quickstart
 
-### npm (recommended)
-
-```sh
+```bash
+# Install
 npm install -g skillscript-runtime
-skillfile --version
-```
 
-This installs the `skillfile` binary globally. Requires Node.js ≥ 22.5 (the runtime uses `node:sqlite` and other features that landed in 22.5+).
-
-### From source
-
-```sh
-git clone https://github.com/sshwarts/skillscript-runtime.git
-cd skillscript-runtime
-pnpm install
-pnpm run build
-node dist/cli.js --help
-```
-
-The repo uses pnpm for reproducible installs. `pnpm run build` compiles TypeScript to `dist/` and copies dashboard assets into place.
-
----
-
-## Quickstart: author and run a skill
-
-```sh
-# 1. Scaffold the config tree
-skillfile init
-
-# 2. Inspect the bundled hello example
-cat ~/.skillscript/examples/hello.skill.md
-
-# 3. Run it (no Ollama, no MCP, no external state required)
-skillfile run examples/hello.skill.md
-# → Hello, world!
-
-# 4. Override an input
-skillfile run hello --input WHO=Scott
-# → Hello, Scott!
-```
-
-A minimal `.skill.md` looks like:
-
-```skillscript
-# Skill: greet
-# Status: Draft
+# Author your first skill
+mkdir -p ./skills && cat > ./skills/hello.skill.md <<'EOF'
+# Skill: hello
+# Status: Approved
 # Vars: WHO=world
 
 greet:
     ! Hello, $(WHO)!
 
 default: greet
+EOF
+
+# Start the runtime + dashboard
+SKILLSCRIPT_HOME=./skills skillfile dashboard --port 7878
+
+# In another terminal, run the skill
+skillfile run hello
+
+# Open the dashboard
+open http://localhost:7878
 ```
 
-Save that as `greet.skill.md` and run `skillfile run ./greet.skill.md`. The `!` op emits a message; the dispatcher walks the dependency DAG from `default:` backward.
+Or via Docker / GHCR:
 
-Lint as you go:
-
-```sh
-skillfile lint ./greet.skill.md
+```bash
+docker run -p 7878:7878 -v $(pwd)/skills:/skills \
+  -e SKILLSCRIPT_HOME=/skills \
+  ghcr.io/sshwarts/skillscript-runtime:latest
 ```
-
-Compile to a prompt artifact (the form an agent consumes when it dispatches a skill mid-conversation):
-
-```sh
-skillfile compile ./greet.skill.md
-# Writes greet.skill.provenance.json sidecar with content hashes
-```
-
----
-
-## CLI reference
-
-All 13 commands. Run `skillfile <command> --help` for per-command options + examples.
-
-| Command | Purpose |
-|---|---|
-| `init` | Scaffold `~/.skillscript/` tree + bundled example |
-| `run <path\|name>` | Compile + execute a skill end-to-end |
-| `compile <path\|name>` | Render the compiled artifact (no execution) |
-| `audit <provenance-path>` | Detect recompile-staleness via `.provenance.json` sidecar |
-| `lint <path\|name>` | Run static validation, print findings |
-| `list` | List available skills in the configured SkillStore |
-| `fires <skill>` | List recent trace records for a skill |
-| `diagram <path\|name>` | Emit mermaid graph of the skill's control flow |
-| `sign <path\|name>` | Content-hash sign the skill source (SHA-256) |
-| `verify <path\|name> <hash>` | Verify the skill matches a signature |
-| `replay <trace_id>` | Re-run a recorded trace mechanically |
-| `health` | Aggregate runtime metrics across all traces |
-| `dashboard` | Start the runtime host: scheduler + MCP server + browser dashboard SPA |
-
-> Trigger registration is handled through the MCP server exposed by `skillfile dashboard` (`register_trigger` / `unregister_trigger` / `list_triggers` tools). The v0.2.0 CLI register-trigger family was removed in v0.2.1 — those commands constructed throwaway in-memory schedulers and never fired.
-
-Environment variables:
-
-| Var | Default | Purpose |
-|---|---|---|
-| `SKILLSCRIPT_HOME` | `~/.skillscript` | Config + data root |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint for LocalModel dispatch |
-
----
-
-## Browser dashboard
-
-The runtime ships with a browser dashboard for non-CLI operators. Five views: overview, skills, triggers, connectors, plus a skill detail drilldown. 30-second polling; write paths for status transitions and trigger CRUD. Localhost-only by default — no authentication in v1.
-
-```sh
-skillfile dashboard
-# → http://127.0.0.1:7878
-```
-
-Options:
-
-```sh
-skillfile dashboard --port 8080            # custom port
-skillfile dashboard --host 0.0.0.0         # bind all interfaces (container only)
-```
-
-The dashboard talks to the runtime via an MCP server contract (JSON-RPC 2.0 over HTTP at `/rpc`). Real MCP clients (Claude Desktop, Cursor, future tools) can consume the same endpoint — the SPA is one of several possible UIs over the same contract. **Eleven tools** today: `skill_list`, `skill_metadata`, `skill_status` (write), `list_triggers`, `register_trigger` (write), `unregister_trigger` (write), `health_metrics`, `runtime_capabilities`, `lint_skill`, `compile_skill`, `skill_write` (write). The last three (v0.2.3) close the over-the-wire authoring lifecycle — foreign clients can lint → compile → write → status → register_trigger end-to-end without filesystem access.
-
----
-
-## Container deployment
-
-The repo ships a multi-stage Dockerfile + `docker-compose.yml`. The image bundles the runtime, CLI, and dashboard SPA in one Node process.
-
-```sh
-docker compose up --build              # default profile: dashboard
-# → http://127.0.0.1:7878
-```
-
-Profiles:
-
-```sh
-docker compose --profile tools run --rm tools lint my-skill.skill.md
-docker compose --profile ollama up     # adds Ollama for LocalModel
-```
-
-Persistent state (`SKILLSCRIPT_HOME=/data`) mounts as a volume so skills + traces survive restarts. The host port mapping (`127.0.0.1:7878:7878`) keeps the dashboard reachable only from localhost even though the container itself binds `0.0.0.0` internally.
-
-### Pulling from a registry
-
-Images publish to GitHub Container Registry:
-
-```sh
-docker pull ghcr.io/sshwarts/skillscript-runtime:latest
-# or pin to a specific version
-docker pull ghcr.io/sshwarts/skillscript-runtime:v0.2.4
-```
-
-Authentication (`gh auth login` then `gh auth token | docker login ghcr.io -u sshwarts --password-stdin`) is only required for pushes; pulls are public.
-
----
-
-## Language overview
-
-A skill is markdown with structured headers and a body of named targets:
-
-```skillscript
-# Skill: weather-brief
-# Status: Approved
-# Vars: CITY=Asheville
-# Requires: user-var:home_location -> CITY (fallback: Asheville)
-# Triggers: cron: */30 * * * *
-
-fetch needs:
-    ~ memory-store.get key="weather:$(CITY|url)" -> CACHED
-
-forecast: fetch
-    if $(CACHED):
-        $set FORECAST = $(CACHED)
-    else:
-        > local-model.complete prompt="Brief weather for $(CITY)" -> FORECAST
-        ~ memory-store.set key="weather:$(CITY|url)" value=$(FORECAST)
-
-emit: forecast
-    ! Weather for $(CITY): $(FORECAST)
-
-default: emit
-```
-
-Eight typed operations (`!` emit, `?` ask, `??` ask-for-input, `$` set, `~` retrieve, `>` complete, `@` shell, `&` invoke-skill), three control-flow constructs (`if`/`elif`/`else`, `foreach`, `needs:`), and a small set of headers (`# Skill:`, `# Status:`, `# Vars:`, `# Requires:`, `# Triggers:`, `# Output:`, `# Timeout:`, `# OnError:`, `# Type:`).
-
-**Full canonical reference**: [`docs/language-reference.md`](./docs/language-reference.md) — syntax, ops, semantics, lifecycle, connectors, error handling, all 1500+ lines.
-
----
 
 ## Connector model
 
-The runtime depends on five pluggable connector contracts:
+Skills don't know what they're talking to. Five contracts decouple language from substrate:
 
-| Contract | Purpose | Bundled reference impl |
+| Contract | Purpose | Routes |
 |---|---|---|
-| `SkillStore` | Persist + version + filter skills | `FilesystemSkillStore` (filesystem) |
-| `MemoryStore` | Cache + query memory data with TTL | `SqliteMemoryStore` (`node:sqlite`) |
-| `LocalModel` | Dispatch `>` and `~` ops to a local LLM | `OllamaLocalModel` (HTTP to Ollama) |
-| `McpConnector` | Dispatch `$` and `~` ops via MCP tools | `CallbackMcpConnector` (in-process) |
-| `AgentConnector` | Deliver to / wake a frontier agent (T7.1) | `NoOpAgentConnector` (warns + discards) |
+| `SkillStore` | Skill source persistence | `.skill.md` files (filesystem default) |
+| `MemoryStore` | Retrieval over an external knowledge store | `>` ops |
+| `LocalModel` | Local LLM dispatch (Ollama default) | `~` ops |
+| `McpConnector` | MCP tool invocation | `$` ops |
+| `AgentConnector` | Delivery to a frontier agent | `prompt-context:` and `template:` outputs |
 
-Wire your own impls through `Registry`:
+Wire your own by implementing the interface and registering in `connectors.json`. See [`docs/language-reference.md`](docs/language-reference.md) §10 for full contracts.
 
-```typescript
-import { Registry } from "skillscript-runtime";
-import { MyRedisSkillStore } from "./my-adapter.js";
+## CLI
 
-const registry = new Registry();
-registry.registerSkillStore(new MyRedisSkillStore({ url: "redis://..." }));
-registry.registerLocalModel(new OllamaLocalModel());
-// ... use with execute() or Scheduler
-```
+13 commands cover the full authoring + ops lifecycle:
 
-The connector resolution cascade (`# Requires:` → static capability check → runtime dispatch) is described in detail in [`docs/ERD.md`](./docs/ERD.md) §3 and the [language reference](./docs/language-reference.md).
-
----
-
-## External adapters
-
-The connector contracts are exported under `skillscript-runtime/connectors`:
-
-```typescript
-import type {
-  SkillStore, MemoryStore, LocalModel, McpConnector, AgentConnector,
-  StaticCapabilities, ManifestInfo,
-} from "skillscript-runtime/connectors";
-
-export class MyCloudMemoryStore implements MemoryStore {
-  staticCapabilities(): StaticCapabilities {
-    return { connector_type: "memory-store", features: { ttl: true, query: true } };
-  }
-  // ... implement get / set / delete / query / snapshot / manifestInfo
-}
-```
-
-Adapter packages can ship publicly (npm) or privately (internal registries). The runtime treats all adapters identically as long as they conform to the typed contract. The `skillscript-runtime/testing` entry point exports `SkillStoreConformance`, `MemoryStoreConformance`, `LocalModelConformance`, `McpConnectorConformance`, and `AgentConnectorConformance` — drop-in test suites that adapter authors run against their implementation to verify contract conformance before shipping.
-
-### AgentConnector — delivery to frontier agents
-
-Augmenting and Template skill outputs (`# Output: prompt-context: <agent>` and `# Output: template: <agent>`) deliver through `AgentConnector.deliver`. The contract surfaces three verbs (`list_agents`, `deliver`, `wake`) plus an optional `agent_status` probe. Substrate examples:
-
-| Substrate | `deliver` impl | `wake` impl |
-|---|---|---|
-| tmux session | `tmux send-keys` to a pane | `tmux send-keys` with wake prompt |
-| webhook | POST to `/augment` or `/template` endpoint | POST to `/wake` endpoint |
-| file-watch | write to `<path>/augment-<id>.txt` | write to `<path>/wake-<id>.txt` |
-| Slack thread | post to monitored thread | post + @mention |
-| IPC named pipe | write to delivery pipe | write to wake pipe |
-
-The bundled `NoOpAgentConnector` is the default — it logs a one-line warning and discards the payload, so the runtime starts cleanly when no agent substrate is wired. Production deployments wire a real impl through `Registry.registerAgentConnector()`.
-
-
-```typescript
-import { describe } from "vitest";
-import { SkillStoreConformance } from "skillscript-runtime/testing";
-import { MyCloudSkillStore } from "./my-cloud-skill-store.js";
-
-describe("MyCloudSkillStore", () => {
-  SkillStoreConformance(() => new MyCloudSkillStore({ /* fixture config */ }));
-});
-```
-
----
-
-## Library API
-
-Embedders consume the runtime as a library rather than via CLI:
-
-```typescript
-import { compile, execute, lint, Registry, Scheduler } from "skillscript-runtime";
-import { FilesystemSkillStore } from "skillscript-runtime/connectors";
-import { FilesystemTraceStore } from "skillscript-runtime/trace";
-
-const skillStore = new FilesystemSkillStore("./skills");
-const traceStore = new FilesystemTraceStore("./traces");
-const registry = new Registry();
-registry.registerSkillStore(skillStore);
-
-const scheduler = new Scheduler({ registry, skillStore, traceStore });
-const result = await scheduler.dispatchSkill("hello", { WHO: "Scott" });
-console.log(result.emissions);
-```
-
-Subpath exports for adapter authors and embedders who want narrower imports:
-
-| Path | Content |
+| Command | Purpose |
 |---|---|
-| `skillscript-runtime` | Main barrel — everything |
-| `skillscript-runtime/connectors` | Connector contracts + Registry + bundled impls |
-| `skillscript-runtime/errors` | `OpError` + subclasses, `LintFailureError`, `ConnectorError` |
-| `skillscript-runtime/runtime` | `execute()` + helpers |
-| `skillscript-runtime/trace` | `TraceStore`, `FilesystemTraceStore`, sampling |
-| `skillscript-runtime/metrics` | `healthMetrics()` aggregator |
-| `skillscript-runtime/scheduler` | `Scheduler` + `TriggerRegistration` |
-| `skillscript-runtime/mcp-server` | `McpServer` + JSON-RPC types |
-| `skillscript-runtime/testing` | Contract conformance suites |
+| `skillfile compile <path\|name>` | Compile a skill to its rendered artifact |
+| `skillfile audit <path\|name>` | Compile + content-hash check |
+| `skillfile lint <path\|name>` | Tier-1/2/3 lint diagnostics |
+| `skillfile run <path\|name>` | Execute a skill against configured connectors |
+| `skillfile fires <skill>` | Recent fire history with trace IDs |
+| `skillfile diagram <path\|name>` | Mermaid DAG visualization |
+| `skillfile sign <path\|name>` | Generate content-hash signature |
+| `skillfile verify <path\|name> <hash>` | Verify against a known signature |
+| `skillfile replay <trace_id>` | Re-run from a captured trace |
+| `skillfile health` | Aggregate runtime health metrics |
+| `skillfile dashboard [--port N]` | Boot browser dashboard + MCP server |
+| (Trigger management lives in the MCP surface, not the CLI) | |
 
----
+Run `skillfile <command> --help` for per-command flags.
+
+## MCP server surface
+
+The runtime exposes 11 tools over MCP (HTTP at `/rpc`) for cold-client authoring + observability:
+
+| Category | Tools |
+|---|---|
+| Skill management | `skill_list`, `skill_metadata`, `skill_status`, `skill_write` |
+| Authoring | `lint_skill`, `compile_skill` |
+| Triggers | `list_triggers`, `register_trigger`, `unregister_trigger` |
+| Observability | `health_metrics` |
+| Discovery | `runtime_capabilities` |
+
+This is the "agent reaches MCP" path — an external agent (Claude, GPT, anything that speaks MCP) can author, validate, and deploy skills entirely over the wire.
+
+## Examples
+
+Seven curated example skills in [`examples/`](examples/), covering:
+
+- Multi-target DAG with `needs:` dependencies
+- Cron triggers with `# OnError:` fallback
+- Session-start `prompt-context:` delivery
+- `??` interactive ask-user pattern
+- `# Requires:` cascade for compile-time data
+- `&` skill composition
+
+Each example is annotated with the language pattern it demonstrates. Authored from spec by cold-context sub-agents — they double as conformance fixtures.
+
+## Architecture and deep documentation
+
+- **[Language Reference](docs/language-reference.md)** — canonical spec (1600+ lines, 13 sections). The single source of truth on syntax + semantics.
+- **ROADMAP** — *coming soon to docs/*
+
+## Status
+
+**v0.2.4** — pre-1.0, breaking changes expected. The language is stable enough to author production skills; the surrounding tooling (CLI, dashboard, MCP server contract) may evolve before v1.0.
+
+Test coverage: 549/549 passing. Narrow-core LOC under the 5000/20-file ceiling per [ERD §1](#).
+
+What's coming next:
+- Comparison operators (`<`, `>`, `<=`, `>=`) and `|length` filter — orchestration carve-out for numeric thresholds
+- Persistent trigger registry on disk — imperative triggers survive process restart
+- `skillfile serve` headless command — scheduler + MCP server without the SPA
 
 ## Contributing
 
-The codebase prioritizes a small, agent-modifiable core. The narrow runtime + compiler + lint + connectors set lives under 5K LOC; CLI, dashboard, MCP server, and observability surfaces are tracked separately. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a file-by-file map and [`docs/ERD.md`](./docs/ERD.md) for the engineering requirements.
+Bug reports and feature requests welcome via Issues. PRs accepted but please open an Issue first to discuss the design — skillscript's value proposition rests on a constrained grammar, and not every "small extension" earns its keep.
 
-Pre-flight checks:
-
-```sh
-pnpm run typecheck
-pnpm run loc-check       # enforces ERD §1 LOC ceiling
-pnpm test                # 473+ tests
-```
-
-Full `CONTRIBUTING.md` lands in v1.x.
-
----
+For language design questions, see the cold-agent-driven precedent in [Open spec questions](docs/language-reference.md#open-spec-questions): if cold-context sub-agents writing skills from spec alone hit the same syntactic friction across multiple authors, that's a signal to extend the language.
 
 ## License
 
-MIT. See [`LICENSE`](./LICENSE).
+MIT. See [LICENSE](LICENSE).
+
+---
+
+*"Made by agents, for agents."* Skills are the agent's programming language.
