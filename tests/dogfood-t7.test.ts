@@ -24,8 +24,8 @@ const REPO_ROOT = join(__dirname, "..");
 const PACKAGE_JSON = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as Record<string, unknown>;
 
 describe("T7 — package.json polish", () => {
-  it("1. version is 0.2.5 (T7 + trigger fix + parser + authoring MCP + D/F + cmp ops)", () => {
-    expect(PACKAGE_JSON["version"]).toBe("0.2.5");
+  it("1. version is 0.2.6 (T7 + 0.2.1-0.2.5 polish + 0.2.6 delivery-provenance)", () => {
+    expect(PACKAGE_JSON["version"]).toBe("0.2.6");
   });
 
   it("2. main + types + bin + engines.node ≥ 22.5 declared", () => {
@@ -131,9 +131,9 @@ describe("T7 — CLI --help surface", () => {
     }
   });
 
-  it("11. version flag reports 0.2.5", () => {
+  it("11. version flag reports 0.2.6", () => {
     const out = execSync(`${CLI} --version`, { encoding: "utf8" });
-    expect(out.trim()).toBe("0.2.5");
+    expect(out.trim()).toBe("0.2.6");
   });
 });
 

@@ -360,12 +360,12 @@ Injected automatically at runtime; never declared by the author.
 
 | Var | Value |
 |-----|-------|
-| `$(NOW)` | Current timestamp |
+| `$(NOW)` | Current timestamp (milliseconds since Unix epoch) |
 | `$(USER)` | The configured user identity |
 | `$(SESSION_CONTEXT)` | Current session-scope context (project/entity/etc., substrate-defined) |
-| `$(TRIGGER_TYPE)` | What event fired this skill (v2) |
-| `$(TRIGGER_PAYLOAD)` | Event-specific data (v2) |
-| `$(EVENT.*)` | Event-payload fields populated by the trigger source (v2) |
+| `$(TRIGGER_TYPE)` | What source fired this skill: `cron`, `session`, `event`, `agent-event`, `file-watch`, `sensor`, or `manual` |
+| `$(TRIGGER_PAYLOAD)` | Source-specific value (cron expression, session phase, event name, etc.) |
+| `$(EVENT.*)` | Event-payload fields populated by the trigger source — see time-offset fields below |
 | `$(ERROR_CONTEXT)` | In `# OnError:` fallback skills: type + target where failure occurred |
 
 Iterator vars from `foreach` and output bindings from `>` / `~` also pass through ambient at compile time; the runtime substitutes them per iteration / per op completion.
@@ -474,6 +474,8 @@ Pipe filters apply transforms to resolved variables before substitution. Syntax:
 | `json` | `JSON.stringify(value)` | `$(payload|json)` for `{k:"v"}` | `"{\"k\":\"v\"}"` |
 | `trim` | Whitespace trim | `$(VERDICT|trim)` for `"urgent\n"` | `urgent` |
 | `length` | Array element count if JSON-parses as an array; otherwise character count | `$(ITEMS|length)` for `[1,2,3]` / `"hello"` | `3` / `5` |
+
+See [`examples/queue-length-monitor.skill.md`](../examples/queue-length-monitor.skill.md) for a canonical "count items, compare to threshold" pattern combining `|length` with the v0.2.5 numeric comparison operators. Cold authors otherwise tend to route counting through a LocalModel prompt; the filter is deterministic and free.
 
 ## Filter chaining
 

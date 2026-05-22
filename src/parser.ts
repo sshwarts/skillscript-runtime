@@ -165,6 +165,21 @@ export interface ParsedSkill {
   onError: string | null;
   triggers: TriggerDecl[];
   outputs: OutputDecl[];
+  /**
+   * `# Delivery-context:` value — human-readable explanation routed to
+   * the receiving agent alongside an augment/template delivery so the
+   * agent knows *why* it was notified. Augmenting/Template skills only;
+   * a `unused-augmenting-header` lint warning fires when set on a skill
+   * without an agent-bound output declaration. v0.2.6 addition.
+   */
+  deliveryContext: string | null;
+  /**
+   * `# Templates:` value — comma-separated names of Template skills the
+   * receiving agent may fetch as follow-on actions. Surfaced alongside
+   * the delivery so the agent can act on the augment with named next
+   * steps. v0.2.6 addition.
+   */
+  templates: string[];
   parseErrors: string[];
 }
 
@@ -589,6 +604,8 @@ export function parse(source: string): ParsedSkill {
     onError: null,
     triggers: [],
     outputs: [],
+    deliveryContext: null,
+    templates: [],
     parseErrors: [],
   };
   const tabLines = findTabIndentedLines(source);
@@ -728,6 +745,22 @@ export function parse(source: string): ParsedSkill {
             continue;
           }
           result.outputs.push({ kind, target });
+        }
+      } else if (key === "delivery-context") {
+        // Augmenting/Template-only — routed to the receiving agent alongside
+        // the augment payload so they know *why* the delivery fired. Empty
+        // value clears the field; the lint rule `unused-augmenting-header`
+        // catches use on Headless skills. v0.2.6 addition.
+        result.deliveryContext = value === "" ? null : value;
+      } else if (key === "templates") {
+        // Comma-separated Template-skill names the receiving agent may fetch
+        // as follow-on actions. v0.2.6 addition.
+        if (value.toLowerCase() === "(none)" || value === "") {
+          result.templates = [];
+        } else {
+          result.templates = splitVarsLine(value)
+            .map((s) => s.trim())
+            .filter((s) => s !== "");
         }
       } else if (key === "requires") {
         if (value.toLowerCase() === "(none)" || value === "") continue;

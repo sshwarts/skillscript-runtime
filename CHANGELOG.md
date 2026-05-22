@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.2.6 — 2026-05-22
+
+**Language polish — Items 2 + 3 from the v0.2.5 kickoff** (Perry's thread
+`f75477a4`). AgentConnector DeliveryPayload now carries full provenance
++ augmenting-context fields; two new frontmatter headers populate them.
+Plus a doc + example response to Perry's Signal 1 (`|length` under-
+discoverable).
+
+### Added
+- **`source_skill?: string` on the `augment` variant** of
+  `DeliveryPayload` (was template-only in T7.1). Receiving agents reading
+  an augment now know which skill authored it for correlation /
+  auditability.
+- **`triggered_by?: TriggerProvenance` on both variants.** Threads
+  `{source, name, fired_at_ms}` through every delivery so receivers can
+  disambiguate cron / session / manual / event fires. Populated from
+  `ExecuteContext.triggerCtx` — scheduler-fired skills carry full
+  provenance, ad-hoc `execute()` callers without a trigger ctx omit it.
+- **`# Delivery-context: <prose>` header.** Routed to the receiving
+  agent alongside the augment payload as `delivery_context` so the agent
+  knows *why* it's being notified.
+- **`# Templates: <name>, <name>, ...` header.** Comma-separated list of
+  Template-skill names the receiving agent may fetch as follow-on
+  actions. Routed as `templates: string[]`.
+- **Tier-2 lint rule `unused-augmenting-header`.** Fires when
+  `# Delivery-context:` or `# Templates:` appears on a Headless skill
+  (no `prompt-context:` or `template:` output declaration) — those
+  fields would never reach a substrate.
+- **`examples/queue-length-monitor.skill.md`** — canonical
+  "count items via `|length`, compare to threshold" pattern. Closes
+  Perry's Signal 1: cold authors weren't reaching for `|length`
+  naturally; examples beat spec for discoverability.
+
+### Fixed
+- **Stale `(v2)` markers in the language reference's ambient refs table.**
+  `TRIGGER_TYPE`, `TRIGGER_PAYLOAD`, `EVENT.*` are all shipped and
+  auto-injected at runtime; the "(v2)" suffix incorrectly implied
+  "not yet available." Removed; descriptions sharpened to name the
+  concrete values.
+
+### Internal
+- Added a `RecordingAgentConnector` test fixture in `tests/v0.2.6.test.ts`
+  to verify payload threading end-to-end through the runtime dispatch.
+- 600/600 tests passing (588 + 12 new fixtures). Narrow-core LOC
+  unchanged at 4880/13.
+
+### Validation
+Perry's v0.2.5 Item-1 validation pass returned 6/6 regression + 3/3
+fresh-minion compile clean. Surfaced Signal 1 (length discoverability —
+addressed by the new example) and Signal 2 (lint gap on `$(NOW)` —
+verified non-issue; the misread inspired the ambient-table doc fix).
+
+### Acknowledgments
+Perry — kickoff scope and validation cadence remains the same one-hour
+loop that surfaced bugs A-F across v0.2.2-v0.2.4.
+
 ## 0.2.5 — 2026-05-22
 
 **Language polish — Item 1 of 5 from v0.2.5 kickoff** (Perry's thread

@@ -914,6 +914,35 @@ const PLUGIN_COLLISION: LintRule = {
   },
 };
 
+const UNUSED_AUGMENTING_HEADER: LintRule = {
+  id: "unused-augmenting-header",
+  severity: "warning",
+  description: "`# Delivery-context:` or `# Templates:` set on a skill that has no `prompt-context:` or `template:` output declaration. The fields route through `DeliveryPayload`; without an agent-bound output they don't reach a substrate.",
+  remediation: "Either add an agent-bound output (`# Output: prompt-context: <agent>` or `# Output: template: <agent>`) so the augmenting fields fire, or remove `# Delivery-context:` / `# Templates:` from the frontmatter if the skill is genuinely Headless.",
+  check: (ctx) => {
+    const hasAgentBoundOutput = ctx.parsed.outputs.some(
+      (o) => o.kind === "prompt-context" || o.kind === "template",
+    );
+    if (hasAgentBoundOutput) return [];
+    const findings: LintFinding[] = [];
+    if (ctx.parsed.deliveryContext !== null) {
+      findings.push({
+        rule: "unused-augmenting-header",
+        severity: "warning",
+        message: "`# Delivery-context:` is set but this skill has no `prompt-context:` or `template:` output — the value won't reach any agent.",
+      });
+    }
+    if (ctx.parsed.templates.length > 0) {
+      findings.push({
+        rule: "unused-augmenting-header",
+        severity: "warning",
+        message: `\`# Templates:\` lists ${ctx.parsed.templates.length} skill(s) but this skill has no \`prompt-context:\` or \`template:\` output — the field won't reach any agent.`,
+      });
+    }
+    return findings;
+  },
+};
+
 const RULES: LintRule[] = [
   // Tier-1 (error)
   PARSE_ERROR,
@@ -943,6 +972,7 @@ const RULES: LintRule[] = [
   MODEL_CONTENTION,
   DRAFT_WITH_TRIGGER,
   REFERENCE_TO_DISABLED_SKILL,
+  UNUSED_AUGMENTING_HEADER,
   // Tier-3 (info)
   NO_DEFAULT_TARGET,
   DUPLICATE_SKILL_NAME,

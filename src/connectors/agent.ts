@@ -21,14 +21,47 @@
 import type { StaticCapabilities, ManifestInfo } from "./types.js";
 
 /**
+ * Provenance record threaded onto every `DeliveryPayload` so the receiving
+ * agent can disambiguate "what fired this delivery" — was it cron-scheduled?
+ * a session boundary? a user-triggered manual run? v0.2.6 addition per the
+ * AgentConnector polish in Perry's thread `f75477a4`.
+ */
+export interface TriggerProvenance {
+  source: "cron" | "session" | "event" | "agent-event" | "file-watch" | "sensor" | "manual";
+  /** Source-specific value: cron expression, session phase, event name, etc. */
+  name: string;
+  /** Unix-ms timestamp the trigger fired. */
+  fired_at_ms: number;
+}
+
+/**
  * Discriminated payload union for `deliver`. The runtime picks `kind`
  * based on the source declaration:
  *   - `# Output: prompt-context: <agent>` → `{ kind: "augment", ... }`
  *   - `# Output: template: <agent>`       → `{ kind: "template", ... }`
+ *
+ * Common-shaped provenance + augmenting-context fields apply to both
+ * variants (v0.2.6 addition). `source_skill` was template-only in T7.1;
+ * now lives on both.
  */
 export type DeliveryPayload =
-  | { kind: "augment"; content: string; format?: "text" | "markdown" }
-  | { kind: "template"; prompt: string; source_skill?: string };
+  | {
+      kind: "augment";
+      content: string;
+      format?: "text" | "markdown";
+      source_skill?: string;
+      triggered_by?: TriggerProvenance;
+      delivery_context?: string;
+      templates?: string[];
+    }
+  | {
+      kind: "template";
+      prompt: string;
+      source_skill?: string;
+      triggered_by?: TriggerProvenance;
+      delivery_context?: string;
+      templates?: string[];
+    };
 
 export interface DeliveryReceipt {
   /** Unix-ms timestamp the substrate accepted the delivery. */

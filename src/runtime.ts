@@ -1,5 +1,5 @@
 import type { ParsedSkill, SkillOp, OutputDecl } from "./parser.js";
-import type { DeliveryReceipt } from "./connectors/agent.js";
+import type { DeliveryReceipt, TriggerProvenance } from "./connectors/agent.js";
 import { tokenizeKeywordArgs, processSetValue } from "./parser.js";
 import { applyFilter } from "./filters.js";
 import type { Registry } from "./connectors/registry.js";
@@ -279,14 +279,27 @@ export async function execute(
       const key = `${decl.kind}:${decl.target}`;
       const body = String(outputs[key] ?? emissions.join("\n"));
       const agent = ctx.registry.getAgentConnector();
+      // Common provenance + augmenting-context fields populated alongside
+      // every delivery (v0.2.6). source_skill identifies the authoring
+      // skill; triggered_by lets the receiver disambiguate cron vs manual
+      // vs session-boundary fires; delivery_context + templates surface the
+      // optional `# Delivery-context:` and `# Templates:` frontmatter.
+      const common = {
+        ...(parsed.name !== null ? { source_skill: parsed.name } : {}),
+        ...(ctx.triggerCtx !== undefined ? {
+          triggered_by: {
+            source: ctx.triggerCtx.source as TriggerProvenance["source"],
+            name: ctx.triggerCtx.name,
+            fired_at_ms: ctx.triggerCtx.fired_at_ms,
+          },
+        } : {}),
+        ...(parsed.deliveryContext !== null ? { delivery_context: parsed.deliveryContext } : {}),
+        ...(parsed.templates.length > 0 ? { templates: parsed.templates } : {}),
+      };
       try {
         const receipt = decl.kind === "prompt-context"
-          ? await agent.deliver(decl.target, { kind: "augment", content: body })
-          : await agent.deliver(decl.target, {
-              kind: "template",
-              prompt: body,
-              ...(parsed.name !== null ? { source_skill: parsed.name } : {}),
-            });
+          ? await agent.deliver(decl.target, { kind: "augment", content: body, ...common })
+          : await agent.deliver(decl.target, { kind: "template", prompt: body, ...common });
         agentDeliveryReceipts.push({ agent_id: decl.target, output_kind: decl.kind, receipt });
       } catch (err) {
         // Delivery failure is non-fatal — record alongside other errors so
