@@ -124,7 +124,14 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Publish to npm
-        run: pnpm publish --access public --no-git-checks --provenance
+      - name: Configure npm auth
+        # Hand-write the .npmrc so pnpm doesn't depend on setup-node's
+        # NODE_AUTH_TOKEN env-substitution path (which 404'd on the first
+        # exercise of this workflow). `--provenance` is deferred until
+        # trusted publishing is configured on npmjs.com for this package.
+        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm
+        run: pnpm publish --access public --no-git-checks
