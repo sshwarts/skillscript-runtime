@@ -2,7 +2,7 @@
 
 > A small declarative language for authoring agent workflows.
 
-**Status: v1 in progress (current release: 0.2.0).** The public API, language syntax, and connector contracts may change before v1.0.0. Expect breakage until then.
+**Status: v1 in progress (current release: 0.2.1).** The public API, language syntax, and connector contracts may change before v1.0.0. Expect breakage until then.
 
 A skillscript is a declarative recipe — a small program with a dependency DAG of named targets, each composed of typed operations. Skills are authored once and executed many times, either by the interpreter (autonomous, cron-fired) or by an agent reading a compiled prompt artifact.
 
@@ -101,7 +101,7 @@ skillfile compile ./greet.skill.md
 
 ## CLI reference
 
-All 16 commands. Run `skillfile <command> --help` for per-command options + examples.
+All 13 commands. Run `skillfile <command> --help` for per-command options + examples.
 
 | Command | Purpose |
 |---|---|
@@ -117,10 +117,9 @@ All 16 commands. Run `skillfile <command> --help` for per-command options + exam
 | `verify <path\|name> <hash>` | Verify the skill matches a signature |
 | `replay <trace_id>` | Re-run a recorded trace mechanically |
 | `health` | Aggregate runtime metrics across all traces |
-| `dashboard` | Start the browser dashboard (localhost-only by default) |
-| `register-trigger <skill>` | Register a trigger (CLI-only; not in SPA write path) |
-| `unregister-trigger <id>` | Unregister a trigger by id |
-| `list-triggers` | List registered triggers |
+| `dashboard` | Start the runtime host: scheduler + MCP server + browser dashboard SPA |
+
+> Trigger registration is handled through the MCP server exposed by `skillfile dashboard` (`register_trigger` / `unregister_trigger` / `list_triggers` tools). The v0.2.0 CLI register-trigger family was removed in v0.2.1 — those commands constructed throwaway in-memory schedulers and never fired.
 
 Environment variables:
 
@@ -147,7 +146,7 @@ skillfile dashboard --port 8080            # custom port
 skillfile dashboard --host 0.0.0.0         # bind all interfaces (container only)
 ```
 
-The dashboard talks to the runtime via an MCP server contract (JSON-RPC 2.0 over HTTP at `/rpc`). Real MCP clients (Claude Desktop, Cursor, future tools) can consume the same endpoint — the SPA is one of several possible UIs over the same contract.
+The dashboard talks to the runtime via an MCP server contract (JSON-RPC 2.0 over HTTP at `/rpc`). Real MCP clients (Claude Desktop, Cursor, future tools) can consume the same endpoint — the SPA is one of several possible UIs over the same contract. Eight tools today: `skill_list`, `skill_metadata`, `skill_status` (write), `list_triggers`, `register_trigger` (write), `unregister_trigger` (write), `health_metrics`, `runtime_capabilities`.
 
 ---
 
@@ -176,7 +175,7 @@ Images publish to GitHub Container Registry:
 ```sh
 docker pull ghcr.io/sshwarts/skillscript-runtime:latest
 # or pin to a specific version
-docker pull ghcr.io/sshwarts/skillscript-runtime:v0.2.0
+docker pull ghcr.io/sshwarts/skillscript-runtime:v0.2.1
 ```
 
 Authentication (`gh auth login` then `gh auth token | docker login ghcr.io -u sshwarts --password-stdin`) is only required for pushes; pulls are public.

@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
  * entries → round-trip a skill through parse/compile/lint → exit 0.
  *
  * Sixteen fixtures covering: package.json structure, exports map, tarball
- * contents (inclusions + exclusions), CLI help surface across 16 commands,
+ * contents (inclusions + exclusions), CLI help surface across 13 commands,
  * narrow-core LOC ceiling, example-skill lint, fresh-install import flow.
  *
  * Streak entry: eleven-for-eleven if all pass. Findings filed in dev log §13.
@@ -24,8 +24,8 @@ const REPO_ROOT = join(__dirname, "..");
 const PACKAGE_JSON = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as Record<string, unknown>;
 
 describe("T7 — package.json polish", () => {
-  it("1. version is 0.2.0 (T7 release)", () => {
-    expect(PACKAGE_JSON["version"]).toBe("0.2.0");
+  it("1. version is 0.2.1 (T7 + v0.2.1 trigger fix)", () => {
+    expect(PACKAGE_JSON["version"]).toBe("0.2.1");
   });
 
   it("2. main + types + bin + engines.node ≥ 22.5 declared", () => {
@@ -101,15 +101,19 @@ describe("T7 — distributed code surface", () => {
 describe("T7 — CLI --help surface", () => {
   const CLI = `node ${join(REPO_ROOT, "dist/cli.js")}`;
 
-  it("9. top-level --help lists all 16 commands", () => {
+  it("9. top-level --help lists all 13 commands (v0.2.1 dropped orphan trigger CLIs)", () => {
     const out = execSync(`${CLI} --help`, { encoding: "utf8" });
     const commands = [
       "init", "run", "compile", "audit", "lint", "list",
       "fires", "diagram", "sign", "verify", "replay", "health",
-      "dashboard", "register-trigger", "unregister-trigger", "list-triggers",
+      "dashboard",
     ];
     for (const cmd of commands) {
       expect(out, `missing command '${cmd}' in usage`).toMatch(new RegExp(`^\\s+${cmd}\\s+`, "m"));
+    }
+    // Removed in v0.2.1 — verify they're not silently re-added.
+    for (const removed of ["register-trigger", "unregister-trigger", "list-triggers"]) {
+      expect(out, `removed command '${removed}' reappeared in usage`).not.toMatch(new RegExp(`^\\s+${removed}\\s+`, "m"));
     }
   });
 
@@ -117,7 +121,7 @@ describe("T7 — CLI --help surface", () => {
     const commands = [
       "init", "run", "compile", "audit", "lint", "list",
       "fires", "diagram", "sign", "verify", "replay", "health",
-      "dashboard", "register-trigger", "unregister-trigger", "list-triggers",
+      "dashboard",
     ];
     for (const cmd of commands) {
       const out = execSync(`${CLI} ${cmd} --help`, { encoding: "utf8" });
@@ -127,9 +131,9 @@ describe("T7 — CLI --help surface", () => {
     }
   });
 
-  it("11. version flag reports 0.2.0", () => {
+  it("11. version flag reports 0.2.1", () => {
     const out = execSync(`${CLI} --version`, { encoding: "utf8" });
-    expect(out.trim()).toBe("0.2.0");
+    expect(out.trim()).toBe("0.2.1");
   });
 });
 

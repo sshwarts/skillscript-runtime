@@ -1,6 +1,7 @@
-import type { SkillStore, SkillStatus } from "./connectors/types.js";
+import type { SkillStore, SkillStatus, StaticCapabilities } from "./connectors/types.js";
 import type { Scheduler, ResolvableTriggerSource, TriggerRegistration } from "./scheduler.js";
 import type { TraceStore } from "./trace.js";
+import type { Registry } from "./connectors/registry.js";
 import { healthMetrics, type HealthMetrics } from "./metrics.js";
 
 /**
@@ -24,6 +25,7 @@ import { healthMetrics, type HealthMetrics } from "./metrics.js";
  *   register_trigger({...})        → TriggerRegistration (write)
  *   unregister_trigger({trigger_id})→ boolean (write)
  *   health_metrics({filter?})      → HealthMetrics
+ *   runtime_capabilities({include?})→ wired connectors + shell-exec mode (v0.2.1)
  */
 
 // ─── JSON-RPC 2.0 ──────────────────────────────────────────────────────────
@@ -62,6 +64,10 @@ export interface McpServerDeps {
   skillStore: SkillStore;
   scheduler: Scheduler;
   traceStore: TraceStore;
+  /** Optional — required for `runtime_capabilities`. When omitted the tool returns empty arrays. */
+  registry?: Registry;
+  /** Surfaced via `runtime_capabilities` so cold agents know whether `@ unsafe` is permitted. */
+  enableUnsafeShell?: boolean;
   serverVersion?: string;
 }
 
@@ -73,7 +79,7 @@ export class McpServer {
   private readonly version: string;
 
   constructor(private readonly deps: McpServerDeps) {
-    this.version = deps.serverVersion ?? "0.2.0";
+    this.version = deps.serverVersion ?? "0.2.1";
     this.registerBuiltinTools();
   }
 
@@ -315,7 +321,76 @@ export class McpServer {
         return healthMetrics(this.deps.traceStore, filter);
       },
     });
+
+    this.registerTool({
+      name: "runtime_capabilities",
+      description: "Discover the runtime's wired connectors and shell-execution mode. Read-only. Use to author skills against the actually-available primitives. Per-category filter via `include`.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          include: {
+            type: "array",
+            items: {
+              type: "string",
+              enum: ["localModels", "mcpConnectors", "memoryStores", "skillStores", "agentConnectors", "shellExecution", "runtimeVersion"],
+            },
+            description: "Filter which categories to return. Omit for all.",
+          },
+        },
+      },
+      handler: async (args) => this.runtimeCapabilities(args),
+    });
   }
+
+  private async runtimeCapabilities(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const filter = Array.isArray(args["include"]) ? new Set(args["include"] as string[]) : null;
+    const want = (key: string): boolean => filter === null || filter.has(key);
+    const out: Record<string, unknown> = {};
+    const reg = this.deps.registry;
+    if (want("runtimeVersion")) out["runtimeVersion"] = this.version;
+    if (want("skillStores")) out["skillStores"] = reg ? reg.listSkillStores().map((e) => describeEntry(e)) : [];
+    if (want("memoryStores")) out["memoryStores"] = reg ? reg.listMemoryStores().map((e) => describeEntry(e)) : [];
+    if (want("localModels")) out["localModels"] = reg ? reg.listLocalModels().map((e) => describeEntry(e)) : [];
+    if (want("mcpConnectors")) out["mcpConnectors"] = reg ? reg.listMcpConnectors().map((e) => describeEntry(e)) : [];
+    if (want("agentConnectors")) out["agentConnectors"] = reg ? reg.listAgentConnectors().map((e) => describeEntry(e)) : [];
+    if (want("shellExecution")) {
+      // The runtime has no fixed command allowlist — `@ <cmd> ...` ops are
+      // structurally sandboxed via direct spawn (no shell expansion). Bash
+      // is only invoked when `@ unsafe` is used AND `enableUnsafeShell` is
+      // true. This surface reports that mode so cold agents can author
+      // accordingly instead of guessing at a list that doesn't exist.
+      out["shellExecution"] = {
+        mode: "structural-spawn",
+        unsafe_enabled: this.deps.enableUnsafeShell === true,
+        description: "Safe `@ <cmd> args` ops spawn the binary directly without bash. Any binary on PATH may be invoked. `@ unsafe <body>` ops require `enableUnsafeShell: true` and are lint-flagged tier-2 every appearance.",
+      };
+    }
+    return out;
+  }
+}
+
+function describeEntry<C extends { staticCapabilities(): StaticCapabilities }>(
+  entry: { name: string; ctor: C },
+): { name: string; implementation: string; contract_version: string; connector_type: string; features: Record<string, boolean> } {
+  let caps: StaticCapabilities;
+  try {
+    caps = entry.ctor.staticCapabilities();
+  } catch {
+    return {
+      name: entry.name,
+      implementation: (entry.ctor as { name?: string }).name ?? "unknown",
+      contract_version: "unknown",
+      connector_type: "unknown",
+      features: {},
+    };
+  }
+  return {
+    name: entry.name,
+    implementation: caps.implementation,
+    contract_version: caps.contract_version,
+    connector_type: caps.connector_type,
+    features: caps.features,
+  };
 }
 
 function errorResponse(id: number | string | null, code: number, message: string): JsonRpcErrorResponse {

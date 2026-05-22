@@ -121,6 +121,17 @@ export class Registry {
   listMcpConnectorClasses(): McpConnectorClass[] { return distinct(this.mcpConnectors); }
   listAgentConnectorClasses(): AgentConnectorClass[] { return distinct(this.agentConnectors); }
 
+  // ─── Enumerate registered instances by name ──────────────────────────────
+  // Discovery surface for runtime_capabilities (MCP tool, v0.2.1) — pairs
+  // the registered name with the per-instance ctor for staticCapabilities()
+  // calls. Excludes the implicit NoOp agent-connector fallback.
+
+  listSkillStores(): Array<{ name: string; instance: SkillStore; ctor: SkillStoreClass }> { return entries(this.skillStores); }
+  listMemoryStores(): Array<{ name: string; instance: MemoryStore; ctor: MemoryStoreClass }> { return entries(this.memoryStores); }
+  listLocalModels(): Array<{ name: string; instance: LocalModel; ctor: LocalModelClass }> { return entries(this.localModels); }
+  listMcpConnectors(): Array<{ name: string; instance: McpConnector; ctor: McpConnectorClass }> { return entries(this.mcpConnectors); }
+  listAgentConnectors(): Array<{ name: string; instance: AgentConnector; ctor: AgentConnectorClass }> { return entries(this.agentConnectors); }
+
   // ─── Aggregate view for the linter ──────────────────────────────────────
 
   /**
@@ -168,4 +179,8 @@ function distinct<I, C>(map: Map<string, Entry<I, C>>): C[] {
   const seen = new Set<C>();
   for (const entry of map.values()) seen.add(entry.ctor);
   return Array.from(seen);
+}
+
+function entries<I, C>(map: Map<string, Entry<I, C>>): Array<{ name: string; instance: I; ctor: C }> {
+  return Array.from(map.entries()).map(([name, e]) => ({ name, instance: e.instance, ctor: e.ctor }));
 }

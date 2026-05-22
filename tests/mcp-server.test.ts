@@ -52,7 +52,7 @@ describe("McpServer protocol", () => {
     }
   });
 
-  it("tools/list returns 7 built-in tools", async () => {
+  it("tools/list returns 8 built-in tools (runtime_capabilities added in v0.2.1)", async () => {
     const { server, cleanup } = withServer();
     try {
       const resp = await server.handle(rpc("tools/list"));
@@ -62,6 +62,7 @@ describe("McpServer protocol", () => {
         "health_metrics",
         "list_triggers",
         "register_trigger",
+        "runtime_capabilities",
         "skill_list",
         "skill_metadata",
         "skill_status",

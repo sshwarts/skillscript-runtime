@@ -24,9 +24,8 @@ import { SqliteMemoryStore } from "./connectors/memory-store.js";
 import { parse, type SkillOp } from "./parser.js";
 import { FilesystemTraceStore } from "./trace.js";
 import { healthMetrics } from "./metrics.js";
-import { McpServer } from "./mcp-server.js";
 import { DashboardServer } from "./dashboard/server.js";
-import { Scheduler } from "./scheduler.js";
+import { bootstrap, defaultRegistry, wireDeclarativeTriggers } from "./bootstrap.js";
 import { createHash } from "node:crypto";
 
 const HOME_DIR = process.env["SKILLSCRIPT_HOME"] ?? join(homedir(), ".skillscript");
@@ -36,7 +35,7 @@ const EXAMPLES_DIR = join(HOME_DIR, "examples");
 const PLUGINS_DIR = join(HOME_DIR, "plugins");
 const TRACE_DIR = join(HOME_DIR, "traces");
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 interface CommandHelp {
   description: string;
@@ -175,7 +174,7 @@ const COMMAND_HELP: Readonly<Record<string, CommandHelp>> = {
     ],
   },
   dashboard: {
-    description: "Start the browser dashboard (localhost-only by default)",
+    description: "Start the runtime host: scheduler + MCP server + browser dashboard SPA",
     usage: "skillfile dashboard [--port N] [--host ADDR]",
     options: [
       { flag: "--port N", description: "TCP port (default: 7878)" },
@@ -187,45 +186,12 @@ const COMMAND_HELP: Readonly<Record<string, CommandHelp>> = {
       "skillfile dashboard --host 0.0.0.0 --port 7878   # container only",
     ],
   },
-  "register-trigger": {
-    description: "Register a trigger for a skill (CLI-only; not exposed in SPA write path)",
-    usage: "skillfile register-trigger <skill> --source <kind> --name <expr> [--expires-at MS]",
-    args: [{ name: "<skill>", description: "Name of an Approved skill" }],
-    options: [
-      { flag: "--source KIND", description: "Trigger source: session, cron, event, agent-event, file-watch, sensor" },
-      { flag: "--name EXPR", description: "Source-specific expression (e.g. '*/5 * * * *' for cron)" },
-      { flag: "--expires-at MS", description: "Unix-ms expiration timestamp (optional)" },
-    ],
-    examples: [
-      `skillfile register-trigger hello --source cron --name '*/5 * * * *'`,
-      `skillfile register-trigger morning-brief --source session --name on-resume`,
-    ],
-  },
-  "unregister-trigger": {
-    description: "Unregister a trigger by id",
-    usage: "skillfile unregister-trigger <trigger_id>",
-    args: [{ name: "<trigger_id>", description: "Trigger ID from skillfile list-triggers output" }],
-    examples: ["skillfile unregister-trigger trig-abc123"],
-  },
-  "list-triggers": {
-    description: "List registered triggers",
-    usage: "skillfile list-triggers [--skill X] [--source Y]",
-    options: [
-      { flag: "--skill X", description: "Filter by skill name" },
-      { flag: "--source Y", description: "Filter by source kind (session/cron/event/...)" },
-    ],
-    examples: [
-      "skillfile list-triggers",
-      "skillfile list-triggers --skill hello",
-      "skillfile list-triggers --source cron",
-    ],
-  },
 };
 
 const COMMAND_ORDER: ReadonlyArray<string> = [
   "init", "run", "compile", "audit", "lint", "list",
   "fires", "diagram", "sign", "verify", "replay", "health",
-  "dashboard", "register-trigger", "unregister-trigger", "list-triggers",
+  "dashboard",
 ];
 
 function usage(): string {
@@ -323,9 +289,6 @@ async function main(): Promise<number> {
     case "replay":  return await cmdReplay(rest);
     case "health":  return await cmdHealth(rest);
     case "dashboard":           return await cmdDashboard(rest);
-    case "register-trigger":    return await cmdRegisterTrigger(rest);
-    case "unregister-trigger":  return await cmdUnregisterTrigger(rest);
-    case "list-triggers":       return await cmdListTriggers(rest);
     default:
       process.stderr.write(`skillfile: unknown command '${cmd}'\n\n${usage()}`);
       return 64;
@@ -632,16 +595,7 @@ async function loadSkillSource(ref: string): Promise<string | null> {
 }
 
 function buildRegistry(): Registry {
-  const registry = new Registry();
-  registry.registerSkillStore("primary", new FilesystemSkillStore(SKILLS_DIR));
-  if (existsSync(MEMORY_DB) || existsSync(dirname(MEMORY_DB))) {
-    registry.registerMemoryStore("primary", new SqliteMemoryStore({ dbPath: MEMORY_DB }));
-  }
-  const ollamaUrl = process.env["OLLAMA_BASE_URL"] ?? "http://localhost:11434";
-  registry.registerLocalModel("default", new OllamaLocalModel({ baseUrl: ollamaUrl, defaultModelTag: "gemma2:9b" }));
-  registry.registerLocalModel("gemma2", new OllamaLocalModel({ baseUrl: ollamaUrl, defaultModelTag: "gemma2:9b" }));
-  registry.registerLocalModel("qwen", new OllamaLocalModel({ baseUrl: ollamaUrl, defaultModelTag: "qwen2.5:7b" }));
-  return registry;
+  return defaultRegistry({ skillsDir: SKILLS_DIR, memoryDbPath: MEMORY_DB }).registry;
 }
 
 /** Locate the bundled scaffold directory — works both in dev (running from src/) and prod (running from dist/). */
@@ -670,70 +624,6 @@ async function copyScaffoldFile(src: string, dest: string): Promise<void> {
   await writeFile(dest, body, "utf8");
 }
 
-async function cmdRegisterTrigger(args: string[]): Promise<number> {
-  const skill = args.find((a) => !a.startsWith("--"));
-  const source = extractFlag(args, "--source");
-  const name = extractFlag(args, "--name");
-  const expiresAtStr = extractFlag(args, "--expires-at");
-  if (skill === undefined || source === undefined || name === undefined) {
-    process.stderr.write(`Usage: skillfile register-trigger <skill> --source <cron|session|event|agent-event|file-watch|sensor> --name <expr> [--expires-at <unix-seconds>]\n`);
-    return 64;
-  }
-  const allowedSources = ["cron", "session", "event", "agent-event", "file-watch", "sensor"];
-  if (!allowedSources.includes(source)) {
-    process.stderr.write(`--source must be one of: ${allowedSources.join(", ")} (got '${source}')\n`);
-    return 64;
-  }
-  const skillStore = new FilesystemSkillStore(SKILLS_DIR);
-  const traceStore = new FilesystemTraceStore(TRACE_DIR);
-  const scheduler = new Scheduler({ registry: new Registry(), skillStore, traceStore });
-  const reg = scheduler.registerTrigger({
-    skillName: skill,
-    source: source as Parameters<typeof scheduler.registerTrigger>[0]["source"],
-    name,
-    declarative: false,
-    ...(expiresAtStr !== undefined ? { expiresAt: parseInt(expiresAtStr, 10) } : {}),
-  });
-  // NOTE: registration is in-memory on the Scheduler instance, which dies
-  // when this command exits. For persistent registration across runs,
-  // operators run `skillfile dashboard` (long-lived) or wire their own
-  // Scheduler with persistent storage. v1.x candidate: persistent trigger
-  // registry on disk so CLI register-trigger survives process exit.
-  process.stdout.write(JSON.stringify(reg, null, 2) + "\n");
-  process.stderr.write(`\nnote: trigger lives in-memory; restart with \`skillfile dashboard\` to persist across the session.\n`);
-  return 0;
-}
-
-async function cmdUnregisterTrigger(args: string[]): Promise<number> {
-  const id = args[0];
-  if (id === undefined) {
-    process.stderr.write("Usage: skillfile unregister-trigger <trigger_id>\n");
-    return 64;
-  }
-  const skillStore = new FilesystemSkillStore(SKILLS_DIR);
-  const traceStore = new FilesystemTraceStore(TRACE_DIR);
-  const scheduler = new Scheduler({ registry: new Registry(), skillStore, traceStore });
-  const removed = scheduler.unregisterTrigger(id);
-  process.stdout.write(JSON.stringify({ trigger_id: id, removed }, null, 2) + "\n");
-  return removed ? 0 : 1;
-}
-
-async function cmdListTriggers(args: string[]): Promise<number> {
-  const skill = extractFlag(args, "--skill");
-  const source = extractFlag(args, "--source");
-  const skillStore = new FilesystemSkillStore(SKILLS_DIR);
-  const traceStore = new FilesystemTraceStore(TRACE_DIR);
-  const scheduler = new Scheduler({ registry: new Registry(), skillStore, traceStore });
-  const filter: { skillName?: string; source?: Parameters<typeof scheduler.listTriggers>[0] extends infer F ? F extends { source?: infer S } ? S : never : never } = {};
-  if (skill !== undefined) filter.skillName = skill;
-  if (source !== undefined) {
-    filter.source = source as NonNullable<typeof filter.source>;
-  }
-  const triggers = scheduler.listTriggers(filter);
-  process.stdout.write(JSON.stringify(triggers, null, 2) + "\n");
-  return 0;
-}
-
 async function cmdDashboard(args: string[]): Promise<number> {
   const portStr = extractFlag(args, "--port");
   const port = portStr !== undefined ? parseInt(portStr, 10) : 7878;
@@ -742,17 +632,34 @@ async function cmdDashboard(args: string[]): Promise<number> {
   // --host 0.0.0.0 so the host-side port-forward can reach the listener
   // (host port mapping still enforces 127.0.0.1 externally).
   const host = extractFlag(args, "--host") ?? "127.0.0.1";
-  const skillStore = new FilesystemSkillStore(SKILLS_DIR);
-  const traceStore = new FilesystemTraceStore(TRACE_DIR);
-  const scheduler = new Scheduler({ registry: new Registry(), skillStore, traceStore });
-  const mcpServer = new McpServer({ skillStore, scheduler, traceStore });
-  const server = new DashboardServer({ mcpServer, port, bindAddress: host });
+  const wired = bootstrap({
+    skillsDir: SKILLS_DIR,
+    traceDir: TRACE_DIR,
+    memoryDbPath: MEMORY_DB,
+    // Scheduler-fired skills record traces by default; `fires` / `health` /
+    // `health_metrics` (MCP) all read from the trace store.
+    trace: { mode: "on" },
+  });
+  // Register declarative `# Triggers:` headers BEFORE arming the tick loop
+  // so the first tick can fire any minute-aligned cron entries.
+  await wireDeclarativeTriggers(wired);
+  wired.scheduler.start();
+  const server = new DashboardServer({ mcpServer: wired.mcpServer, port, bindAddress: host });
   await server.start();
   process.stdout.write(`dashboard running on http://${host}:${port}\nctrl-C to stop\n`);
-  // Hold open until SIGINT/SIGTERM.
   await new Promise<void>((resolve) => {
-    process.on("SIGINT", () => { void server.stop().then(resolve); });
-    process.on("SIGTERM", () => { void server.stop().then(resolve); });
+    let shuttingDown = false;
+    const shutdown = (): void => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      void (async (): Promise<void> => {
+        await wired.scheduler.stop();
+        await server.stop();
+        resolve();
+      })();
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
   });
   return 0;
 }
