@@ -124,15 +124,18 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Publish to npm
-        # Use `npm publish` (not pnpm) to bypass pnpm 11's auto-OIDC behavior:
-        # when `id-token: write` is set (we need it for the GitHub Release
-        # upload), pnpm tries OIDC token exchange, which 404s because npm
-        # trusted publishing isn't configured for this package, and pnpm's
-        # fallback to .npmrc auth doesn't reliably engage afterwards.
-        # `npm publish` uses NODE_AUTH_TOKEN per setup-node's .npmrc shape
-        # and skips OIDC unless explicitly asked. `--ignore-scripts` skips
-        # prepublishOnly (already ran above as separate steps).
-        run: npm publish --access public --ignore-scripts
+      - name: Configure npm auth
+        # Hand-write ~/.npmrc with the literal token. v0.2.7's CI run
+        # showed setup-node's NODE_AUTH_TOKEN env-substitution path didn't
+        # engage under `npm publish` either (likely overwritten by the
+        # earlier pnpm install step). Writing the file directly with a
+        # literal token avoids env-substitution entirely. Secret stays
+        # masked in logs per GitHub Actions standard.
+        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > $HOME/.npmrc
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm
+        # `npm publish` (not pnpm) bypasses pnpm 11's auto-OIDC behavior.
+        # `--ignore-scripts` skips prepublishOnly since smoke ran above.
+        run: npm publish --access public --ignore-scripts
