@@ -53,14 +53,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Smoke test (typecheck + LOC + vitest)
-        run: |
-          pnpm exec tsc --noEmit
-          pnpm run loc-check
-          pnpm exec vitest run
+      # Fast fail signals first, then build, then full vitest. The dogfood
+      # fixtures shell out to `node dist/cli.js`, so dist/ must exist before
+      # vitest runs.
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: LOC ceiling check
+        run: pnpm run loc-check
 
       - name: Build
         run: pnpm run build
+
+      - name: Test
+        run: pnpm exec vitest run
 
       - name: Extract version from tag
         id: version
