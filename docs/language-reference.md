@@ -59,6 +59,28 @@ Three layers of declaration:
 2. **Targets** — named blocks of typed ops, optionally with `needs:` dependencies
 3. **`default:`** — names the goal target the runtime walks toward
 
+### Declaring target dependencies
+
+Three equivalent syntactic forms — pick whichever reads best for the skill. All parse to the same dep list:
+
+```
+# Terse / Make-style — single line, deps separated by whitespace
+emit: evaluate
+    ! result
+
+# Header form with explicit `needs:` keyword — accepts comma-separated deps
+emit: needs: evaluate, validate
+    ! result
+
+# Body-line form — `needs:` at the target body's main scope
+emit:
+    needs: evaluate
+    needs: validate
+    ! result
+```
+
+The body-line form is recognized only at the target's main scope, not inside nested `if`/`elif`/`else`/`foreach` blocks. The runtime topologically sorts targets via these declared deps and walks the graph from the `default:` entry — so a target with no incoming dep edge from the entry will be flagged as unreachable at compile time.
+
 ## Lexical conventions
 
 The grammar is small but strict. A few rules that determine how the parser reads source:

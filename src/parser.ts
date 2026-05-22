@@ -173,7 +173,7 @@ const REQUIRES_LINE = /^(user-var|system-var):([A-Za-z0-9_-]+)\s*(?:→|->)\s*([
 /** Capability token: `connector_type.feature_flag`. Matches one space-separated token of a capability `# Requires:` line. */
 const CAPABILITY_TOKEN = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/;
 /** `&` op: `& skill-name [arg=value ...] [-> VARNAME]`. Skill names follow the same charset as filesystem-safe identifiers (alphanumeric, hyphen, underscore). */
-const AMPERSAND_OP_REGEX = /^&\s+([A-Za-z0-9][\w-]*)\s*(.*?)(?:\s*->\s*([A-Za-z_]\w*))?\s*$/;
+const AMPERSAND_OP_REGEX = /^&\s+([A-Za-z0-9][\w-]*)\s*(.*?)(?:\s*->\s*([A-Za-z_]\w*))?\s*$/s;
 const SET_OP_REGEX = /^\$set\s+([A-Za-z_]\w*)\s*=\s*(.*)$/;
 const FOREACH_OP_REGEX = /^foreach\s+([A-Za-z_]\w*)\s+in\s+(.+?):\s*$/;
 const IF_OP_REGEX = /^if\s+(.+?):\s*$/;
@@ -191,8 +191,8 @@ const ELIF_OP_REGEX = /^elif\s+(.+?):\s*$/;
  * runtime applies `coerceLiteralValue` for `>` (binds array on `[...]`)
  * and the raw string for `~` (model response shape).
  */
-const RETRIEVAL_OP_REGEX = /^>\s+(.+?)\s+->\s+([A-Za-z_]\w*)(?:\s+\(fallback\s*:\s*(.+?)\))?\s*$/;
-const LOCAL_MODEL_OP_REGEX = /^~\s+(.+?)\s+->\s+([A-Za-z_]\w*)(?:\s+\(fallback\s*:\s*(.+?)\))?\s*$/;
+const RETRIEVAL_OP_REGEX = /^>\s+(.+?)\s+->\s+([A-Za-z_]\w*)(?:\s+\(fallback\s*:\s*(.+?)\))?\s*$/s;
+const LOCAL_MODEL_OP_REGEX = /^~\s+(.+?)\s+->\s+([A-Za-z_]\w*)(?:\s+\(fallback\s*:\s*(.+?)\))?\s*$/s;
 const MCP_CONNECTOR_PREFIX = /^([a-z_][a-z0-9_-]*)\.(?=[A-Za-z_])([\s\S]*)$/;
 
 // Narrow v1 condition grammar. AND/OR, numeric comparisons, defined-checks
@@ -298,6 +298,75 @@ function splitVarsLine(value: string): string[] {
   }
   parts.push(current);
   return parts;
+}
+
+/**
+ * Fold physical lines whose quoted-string values span line breaks into
+ * single logical lines. Cold-author corpus (Perry's 2/3 minion-battery
+ * hit, v0.2.2) showed multi-line `~ prompt="..."` strings are a common
+ * authoring pattern — multi-step LLM prompts, JSON examples, multi-
+ * paragraph instructions. Without folding, the line-iterating parse loop
+ * treats each interior newline as a block break and mis-parses.
+ *
+ * Folding only kicks in when a line opens a `"` or `'` without closing
+ * it. Subsequent lines are joined with the literal `\n` until the quote
+ * closes, preserving the string content as a single token.
+ */
+function foldQuotedContinuations(lines: string[]): string[] {
+  const out: string[] = [];
+  let buffer: string | null = null;
+  for (const line of lines) {
+    if (buffer === null) {
+      if (hasUnclosedQuote(line)) {
+        buffer = line;
+      } else {
+        out.push(line);
+      }
+    } else {
+      buffer = buffer + "\n" + line;
+      if (!hasUnclosedQuote(buffer)) {
+        out.push(buffer);
+        buffer = null;
+      }
+    }
+  }
+  // Unterminated quote at EOF: push the accumulated buffer as-is so the
+  // downstream regex match fails cleanly with a malformed-op diagnostic
+  // rather than swallowing content.
+  if (buffer !== null) out.push(buffer);
+  return out;
+}
+
+function hasUnclosedQuote(text: string): boolean {
+  let inDouble = false;
+  let inSingle = false;
+  for (const ch of text) {
+    if (!inSingle && ch === '"') inDouble = !inDouble;
+    else if (!inDouble && ch === "'") inSingle = !inSingle;
+  }
+  return inDouble || inSingle;
+}
+
+/**
+ * Split a `# Triggers:` header value into separate trigger entries.
+ *
+ * Cron expressions naturally contain commas (e.g. `30,45 9 * * 1-5`), so a
+ * naive comma-split breaks legitimate multi-value cron schedules. Instead
+ * split at comma + source-keyword boundaries — the next entry begins where
+ * a known source token (cron/session/event/agent-event/file-watch/sensor)
+ * appears after a comma. v0.2.2 fix per Perry's 3/3 minion-battery hit.
+ *
+ * Examples:
+ *   `cron: 30,45 9 * * 1-5`                   → one entry
+ *   `cron: 0 9 * * *, session: start`         → two entries
+ *   `cron: 30,45 9 * * 1-5, cron: 0 16 * * 1-5` → two entries
+ */
+function splitTriggersLine(value: string): string[] {
+  const sourcePattern = ["session", "cron", "event", "agent-event", "file-watch", "sensor"]
+    .map((s) => s.replace(/-/g, "\\-"))
+    .join("|");
+  const splitRegex = new RegExp(`,\\s*(?=(?:${sourcePattern})\\s*:)`, "g");
+  return value.split(splitRegex);
 }
 
 /**
@@ -479,7 +548,7 @@ function popToDepth(stack: ScopeFrame[], targetDepth: number): void {
  * `parseErrors`; never throws on bad input.
  */
 export function parse(source: string): ParsedSkill {
-  const lines = source.split("\n");
+  const lines = foldQuotedContinuations(source.split("\n"));
   const result: ParsedSkill = {
     name: null,
     description: null,
@@ -580,7 +649,7 @@ export function parse(source: string): ParsedSkill {
         result.onError = value === "" ? null : value;
       } else if (key === "triggers") {
         if (value.toLowerCase() === "(none)" || value === "") continue;
-        for (const raw of splitVarsLine(value)) {
+        for (const raw of splitTriggersLine(value)) {
           const decl = raw.trim();
           if (decl === "") continue;
           const colon = decl.indexOf(":");

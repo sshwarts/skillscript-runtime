@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.2.2 — 2026-05-22
+
+**Parser fixes from cold-author minion battery.** Perry ran 3 independent
+cold-agent SDK authors against the stock-monitor exercise; they converged
+on three parser failure modes. All three fixed in this patch — pure parser
+changes, no runtime or dispatcher impact.
+
+### Fixed
+- **Bug A: `# Triggers:` comma-split breaks cron expressions with commas.**
+  Hit by 3/3 cold authors. Cron syntax naturally has commas
+  (`30,45 9 * * 1-5` = run at 9:30 and 9:45 on weekdays). The trigger header
+  parser split on bare commas, mistakenly treating the cron-internal comma
+  as a multi-trigger delimiter. Now splits at source-keyword boundaries
+  (cron/session/event/agent-event/file-watch/sensor) instead — single-cron-
+  with-commas parses as one trigger; multiple triggers still split correctly.
+- **Bug B: Multi-line `~ prompt="..."` strings break the parser.** Hit by
+  2/3 cold authors. The line-iterating parse loop treated interior newlines
+  inside quoted kwarg values as block separators. Now a quote-aware pre-pass
+  folds unclosed-quote continuations into a single logical line, and the op
+  regexes (`~`, `>`, `&`) carry the `s` flag so `.` matches across newlines.
+  Multi-paragraph LLM prompts now parse cleanly.
+
+### Documented
+- **`needs:` keyword forms.** Bug C audit confirmed the parser already
+  supports all three syntactic forms (Make-style `target: dep1 dep2`,
+  header form `target: needs: a, b, c`, body-line form `needs: dep`). The
+  language reference now has a concrete `### Declaring target dependencies`
+  example showing all three. v0.2.2 tests document supported syntax so
+  future regressions surface.
+
+### Acknowledgments
+Thanks to Perry for the 3-minion cold-author battery (thread `a91db2e2`)
+that surfaced these bugs in roughly an hour after v0.2.1 shipped.
+
 ## 0.2.1 — 2026-05-22
 
 **Imperative-trigger surface fix.** v0.2.0 shipped with `register_trigger`
