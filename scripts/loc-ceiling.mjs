@@ -37,6 +37,12 @@
 //            lint rule (~45 LOC) + MissingSkillReferenceError class
 //            + runtime defer-resolve path. Modest growth for a useful
 //            language semantic.
+//   v0.3.2:  nudged narrow ceiling 5500 → 5650 for compound conditions
+//            (and/or/not) + |json_parse filter — recursive structural
+//            decomposition in evalCondition + parser validateCondition,
+//            filter chain support in substituteRuntime. ~80 LOC across
+//            runtime + parser. Boolean trio + filter chain are core
+//            grammar features — feature-driven, ceiling nudge appropriate.
 //
 // Run: `pnpm run loc-check`. CI fails the build if the narrow ceiling is
 // breached. The broad count is reported but does NOT fail the build.
@@ -59,7 +65,7 @@ const CORE_PATHS = [
   "connectors/",
 ];
 
-const NARROW_MAX_LOC = 5500;
+const NARROW_MAX_LOC = 5650;
 const NARROW_MAX_FILES = 20;
 const BROAD_INFO_LOC = 9500;
 const BROAD_INFO_FILES = 28;

@@ -226,6 +226,7 @@ Apply on \`$(VAR|filter)\` references; chain left-to-right.
 | \`url\` | encodeURIComponent |
 | \`shell\` | POSIX single-quote escape |
 | \`json\` | JSON.stringify |
+| \`json_parse\` | Parse JSON string; round-trips for valid JSON, throws for malformed (v0.3.2). Pairs with \`|length\` for array counts on JSON arrays. |
 | \`trim\` | Whitespace trim |
 | \`length\` | Array element count or string char count (v0.2.5) |
 
@@ -233,6 +234,7 @@ Apply on \`$(VAR|filter)\` references; chain left-to-right.
 
 \`\`\`
 if $(VAR):                            ← truthy check
+if not $(VAR):                        ← falsy check (v0.3.2)
 if $(VAR) == "literal":               ← equality vs literal
 if $(VAR) == $(OTHER):                ← equality vs ref
 if $(VAR) != "literal":               ← inequality
@@ -240,10 +242,21 @@ if $(N) < "10":                       ← numeric comparison (v0.2.5)
 if $(N) >= $(THRESHOLD):              ← numeric vs ref
 if $(M.id) in $(SEEN):                ← set membership
 if $(M.id) not in $(SEEN):
+if $(A) == "ok" and $(B) == "ok":     ← logical AND (v0.3.2)
+if $(A) == "urgent" or $(B) > "5":    ← logical OR (v0.3.2)
+if not $(A) and ($(B) or $(C)):       ← compound with parens + not (v0.3.2)
 \`\`\`
 
 Branches via \`if:\` / \`elif COND:\` / \`else:\`. The \`else:\` after a target
 body is a separate error-handler block (distinguished by indentation scope).
+
+### Compound conditions (v0.3.2)
+
+\`and\` / \`or\` / \`not\` connect simple conditions into compound expressions:
+
+- **Precedence** (tight → loose): comparison ops (\`==\`/\`<\`/etc.) > \`not\` > \`and\` > \`or\`
+- **Parentheses** override precedence: \`(a or b) and c\`
+- **Short-circuit evaluation**: AND skips RHS if LHS is false; OR skips RHS if LHS is true. Useful for the validate-then-access pattern — \`if $(X) == "ok" and $(X.field) ...\` won't error on the field access when \`$(X) == "ok"\` is false.
 `;
 
 const FRONTMATTER = `# Frontmatter headers — full reference

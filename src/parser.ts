@@ -245,8 +245,64 @@ const COND_CMP_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_
 const COND_IN = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s+(?:not\s+)?in\s+\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\)\s*$/;
 
 function validateCondition(cond: string): boolean {
-  return COND_TRUTHY.test(cond) || COND_EQ.test(cond) || COND_EQ_REF.test(cond) ||
-         COND_CMP.test(cond) || COND_CMP_REF.test(cond) || COND_IN.test(cond);
+  return validateCompoundCondition(cond.trim());
+}
+
+// v0.3.2 — recursive structural decomposition matching runtime evalCondition.
+// Order: strip parens → split on outermost OR → AND → not prefix → simple shape.
+function validateCompoundCondition(cond: string): boolean {
+  const stripped = stripOuterCondParens(cond);
+  const orIdx = findOuterCondToken(stripped, "or");
+  if (orIdx >= 0) {
+    return validateCompoundCondition(stripped.slice(0, orIdx).trim())
+      && validateCompoundCondition(stripped.slice(orIdx + 4).trim());
+  }
+  const andIdx = findOuterCondToken(stripped, "and");
+  if (andIdx >= 0) {
+    return validateCompoundCondition(stripped.slice(0, andIdx).trim())
+      && validateCompoundCondition(stripped.slice(andIdx + 5).trim());
+  }
+  const lead = stripped.trimStart();
+  if (lead.startsWith("not ")) return validateCompoundCondition(lead.slice(4));
+  return COND_TRUTHY.test(stripped) || COND_EQ.test(stripped) || COND_EQ_REF.test(stripped) ||
+         COND_CMP.test(stripped) || COND_CMP_REF.test(stripped) || COND_IN.test(stripped);
+}
+
+function findOuterCondToken(cond: string, token: string): number {
+  let depth = 0;
+  let inQuote: '"' | "'" | null = null;
+  let bestIdx = -1;
+  for (let i = 0; i < cond.length; i++) {
+    const ch = cond[i]!;
+    if (inQuote !== null) { if (ch === inQuote) inQuote = null; continue; }
+    if (ch === '"' || ch === "'") { inQuote = ch; continue; }
+    if (ch === "(") { depth++; continue; }
+    if (ch === ")") { depth = Math.max(0, depth - 1); continue; }
+    if (depth !== 0) continue;
+    if (ch === " " && cond.slice(i + 1, i + 1 + token.length) === token) {
+      const after = cond[i + 1 + token.length];
+      if (after === " " || after === "\t") bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+function stripOuterCondParens(cond: string): string {
+  const trimmed = cond.trim();
+  if (!trimmed.startsWith("(") || !trimmed.endsWith(")")) return trimmed;
+  let depth = 0;
+  let inQuote: '"' | "'" | null = null;
+  for (let i = 0; i < trimmed.length - 1; i++) {
+    const ch = trimmed[i]!;
+    if (inQuote !== null) { if (ch === inQuote) inQuote = null; continue; }
+    if (ch === '"' || ch === "'") { inQuote = ch; continue; }
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return trimmed;
+    }
+  }
+  return trimmed.slice(1, -1).trim();
 }
 
 /** Detects `$(REF) = "literal"` — a single `=` in condition position. */

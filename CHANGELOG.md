@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.3.2 — 2026-05-23
+
+**Boolean trio + `|json_parse` filter + filter chain support.** v0.3.2
+closes the conditional grammar gap that drove cold authors into nested-
+if workarounds (and the falsy-check gap that had no current form), plus
+ships the JSON validation/normalization primitive Perry's harness asked
+for. Spec drafted in memory `d01c9ab9`, refined for recursive structural
+decomposition (NOT a full parser rewrite) in `08759d74`.
+
+### Added
+
+- **`and` / `or` / `not` connectives in conditions.** Two simple
+  conditions joined by `and`/`or` is the 80% case (`if $(X) == "ok" and
+  $(Y) == "ok":`). Parenthesized sub-expressions handle the override case
+  (`(a or b) and c`). `not` closes the falsy-check gap — pre-v0.3.2 the
+  inverse of `if $(VAR):` had no current one-liner; authors had to
+  enumerate `if $(VAR) == "":` / `if $(VAR) == "false":` / etc.
+  
+  Precedence (tight → loose): comparison ops > `not` > `and` > `or`.
+
+  **Short-circuit evaluation.** AND skips RHS if LHS is false; OR skips
+  RHS if LHS is true. Preserves the validate-then-access pattern:
+  `if $(X) == "ok" and $(MAYBE_UNRESOLVED) ...` won't throw on the RHS
+  when the LHS short-circuits.
+
+- **`|json_parse` filter.** Sibling to existing `|json` (stringify).
+  Parses input as JSON, throws on malformed. Round-trips for valid JSON
+  (normalizes whitespace as a side effect). Chains with `|length` for
+  array counts: `$(ITEMS|json_parse|length)`.
+
+- **Filter chain support in `substituteRuntime`.** Pre-v0.3.2 the
+  substitute regex captured exactly one filter — `$(X|f1|f2)` silently
+  failed to match and rendered literally. The grammar always documented
+  "chain left-to-right" (`help({topic: "ops"})` filter section). Now the
+  implementation matches the docs.
+
+### Implementation notes
+
+- **Recursive structural decomposition** in `evalCondition` (runtime) and
+  `validateCondition` (parser/lint). ~50 LOC each. The existing simple-
+  shape regex set (TRUTHY/EQ/EQ_REF/CMP/CMP_REF/IN) stays in place as
+  the leaf matchers; the new code is just the OR/AND/NOT splitter +
+  recursive wiring. NOT a full expression-parser rewrite per Scott's
+  pushback during the design pass.
+
+- **Quote-aware splitting.** Outer-token scan respects quoted string
+  literals and parenthesized sub-expressions, so `if $(MSG) == "wait
+  and see":` doesn't false-split on the embedded `and`.
+
+### Tests
+- 26 new tests in `tests/v0.3.2.test.ts`: `|json_parse` round-trip +
+  malformed input + filter chain; AND/OR/NOT evaluation + precedence +
+  parens + short-circuit; quote-aware splitting; 3-term chains; elif
+  with compounds; parser acceptance; help-surface assertions;
+  `undeclared-var` lint walks compound conditions.
+- Total: 828 passing (was 803 at v0.3.1).
+
+### Loc-ceiling
+- Narrow core nudged 5500 → 5650. Boolean trio + filter chain are core
+  grammar features; feature-driven nudge.
+
+### What's NOT in v0.3.2 (deferred)
+
+- **`$set X = $(VAR|json_parse)` doesn't preserve parsed-structure type.**
+  `$set` remains literals-only per the v0.2.6 dc824ee4 lesson. The
+  `|json_parse` filter operates at substitute-time (string-in, string-out
+  round-trip). For field-access on JSON values, the existing pattern via
+  `$`/`~`/`>` ops that return structured output continues to work
+  (`$ tool ... -> X` then `$(X.field)`). A future op (`$parse` or
+  similar) could bridge this if real demand surfaces.
+
+### v0.3.x roadmap
+
+Next: **v0.3.3+** harness-driven. Whichever real production case surfaces
+first — destructuring, arithmetic in $set/conditionals, parallel
+foreach, $parse for JSON-to-struct binding.
+
 ## 0.3.1 — 2026-05-23
 
 **Forward-reference deferred resolution.** Cold authors building

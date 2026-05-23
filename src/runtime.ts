@@ -1149,16 +1149,24 @@ export function substituteRuntimeUnsafe(text: string, vars: Map<string, unknown>
  * them to pass through; runtime can't).
  */
 export function substituteRuntime(text: string, vars: Map<string, unknown>): string {
+  // v0.3.2: filter chain support. The grammar already documents
+  // "chain left-to-right" in help-content (line 222); pre-v0.3.2 only the
+  // first filter actually applied because the regex captured exactly one.
+  // Now: match the ref + optional `|filter|filter|...` chain; apply each
+  // filter in order. `$(RAW|json_parse|length)` now works as documented.
   return text.replace(
-    /\$\(([^|)\s]+)\s*(?:\|\s*([A-Za-z_]\w*))?\s*\)/g,
-    (_match: string, ref: string, filter: string | undefined) => {
+    /\$\(([^|)\s]+)\s*((?:\|\s*[A-Za-z_]\w*\s*)*)\)/g,
+    (_match: string, ref: string, filterChain: string) => {
       const value = resolveRef(ref, vars);
       if (value === undefined) {
         throw new UnresolvedVariableError(ref, "?");
       }
-      const s = stringifyValue(value);
-      if (!filter) return s;
-      return applyFilter(s, filter);
+      let s = stringifyValue(value);
+      if (filterChain) {
+        const filters = filterChain.split("|").map((f) => f.trim()).filter((f) => f !== "");
+        for (const filter of filters) s = applyFilter(s, filter);
+      }
+      return s;
     },
   );
 }
@@ -1237,7 +1245,100 @@ const CMP = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))
 const CMP_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*(<=|>=|<|>)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*$/;
 const IN = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s+(not\s+)?in\s+\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\)\s*$/;
 
+/**
+ * v0.3.2 — find the index of a top-level token (`and`, `or`) at paren-depth 0
+ * outside quoted strings. Returns -1 if not found. Used by the recursive
+ * compound decomposition below; scans right-to-left for left-associativity
+ * with the standard precedence (so `a and b and c` parses as
+ * `(a and b) and c` — the rightmost AND is the outer split point).
+ *
+ * NOT a full tokenizer. Just looks for the literal word `token` bounded by
+ * whitespace, skipping over quoted strings and parenthesized sub-expressions.
+ */
+function findOuterToken(cond: string, token: string): number {
+  let depth = 0;
+  let inQuote: '"' | "'" | null = null;
+  let bestIdx = -1;
+  for (let i = 0; i < cond.length; i++) {
+    const ch = cond[i]!;
+    if (inQuote !== null) {
+      if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inQuote = ch; continue; }
+    if (ch === "(") { depth++; continue; }
+    if (ch === ")") { depth = Math.max(0, depth - 1); continue; }
+    if (depth !== 0) continue;
+    // Match ` token ` with word boundaries; LHS / RHS whitespace required.
+    if (ch === " " && cond.slice(i + 1, i + 1 + token.length) === token) {
+      const after = cond[i + 1 + token.length];
+      if (after === " " || after === "\t") {
+        bestIdx = i; // continue scanning to find the rightmost match
+      }
+    }
+  }
+  return bestIdx;
+}
+
+/**
+ * Strip exactly one layer of matched outer parens. Returns the original
+ * if the outer parens don't balance (e.g. `(a) and (b)` — the leading `(`
+ * closes before the end, so the outer parens aren't a wrapper).
+ */
+function stripOuterParens(cond: string): string {
+  const trimmed = cond.trim();
+  if (!trimmed.startsWith("(") || !trimmed.endsWith(")")) return trimmed;
+  let depth = 0;
+  let inQuote: '"' | "'" | null = null;
+  for (let i = 0; i < trimmed.length - 1; i++) {
+    const ch = trimmed[i]!;
+    if (inQuote !== null) {
+      if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inQuote = ch; continue; }
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return trimmed; // outer parens don't wrap; bail
+    }
+  }
+  return trimmed.slice(1, -1).trim();
+}
+
+/**
+ * v0.3.2 — compound condition dispatcher. Order matches precedence:
+ *   OR (lowest) → AND → NOT → simple-shape regex (leaves)
+ *
+ * Short-circuit: AND eval RHS only when LHS truthy; OR only when LHS falsy.
+ * That preserves the "validate-then-access" pattern (`if $(X) == "ok" and
+ * $(MAYBE_UNRESOLVED)`) where the RHS would error if eagerly evaluated.
+ */
 export function evalCondition(cond: string, vars: Map<string, unknown>): boolean {
+  const stripped = stripOuterParens(cond);
+  // OR (lowest precedence) — split first.
+  const orIdx = findOuterToken(stripped, "or");
+  if (orIdx >= 0) {
+    const lhs = stripped.slice(0, orIdx);
+    const rhs = stripped.slice(orIdx + 4); // " or " is 4 chars (leading space already excluded by orIdx)
+    return evalCondition(lhs, vars) || evalCondition(rhs, vars);
+  }
+  // AND
+  const andIdx = findOuterToken(stripped, "and");
+  if (andIdx >= 0) {
+    const lhs = stripped.slice(0, andIdx);
+    const rhs = stripped.slice(andIdx + 5); // " and " is 5 chars
+    return evalCondition(lhs, vars) && evalCondition(rhs, vars);
+  }
+  // NOT prefix (unary, binds higher than and/or, lower than comparison)
+  const trimmedLead = stripped.trimStart();
+  if (trimmedLead.startsWith("not ")) {
+    return !evalCondition(trimmedLead.slice(4), vars);
+  }
+  return evalSimpleCondition(stripped, vars);
+}
+
+function evalSimpleCondition(cond: string, vars: Map<string, unknown>): boolean {
   const t = TRUTHY.exec(cond);
   if (t) {
     const val = resolveRef(t[1]!, vars);
