@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.2.10 — 2026-05-23
+
+**Three high-severity bug fixes** from Perry's "wild-and-crazy" cold-author
+harness (thread `b6176e02`) — 6 fresh sub-agents, ~60 skills, 8 real bugs
+filed. This patch addresses the top three.
+
+### Fixed
+- **Bug 1: `-> VAR` binding rendered as `$(<target>.output)` in compile
+  artifact** (4 observers). The `$` and `@` op renderers hardcoded the
+  target-output fallback even when the op had an explicit `outputVar`.
+  Now: `@ echo hi -> GREETING` renders as `bind output to $(GREETING)`;
+  bindings without `-> VAR` still fall back to `$(<target>.output)`.
+
+- **Bug 2: `# Vars: LOCATION=Asheville,NC` parsed as two declarations**
+  (2 observers). The `splitVarsLine` helper split naïvely on commas; values
+  containing commas got cut off. New heuristic: a comma is a declaration
+  boundary only when followed by an IDENT then `=`/`,`/`:`/end. Once the
+  current segment has `=`, commas stay value-internal unless the next
+  IDENT is followed by `=` or `:`. Chains of bare-required vars (`A, B,
+  C`) still split correctly. Identifier matcher now accepts hyphens
+  (`queue-drain-procedure`) for `# Templates:` parity.
+
+- **Bug 3: Nested control flow broke on elif-with-inner-if-then-else**
+  (3 observers across 3 shapes). The `elif`/`else` continuation logic
+  only checked the top of the scope stack — when an inner `if` block was
+  still open above an outer `elif`, the dedent to the outer if's
+  continuation level didn't find the matching frame. Fix: walk DOWN the
+  scope stack to find the if/elif frame at the expected continuation
+  depth, popping all inner frames as we go. All six nested shapes Perry
+  surfaced now parse clean.
+
+### Internal
+- Narrow-core LOC ceiling nudged 5000 → 5100 to accommodate the parser
+  robustness work (vars-comma + nested-control-flow + render
+  disambiguation). Original ERD §1 intent preserved.
+- 12 new fixtures in `tests/v0.2.10.test.ts` covering Bug 1+2+3 + Perry's
+  exact repros + regression guards.
+- 646/646 tests passing. Narrow-core LOC 5006/13.
+
+### Acknowledgments
+Perry — the wild-and-crazy harness (A=spec-fed + B=help-only differential)
+produced richer signal than any prior validation. Five more bugs queued
+for the next patch (lint gaps, ambient-ref false positives, missing
+unconfirmed-mutation keywords) plus a v0.3.0 language-design slate
+(parallel dispatch, accumulator, retry/backoff).
+
 ## 0.2.9 — 2026-05-23
 
 **Patch — fixes the in-skill `$ execute_skill inputs={...}` regression**

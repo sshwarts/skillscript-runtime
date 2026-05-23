@@ -473,10 +473,10 @@ function substitute(body: string, resolved: Map<string, string>): string {
 function renderOpPrompt(op: SkillOp, targetName: string, resolved: Map<string, string>, prefix = ""): string[] {
   const body = op.kind === "$set" ? op.body : substitute(op.body, resolved);
   switch (op.kind) {
-    case "$":     return [`${prefix}- Call tool: ${op.mcpConnector !== undefined ? `${op.mcpConnector}.` : ""}${body} — bind output to $(${targetName}.output)`];
+    case "$":     return [`${prefix}- Call tool: ${op.mcpConnector !== undefined ? `${op.mcpConnector}.` : ""}${body} — bind output to $(${op.outputVar ?? `${targetName}.output`})`];
     case "$set":  return [`${prefix}- Bind variable: ${op.setName} = ${op.setValue}`];
     case "?":     return [`${prefix}- Reason: ${body}`];
-    case "@":     return [`${prefix}- Run shell: ${body} — bind output to $(${targetName}.output)`];
+    case "@":     return [`${prefix}- Run shell: ${body} — bind output to $(${op.outputVar ?? `${targetName}.output`})`];
     case "!":     return [`${prefix}- Tell the user: ${body}`];
     case "??":    return [`${prefix}- Ask the user: ${body}`];
     case "&": {

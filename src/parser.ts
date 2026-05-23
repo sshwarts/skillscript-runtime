@@ -307,21 +307,28 @@ function findTabIndentedLines(source: string): number[] {
 }
 
 // Top-level comma split — preserves commas inside `[...]` list literals.
+// v0.2.10 Bug 2: comma is a declaration boundary only when followed by
+// IDENT then `=`/`,`/`:`/end. Once the current segment has `=`, commas
+// stay value-internal unless the next IDENT is followed by `=` or `:`.
 function splitVarsLine(value: string): string[] {
   const parts: string[] = [];
-  let current = "";
-  let bracketDepth = 0;
-  for (const ch of value) {
-    if (ch === "[") bracketDepth++;
-    else if (ch === "]") bracketDepth = Math.max(0, bracketDepth - 1);
-    if (ch === "," && bracketDepth === 0) {
-      parts.push(current);
-      current = "";
-    } else {
-      current += ch;
+  let cur = "", depth = 0;
+  let q: '"' | "'" | null = null;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i]!;
+    if (q) { cur += ch; if (ch === q) q = null; continue; }
+    if (ch === '"' || ch === "'") { cur += ch; q = ch; continue; }
+    if (ch === "[" || ch === "{") { depth++; cur += ch; continue; }
+    if (ch === "]" || ch === "}") { depth = Math.max(0, depth - 1); cur += ch; continue; }
+    if (ch === "," && depth === 0) {
+      const m = value.slice(i + 1).match(/^\s*[A-Za-z_][\w-]*\s*([=,:]|$)/);
+      if (m !== null && (!cur.includes("=") || m[1] === "=" || m[1] === ":")) {
+        parts.push(cur); cur = ""; continue;
+      }
     }
+    cur += ch;
   }
-  parts.push(current);
+  parts.push(cur);
   return parts;
 }
 
@@ -850,15 +857,21 @@ export function parse(source: string): ParsedSkill {
     // Conditional chain continuation: `elif:` / `else:` re-enters the same
     // if-frame depth. MUST run before popToDepth so the dedent doesn't fire
     // first and pop the if-body frame we're trying to extend.
-    if (
-      (stripped0.startsWith("elif ") || /^else:\s*$/.test(stripped0)) &&
-      (scopeStack[scopeStack.length - 1]!.kind === "if" || scopeStack[scopeStack.length - 1]!.kind === "elif") &&
-      scopeStack[scopeStack.length - 1]!.depth === lineIndent + INDENT_STEP
-    ) {
-      const preTop = scopeStack[scopeStack.length - 1]!;
+    // v0.2.10 Bug 3: search DOWN the stack for the matching if/elif frame,
+    // not just the top — nested control flow (if-in-elif then sibling else)
+    // leaves inner frames above the if-frame we're continuing.
+    let contIdx = -1;
+    if (stripped0.startsWith("elif ") || /^else:\s*$/.test(stripped0)) {
+      for (let i = scopeStack.length - 1; i >= 0; i--) {
+        const f = scopeStack[i]!;
+        if ((f.kind === "if" || f.kind === "elif") && f.depth === lineIndent + INDENT_STEP) { contIdx = i; break; }
+      }
+    }
+    if (contIdx >= 0) {
+      const preTop = scopeStack[contIdx]!;
       const ifOp = preTop.ifOp!;
       const continuationDepth = preTop.depth;
-      scopeStack.pop();
+      scopeStack.length = contIdx;
       if (stripped0.startsWith("elif ")) {
         const elifMatch = ELIF_OP_REGEX.exec(stripped0);
         if (!elifMatch) {
