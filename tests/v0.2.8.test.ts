@@ -234,6 +234,42 @@ describe("v0.2.8 — $ execute_skill in-skill composition", () => {
     expect(serialized).toMatch(/recursion depth exceeded/i);
   });
 
+  it("v0.2.9 fix: $ execute_skill inputs={...} JSON kwarg propagates to child", async () => {
+    const wired = bootstrap({ skillsDir: join(home, "skills"), traceDir: join(home, "traces") });
+    await wired.skillStore.store("hello",
+      "# Skill: hello\n# Status: Approved\n# Vars: WHO=world\ngreet:\n    ! Hello, $(WHO)!\ndefault: greet\n");
+    // Style 2 — Perry's repro syntax (thread 64445b4f). Was silently dropped in v0.2.8.
+    await wired.skillStore.store("parent",
+      "# Skill: parent\n# Status: Approved\n# Vars: TARGET_NAME=Perry\nm:\n    $ execute_skill skill_name=\"hello\" inputs={\"WHO\": \"$(TARGET_NAME)\"} -> R\n    ! Child WHO: $(R.final_vars.WHO)\ndefault: m\n");
+
+    const result = await callTool(wired.mcpServer, "execute_skill", { skill_name: "parent" });
+    expect(result["errors"]).toEqual([]);
+    expect((result["transcript"] as string[]).join("\n")).toMatch(/Child WHO: Perry/);
+  });
+
+  it("v0.2.9 fix: $ execute_skill bare-kwarg style continues to propagate inputs", async () => {
+    const wired = bootstrap({ skillsDir: join(home, "skills"), traceDir: join(home, "traces") });
+    await wired.skillStore.store("hello",
+      "# Skill: hello\n# Status: Approved\n# Vars: WHO=world\ngreet:\n    ! Hello, $(WHO)!\ndefault: greet\n");
+    // Style 1 — bare kwarg, natural skill grammar
+    await wired.skillStore.store("parent",
+      "# Skill: parent\n# Status: Approved\n# Vars: TARGET_NAME=Scott\nm:\n    $ execute_skill skill_name=\"hello\" WHO=\"$(TARGET_NAME)\" -> R\n    ! Child WHO: $(R.final_vars.WHO)\ndefault: m\n");
+
+    const result = await callTool(wired.mcpServer, "execute_skill", { skill_name: "parent" });
+    expect(result["errors"]).toEqual([]);
+    expect((result["transcript"] as string[]).join("\n")).toMatch(/Child WHO: Scott/);
+  });
+
+  it("v0.2.9 fix: tokenizer handles JSON with nested objects and arrays", async () => {
+    const { tokenizeKeywordArgs } = await import("../src/parser.js");
+    // Plain JSON object
+    expect(tokenizeKeywordArgs(`skill_name="hello" inputs={"WHO": "Perry"}`))
+      .toEqual([`skill_name="hello"`, `inputs={"WHO": "Perry"}`]);
+    // Nested object + array
+    expect(tokenizeKeywordArgs(`inputs={"outer": {"inner": "v"}, "list": [1, 2]}`))
+      .toEqual([`inputs={"outer": {"inner": "v"}, "list": [1, 2]}`]);
+  });
+
   it("$ execute_skill works without an MCP connector wired (built-in intercept)", async () => {
     const wired = bootstrap({ skillsDir: join(home, "skills"), traceDir: join(home, "traces") });
     expect(wired.registry.listMcpConnectors()).toEqual([]);

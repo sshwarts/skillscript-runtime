@@ -447,8 +447,8 @@ export function tokenizeKeywordArgs(input: string): string[] {
       inQuote = ch;
       continue;
     }
-    if (ch === "[") { bracketDepth++; current += ch; continue; }
-    if (ch === "]") { bracketDepth = Math.max(0, bracketDepth - 1); current += ch; continue; }
+    if (ch === "[" || ch === "{") { bracketDepth++; current += ch; continue; }
+    if (ch === "]" || ch === "}") { bracketDepth = Math.max(0, bracketDepth - 1); current += ch; continue; }
     if (/\s/.test(ch) && bracketDepth === 0) {
       if (current.trim() !== "") tokens.push(current);
       current = "";

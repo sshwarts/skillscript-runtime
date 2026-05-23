@@ -127,6 +127,20 @@ function resolveSkillStore(registry: Registry): SkillStore {
  * Returns the child skill's result for binding to `$(VAR)`. Throws on
  * malformed args, recursion overflow, or missing skill — the caller
  * (the `$` op dispatcher) wraps with `makeOpError`.
+ *
+ * Two syntaxes for child-skill inputs are supported (v0.2.9 fix):
+ *
+ *   Style 1 — bare kwargs (natural skill grammar):
+ *     $ execute_skill skill_name="child" WHO="$(NAME)" -> R
+ *
+ *   Style 2 — explicit `inputs={...}` JSON object (MCP-call parity):
+ *     $ execute_skill skill_name="child" inputs={"WHO": "$(NAME)"} -> R
+ *
+ * Style 2 was silently dropped in v0.2.8: the `$` op parses kwargs as
+ * flat strings, so `inputs={...}` arrived as the literal JSON string,
+ * was passed to the child as a kwarg named `inputs`, and the child
+ * (which doesn't declare `inputs` as a variable) ignored it. Per
+ * Perry's thread `64445b4f`.
  */
 export async function dispatchExecuteSkillIntercept(
   args: Record<string, unknown>,
@@ -137,13 +151,39 @@ export async function dispatchExecuteSkillIntercept(
   if (childSkillName === "") {
     throw new Error(`\`$ execute_skill\` op missing required \`skill_name\` arg (target '${targetName}').`);
   }
-  const childInputs: Record<string, string> = {};
-  for (const [k, v] of Object.entries(args)) {
-    if (k === "skill_name") continue;
-    childInputs[k] = String(v);
-  }
+  const childInputs = extractChildInputs(args);
   return executeSkillByName(childSkillName, childInputs, {
     ctx,
     chain: [`target:${targetName}`],
   });
+}
+
+function extractChildInputs(args: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  // Style 2 first — if `inputs` kwarg parses as a JSON object, unpack it
+  // into the inputs map. Symmetric with the MCP-call form.
+  const rawInputs = args["inputs"];
+  if (typeof rawInputs === "string") {
+    try {
+      const parsed = JSON.parse(rawInputs) as unknown;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          out[k] = String(v);
+        }
+      }
+    } catch {
+      /* not JSON — fall through; `inputs` was a bare string kwarg, not a JSON object */
+    }
+  } else if (rawInputs !== null && typeof rawInputs === "object" && !Array.isArray(rawInputs)) {
+    for (const [k, v] of Object.entries(rawInputs as Record<string, unknown>)) {
+      out[k] = String(v);
+    }
+  }
+  // Style 1 — bare kwargs become inputs directly. `inputs` and `skill_name`
+  // are handled separately so they don't leak into the child's variable scope.
+  for (const [k, v] of Object.entries(args)) {
+    if (k === "skill_name" || k === "inputs") continue;
+    out[k] = String(v);
+  }
+  return out;
 }

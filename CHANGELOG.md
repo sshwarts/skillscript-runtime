@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.2.9 — 2026-05-23
+
+**Patch — fixes the in-skill `$ execute_skill inputs={...}` regression**
+Perry caught in v0.2.8 validation (thread `64445b4f`). Composition
+primitive now works end-to-end for both kwarg styles.
+
+### Fixed
+- **`$ execute_skill skill_name="X" inputs={"K": "V"}` was silently
+  dropping the inputs kwarg.** Two root causes, both addressed:
+  1. **Parser tokenizer** didn't track `{}` braces alongside `[]`, so
+     `inputs={"WHO": "Perry"}` fragmented at the first whitespace inside
+     the JSON object. Extended `tokenizeKeywordArgs` to track curly
+     braces with the same bracket-depth logic.
+  2. **Composition intercept** only treated kwargs as flat
+     `key=string-value` pairs. When `inputs` arrived as the literal
+     JSON string `{"WHO": "Perry"}`, it was passed as a kwarg named
+     `inputs` (which the child ignored). Now: if the `inputs` kwarg
+     JSON-parses as an object, it's unpacked into the child's input map.
+
+### Supported styles
+Both forms now work and produce identical behavior:
+
+```
+# Style 1 — bare kwargs (natural skill grammar)
+$ execute_skill skill_name="child" WHO="$(NAME)" -> R
+
+# Style 2 — explicit inputs={...} JSON object (MCP-call parity)
+$ execute_skill skill_name="child" inputs={"WHO": "$(NAME)"} -> R
+```
+
+### Test coverage
+- 3 new fixtures in `tests/v0.2.8.test.ts` covering both styles +
+  the tokenizer's JSON-object handling (nested + arrays + brackets-
+  in-strings).
+- 634/634 tests passing. Narrow-core LOC 4999/13 — tokenizer extension
+  was net-zero LOC by combining `[`+`{` and `]`+`}` into one condition
+  each.
+
+### Acknowledgments
+Perry — caught the bug in the v0.2.8 validation cycle; turnaround under
+an hour from bug filing to fix shipped. The minion-battery → ship loop
+catches real regressions reliably.
+
 ## 0.2.8 — 2026-05-23
 
 **Discovery + composition.** Two new MCP tools per Perry's v0.2.8
