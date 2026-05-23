@@ -125,15 +125,15 @@ jobs:
           prerelease: false
 
       - name: Publish to npm
-        # Project-root `.npmrc` takes precedence over `$HOME/.npmrc` AND
-        # the `$NPM_CONFIG_USERCONFIG`-redirected file setup-node@v4 writes
-        # to `$RUNNER_TEMP`. v0.2.5-0.2.7 attempts at `$HOME/.npmrc` were
-        # silently ignored because of the env redirect. Writing to project
-        # root + single-step keeps auth + publish atomic.
-        # `npm publish` (not pnpm) bypasses pnpm 11's auto-OIDC behavior.
-        # `--ignore-scripts` skips prepublishOnly since smoke ran above.
+        # Five publish-step failures across v0.2.5–v0.2.9, each a
+        # different pnpm/setup-node/npm interaction quirk. The common
+        # theme: "where I write .npmrc doesn't match where npm reads it."
+        #
+        # `npm config set` bypasses .npmrc-location ambiguity — npm
+        # writes to whichever file it itself considers canonical.
+        # `--ignore-scripts` skips prepublishOnly (smoke ran above).
         run: |
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
+          npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
           npm publish --access public --ignore-scripts
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
