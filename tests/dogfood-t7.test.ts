@@ -24,8 +24,8 @@ const REPO_ROOT = join(__dirname, "..");
 const PACKAGE_JSON = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as Record<string, unknown>;
 
 describe("T7 — package.json polish", () => {
-  it("1. version is 0.2.10 (T7 + 0.2.1-0.2.9 polish + 0.2.10 harness bugs)", () => {
-    expect(PACKAGE_JSON["version"]).toBe("0.2.10");
+  it("1. version is 0.2.11 (T7 + 0.2.1-0.2.10 + 0.2.11 harness Bugs 4/5/6/7/10/14 + composition docs + CLI execute rename)", () => {
+    expect(PACKAGE_JSON["version"]).toBe("0.2.11");
   });
 
   it("2. main + types + bin + engines.node ≥ 22.5 declared", () => {
@@ -101,10 +101,13 @@ describe("T7 — distributed code surface", () => {
 describe("T7 — CLI --help surface", () => {
   const CLI = `node ${join(REPO_ROOT, "dist/cli.js")}`;
 
-  it("9. top-level --help lists all 14 commands (v0.2.7 added serve)", () => {
+  it("9. top-level --help lists all 14 commands (v0.2.7 added serve; v0.2.11 renamed run → execute)", () => {
     const out = execSync(`${CLI} --help`, { encoding: "utf8" });
     const commands = [
-      "init", "run", "compile", "audit", "lint", "list",
+      // `run` is intentionally absent from the top-level listing in v0.2.11 —
+      // it's a deprecated alias for `execute` and still dispatchable, but no
+      // longer advertised in the usage surface (per memory `2e999f9e`).
+      "init", "execute", "compile", "audit", "lint", "list",
       "fires", "diagram", "sign", "verify", "replay", "health",
       "serve", "dashboard",
     ];
@@ -119,7 +122,9 @@ describe("T7 — CLI --help surface", () => {
 
   it("10. each command has per-command --help with description + usage", () => {
     const commands = [
-      "init", "run", "compile", "audit", "lint", "list",
+      // `run` retains per-command --help (it's still dispatchable as a
+      // deprecated alias in v0.2.11); just not advertised at top-level.
+      "init", "execute", "run", "compile", "audit", "lint", "list",
       "fires", "diagram", "sign", "verify", "replay", "health",
       "serve", "dashboard",
     ];
@@ -131,9 +136,9 @@ describe("T7 — CLI --help surface", () => {
     }
   });
 
-  it("11. version flag reports 0.2.10", () => {
+  it("11. version flag reports 0.2.11", () => {
     const out = execSync(`${CLI} --version`, { encoding: "utf8" });
-    expect(out.trim()).toBe("0.2.10");
+    expect(out.trim()).toBe("0.2.11");
   });
 });
 

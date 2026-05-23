@@ -1,5 +1,78 @@
 # Changelog
 
+## 0.2.11 — 2026-05-23
+
+**Six bug fixes + composition docs + MCP-CLI symmetry rename**, all sourced
+from Perry's "wild-and-crazy" cold-author harness (thread `b6176e02`,
+follow-up memory `2e999f9e`) and now run as a permanent regression corpus
+via `tests/harness-corpus.test.ts` (66 skills authored by 6 fresh sub-agents).
+
+### Fixed
+- **Bug 4: `unsafe-shell-ambiguous-subst` false-positive on ambient refs.**
+  The lint was warning on `$(EVENT.fired_at_unix)` and `$(NOW)` inside
+  `@ unsafe` bodies and suggesting cold authors rewrite as `$$(EVENT...)`
+  (bash command-sub) — which would just try to execute `EVENT...`. Now
+  skips dotted refs (consistent with `undeclared-var`) and bare ambient
+  refs (NOW, USER, SESSION_CONTEXT, TRIGGER_TYPE, TRIGGER_PAYLOAD,
+  ERROR_CONTEXT).
+
+- **Bug 5: `@ unsafe` compiled clean when runtime had `enableUnsafeShell:
+  false`.** Skill would refuse at first fire with `UnsafeShellDisabledError`,
+  but compile/lint were silent. New tier-1 rule `unsafe-shell-disabled`
+  fires when the caller passes `enableUnsafeShell: false` explicitly
+  (`undefined` keeps backwards-compat — only tier-2 `unsafe-shell-op`
+  fires). Threaded the flag through `CompileOptions.enableUnsafeShell`
+  and the MCP server's `compile_skill` / `lint_skill` dispatchers.
+
+- **Bug 6: `unconfirmed-mutation` keyword list too narrow.** Extended the
+  mutating-tool-name pattern with: `archive_`, `prune_`, `deploy_`,
+  `expire_`, `consolidate_`, `purge_`, `reset_`, `rotate_`, `move_`,
+  `rename_`, `drop_`, `truncate_`, `upsert_`, `overwrite_`, `clear_`,
+  `wipe_`, `finalize_`. Perry's harness surfaced a cluster of mutating
+  tools that the original `write_/update_/delete_/...` set didn't catch.
+
+- **Bug 7: `$ execute_skill skill_name=<missing>` skipped
+  `unknown-skill-reference` lint.** The rule only walked `&` ops.
+  `collectAmpRefsFromOps` now also extracts `skill_name=` from
+  `$ execute_skill` calls (quoted or bare-identifier form). The harness
+  corpus now stubs missing child skills via a new `needs-stub-skills`
+  manifest classification — surfacing Bug 7 on 5 cold-author orchestrators.
+
+- **Bug 10: indent-tracker after closing `else:` block.** Filed as a
+  separate bug by A-3 against v0.2.9, but already closed by v0.2.10's
+  Bug 3 fix (walk-down scope-stack). Added explicit regression tests
+  (`backup-rotator` shape; `if/elif/else` chain with sibling op) to lock
+  in the behavior.
+
+- **Bug 14: unknown-block-introducer diagnostic.** Hypothetical block
+  keywords (`parallel:`, `try:`, `catch X:`, `branch X:`) used to surface
+  as a "Mid-block indent change" cascade — confusing for cold authors
+  feature-requesting future syntax. Now emits a specific
+  `Unknown block-introducer` parse error listing the recognized set
+  (`if/elif/else/foreach`) and absorbs indented children into a synthetic
+  frame so follow-on errors don't pile up.
+
+### Added
+- **`help({topic: "composition"})` topic.** Covers all three composition
+  primitives — `& skill-name` (data-skill inline at compile time),
+  `& invoke skill-name` (runtime call), `$ execute_skill skill_name="..." -> VAR`
+  (in-skill execute with kwarg forwarding). Documents the depth-5
+  recursion limit, the lint signals catching missing/disabled refs, and
+  when to reach for which primitive.
+
+- **4th example skill in `help({topic: "examples"})`.** `morning-brief-
+  orchestrator` — a worked orchestrator using `$ execute_skill` to fan
+  out to three child skills with per-call fallbacks and `-> VAR` bindings.
+
+- **`skillfile execute` CLI command (alias for `run`).** MCP-CLI symmetry
+  per memory `2e999f9e`: the MCP tool is `execute_skill`, the CLI should
+  mirror. `skillfile run` is preserved as a deprecated alias for one
+  release with a stderr notice; v0.2.12 will drop it.
+
+### Tests
+- 36 new tests in `tests/v0.2.11.test.ts` covering every bug fix + doc
+  addition. Total suite: 749 passing (up from 713 at v0.2.10).
+
 ## 0.2.10 — 2026-05-23
 
 **Three high-severity bug fixes** from Perry's "wild-and-crazy" cold-author

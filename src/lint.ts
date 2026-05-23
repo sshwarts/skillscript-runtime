@@ -73,6 +73,15 @@ export interface LintOptions {
    * preflight). Default `"api"`.
    */
   callSite?: "cli" | "api" | "compile-preflight";
+  /**
+   * Runtime `enableUnsafeShell` flag, if known to the caller. When
+   * explicitly `false`, the `unsafe-shell-disabled` rule (v0.2.11 Bug 5)
+   * fires tier-1 on any `@ unsafe` op — the skill would refuse at
+   * runtime, and compile should surface that up-front. When `undefined`
+   * (caller doesn't know), only the standard tier-2 `unsafe-shell-op`
+   * warning fires.
+   */
+  enableUnsafeShell?: boolean;
 }
 
 interface LintContext {
@@ -81,6 +90,7 @@ interface LintContext {
   skillStore: SkillStore | undefined;
   hasSkillStore: boolean;
   callSite: "cli" | "api" | "compile-preflight";
+  enableUnsafeShell: boolean | undefined;
 }
 
 export interface LintRule {
@@ -101,6 +111,7 @@ export async function lint(source: string, options?: LintOptions): Promise<LintR
     skillStore: options?.skillStore,
     hasSkillStore: options?.skillStore !== undefined,
     callSite: options?.callSite ?? "api",
+    enableUnsafeShell: options?.enableUnsafeShell,
   };
   const findings: LintFinding[] = [];
   for (const rule of RULES) {
@@ -136,6 +147,7 @@ export function lintSync(source: string, options?: LintOptions): LintResult {
     skillStore: options?.skillStore,
     hasSkillStore: options?.skillStore !== undefined,
     callSite: options?.callSite ?? "api",
+    enableUnsafeShell: options?.enableUnsafeShell,
   };
   const findings: LintFinding[] = [];
   for (const rule of RULES) {
@@ -712,6 +724,17 @@ const UNSAFE_SHELL_AMBIGUOUS_SUBST: LintRule = {
           // — anything else (spaces, special chars, etc.) is implicitly bash.
           const trimmed = inner.trim();
           if (/^[A-Za-z_]\w*$/.test(trimmed) && declared.has(trimmed)) continue;
+          // v0.2.11 Bug 4: dotted refs (EVENT.fired_at_unix, MEMORY.x,
+          // <target>.output) are runtime ambient/output families — same
+          // dotted-passthrough heuristic as `undeclared-var`. The
+          // unsafe-shell warning was telling cold authors to rewrite
+          // `$(EVENT.fired_at_unix)` as `$$(EVENT.fired_at_unix)` (bash
+          // command-sub), which would just try to execute "EVENT...".
+          if (trimmed.includes(".")) continue;
+          // v0.2.11 Bug 4: bare ambient refs (NOW, USER, ERROR_CONTEXT,
+          // SESSION_CONTEXT, TRIGGER_TYPE, TRIGGER_PAYLOAD) also pass —
+          // runtime injects them, author doesn't declare.
+          if (AMBIENT_VARS.includes(trimmed)) continue;
           if (reported.has(inner)) continue;
           reported.add(inner);
           findings.push({
@@ -751,8 +774,55 @@ const UNSAFE_SHELL_OP: LintRule = {
   },
 };
 
-/** Tool-name patterns that strongly suggest mutating operations. Conservative — false positives are tolerable for warnings; false negatives are dangerous. */
-const MUTATING_TOOL_PATTERN = /^(?:write_|update_|delete_|remove_|set_|create_|insert_|put_|patch_|destroy_).*/;
+/**
+ * v0.2.11 Bug 5. Tier-1 escalation of the unsafe-shell signal — only
+ * fires when the caller passed `enableUnsafeShell: false` explicitly.
+ * Without that knowledge (the field is undefined), this rule stays
+ * silent and the tier-2 `unsafe-shell-op` warning is the only signal.
+ *
+ * When the runtime is known-disabled, every `@ unsafe` op is a guaranteed
+ * runtime refusal (`UnsafeShellDisabledError`). Surfacing that at compile
+ * time instead of letting the skill compile clean and then fail at first
+ * fire avoids the "compiles clean but won't run" gap Perry's harness
+ * surfaced (memory `b6176e02`).
+ */
+const UNSAFE_SHELL_DISABLED: LintRule = {
+  id: "unsafe-shell-disabled",
+  severity: "error",
+  description: "Skill uses `@ unsafe`, but the runtime was configured with `enableUnsafeShell: false`. The op will refuse at first fire.",
+  remediation: "Either set `enableUnsafeShell: true` on the runtime (after reviewing the shell content), or refactor the `@ unsafe` op to use the structured `@ <binary> <args>` form (sandboxed, no bash).",
+  check: (ctx) => {
+    if (ctx.enableUnsafeShell !== false) return [];
+    const findings: LintFinding[] = [];
+    for (const [targetName, target] of ctx.parsed.targets) {
+      walkOps(target.ops, (op) => {
+        if (op.kind === "@" && op.policy === "unsafe") {
+          findings.push({
+            rule: "unsafe-shell-disabled",
+            severity: "error",
+            message: `\`@ unsafe\` op in target '${targetName}' would refuse at runtime: \`enableUnsafeShell\` is false. Command: '${op.body.slice(0, 60)}${op.body.length > 60 ? "..." : ""}'`,
+            block: targetName,
+          });
+        }
+      });
+    }
+    return findings;
+  },
+};
+
+/**
+ * Tool-name patterns that strongly suggest mutating operations.
+ * Conservative — false positives are tolerable for warnings; false
+ * negatives are dangerous.
+ *
+ * v0.2.11 Bug 6: extended with archive_/prune_/deploy_/expire_/
+ * consolidate_/purge_/reset_/rotate_/move_/rename_/drop_/truncate_/
+ * upsert_/overwrite_/clear_/wipe_/finalize_ — Perry's wild-and-crazy
+ * harness surfaced a cluster of mutating tools that the original
+ * write/update/delete/etc. set didn't catch (`archive_old_threads`,
+ * `prune_threads`, `deploy_release`, `dangerous-cleanup`'s `expire_*`).
+ */
+const MUTATING_TOOL_PATTERN = /^(?:write_|update_|delete_|remove_|set_|create_|insert_|put_|patch_|destroy_|archive_|prune_|deploy_|expire_|consolidate_|purge_|reset_|rotate_|move_|rename_|drop_|truncate_|upsert_|overwrite_|clear_|wipe_|finalize_).*/;
 
 const UNCONFIRMED_MUTATION: LintRule = {
   id: "unconfirmed-mutation",
@@ -968,6 +1038,7 @@ const RULES: LintRule[] = [
   DEPRECATED_QUESTION,
   UNSAFE_SHELL_AMBIGUOUS_SUBST,
   UNSAFE_SHELL_OP,
+  UNSAFE_SHELL_DISABLED,
   UNCONFIRMED_MUTATION,
   MODEL_CONTENTION,
   DRAFT_WITH_TRIGGER,
@@ -1001,6 +1072,16 @@ function collectAmpRefsFromOps(ops: SkillOp[]): Set<string> {
   const out = new Set<string>();
   walkOps(ops, (op) => {
     if (op.kind === "&" && op.ampParams !== undefined) out.add(op.ampParams.skillName);
+    // v0.2.11 Bug 7: `$ execute_skill skill_name="child" ...` is also a
+    // composition primitive; missing-skill lint applies. Match either
+    // quoted-string skill_name= or a bare identifier.
+    if (op.kind === "$" && /^execute_skill\b/.test(op.body)) {
+      const m = /\bskill_name\s*=\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z_][\w-]*))/.exec(op.body);
+      if (m !== null) {
+        const name = m[1] ?? m[2] ?? m[3];
+        if (name !== undefined && name !== "") out.add(name);
+      }
+    }
   });
   return out;
 }

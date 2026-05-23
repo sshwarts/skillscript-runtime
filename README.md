@@ -18,6 +18,8 @@
 - [Three kinds of skill](#three-kinds-of-skill)
   - [Waking agents](#waking-agents)
   - [Local models as tools for the frontier](#local-models-as-tools-for-the-frontier)
+  - [Composition: skills calling skills](#composition-skills-calling-skills)
+  - [Static vs dynamic skills](#static-vs-dynamic-skills)
 - [What you get](#what-you-get)
 - [The bet](#the-bet)
 - [Quickstart](#quickstart)
@@ -132,6 +134,44 @@ In skillscript, this isn't a separate "local-model interplay" pattern adopters b
 
 The cost shape that follows: routine work runs at local-model cost (free at scale, fast, private to the host); the frontier model intervenes only at orchestration boundaries and ambiguous cases. Customer data flowing through `~` ops never reaches an external API. The local-model layer becomes the privacy boundary, not a separate add-on.
 
+### Composition: skills calling skills
+
+A skill can invoke another skill via the `$ execute_skill` op:
+
+```
+parent:
+    $ execute_skill skill_name="extract-json-number" JSON_BLOB=$(RAW) FIELD_PATH=total_count -> RESULT
+    ! Extracted: $(RESULT.final_vars.VALUE|trim)
+```
+
+The child skill runs to completion against the runtime's wired connectors, returns its full execution record (final vars, transcript, outputs), and binds to the parent's named variable. Field access on the bound result (`$(RESULT.final_vars.X)`) lets the parent reach into whatever the child produced.
+
+Composition is what makes skill libraries accumulate. Utility skills (`extract-json-number`, `summarize-thread`, `classify-urgency`) get authored once and orchestrated forever. The composition primitive is symmetric across the MCP surface — `execute_skill({skill_name, inputs?, mechanical?})` works the same way at the runtime entry point as it does inside a skill body. `mechanical: true` previews the dispatch graph without firing real ops, propagating through nested composition calls. TestFlight your multi-skill chains before commitment.
+
+### Static vs dynamic skills
+
+Skills have an execution model orthogonal to their kind. A **dynamic skill** requires the Skillscript runtime to execute — the runtime walks the DAG, fires dispatches against wired connectors, threads outputs. A **static skill** compiles to a portable artifact that any agent capable of reading prose can execute without the runtime.
+
+The static case matters for shareable artifacts. A skill whose body has only emission ops (no dispatching `$` / `~` / `@` / `>` ops) compiles to a self-contained recipe. Email it, post it, hand it to a frontier agent in a different environment — they read the compiled output and execute the steps using their own tools. The skill becomes the deliverable.
+
+Template-kind skills are the canonical static shape; their compiled artifact is the prompt the receiving agent acts on. Headless and Augmenting skills are usually dynamic. The axes are independent — author the combination the work calls for.
+
+```
+# A static recipe (no runtime dispatches; just procedure + data)
+# Skill: triage-customer-tickets
+# Status: Approved
+# Vars: TICKETS_JSON=[...]
+
+walk:
+    ! For each ticket in the input, classify urgency as critical/normal/low.
+    ! For critical tickets, suggest immediate owner from the runbook.
+    ! Input: $(TICKETS_JSON)
+
+default: walk
+```
+
+That compiles to a procedure + data bundle a recipient can run anywhere.
+
 ## What you get
 
 **For operators:**
@@ -206,38 +246,40 @@ Wire your own by implementing the interface and registering in `connectors.json`
 
 ## CLI
 
-13 commands cover the full authoring + ops lifecycle:
+14 commands cover the full authoring + ops lifecycle:
 
 | Command | Purpose |
 |---|---|
 | `skillfile compile <path\|name>` | Compile a skill to its rendered artifact |
 | `skillfile audit <path\|name>` | Compile + content-hash check |
 | `skillfile lint <path\|name>` | Tier-1/2/3 lint diagnostics |
-| `skillfile run <path\|name>` | Execute a skill against configured connectors |
+| `skillfile execute <path\|name>` | Execute a skill against configured connectors (mirrors `execute_skill` MCP tool; `skillfile run` retained as deprecated alias) |
 | `skillfile fires <skill>` | Recent fire history with trace IDs |
 | `skillfile diagram <path\|name>` | Mermaid DAG visualization |
 | `skillfile sign <path\|name>` | Generate content-hash signature |
 | `skillfile verify <path\|name> <hash>` | Verify against a known signature |
 | `skillfile replay <trace_id>` | Re-run from a captured trace |
 | `skillfile health` | Aggregate runtime health metrics |
-| `skillfile dashboard [--port N]` | Boot browser dashboard + MCP server |
+| `skillfile serve [--port N]` | Headless: scheduler + MCP server, no SPA |
+| `skillfile dashboard [--port N]` | Same as `serve` plus dashboard SPA at `/` |
 | (Trigger management lives in the MCP surface, not the CLI) | |
 
-Run `skillfile <command> --help` for per-command flags.
+Run `skillfile <command> --help` for per-command flags. Use `serve` for production / containerized deployments and `dashboard` for development. CLI command names mirror the MCP tool names where they overlap (`execute` ↔ `execute_skill`, `compile` ↔ `compile_skill`, `lint` ↔ `lint_skill`), so authors who learn one surface can transfer immediately to the other.
 
 ## MCP server surface
 
-The runtime exposes 11 tools over MCP (HTTP at `/rpc`) for cold-client authoring + observability:
+The runtime exposes 13 tools over MCP (HTTP at `/rpc`) for cold-client authoring + observability:
 
 | Category | Tools |
 |---|---|
 | Skill management | `skill_list`, `skill_metadata`, `skill_status`, `skill_write` |
 | Authoring | `lint_skill`, `compile_skill` |
+| Composition | `execute_skill` |
 | Triggers | `list_triggers`, `register_trigger`, `unregister_trigger` |
 | Observability | `health_metrics` |
-| Discovery | `runtime_capabilities` |
+| Discovery | `runtime_capabilities`, `help` |
 
-This is the "agent reaches MCP" path — an external agent (Claude, GPT, anything that speaks MCP) can author, validate, and deploy skills entirely over the wire.
+This is the "agent reaches MCP" path — an external agent (Claude, GPT, anything that speaks MCP) can author, validate, and deploy skills entirely over the wire. `help()` is the entry point — call with no arguments for a ~500-token quickstart, or with `{topic: "ops" | "frontmatter" | "examples" | "connectors" | "lint-codes"}` for deeper sections. `execute_skill` invokes any stored skill end-to-end against the runtime's connectors, with `mechanical: true` for dry-run preview.
 
 ## Examples
 
@@ -249,8 +291,9 @@ Seven curated example skills in [`examples/`](examples/), covering:
 - `??` interactive ask-user pattern
 - `# Requires:` cascade for compile-time data
 - `&` skill composition
+- `$ execute_skill` skill-to-skill composition
 
-Each example is annotated with the language pattern it demonstrates. Authored from spec by cold-context sub-agents — they double as conformance fixtures.
+Each example is annotated with the language pattern it demonstrates. Authored from spec by cold-context sub-agents — they double as conformance fixtures. The full regression-fixture set in `tests/fixtures/harness/` covers 60+ cold-author skills spanning one-shots, cron monitors, compositions, augmenting deliveries, and intentional edge-case probes — that's the broader cold-author corpus the language is hardened against.
 
 ## Architecture and deep documentation
 
@@ -265,7 +308,8 @@ Test coverage: 646/646 passing. Narrow-core LOC under the 5100/20-file ceiling p
 
 What's coming next:
 - AgentConnector reference adapters — bundled implementations for tmux pane / TTY-injection / file-watch / webhook substrates so adopters can plug `prompt-context:` / `template:` deliveries into real receivers without writing their own connector first
-- `mcp__skillscript__help` tool — cold-agent language discovery via the runtime's MCP surface (~500-token quickstart by default, topic args for deeper sections)
+- **Dispatch discovery surface** — shell-binary inventory (what's on PATH) + MCP tool catalog aggregation (what each wired connector exposes), so cold authors can discover the full primitive surface before writing
+- **Parallel dispatch primitive** — explicit concurrency for independent sub-skill invocations (the largest unanimous request from the cold-author harness)
 - T8 — private AMP adapters consuming the now-complete public connector contracts
 
 ## Contributing

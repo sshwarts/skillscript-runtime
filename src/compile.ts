@@ -57,6 +57,13 @@ export interface CompileOptions {
    * would reject — production callers should let preflight run.
    */
   skipLintPreflight?: boolean;
+  /**
+   * Runtime `enableUnsafeShell` flag, if known to the caller. When `false`,
+   * the lint preflight escalates `@ unsafe` ops to tier-1 (v0.2.11 Bug 5)
+   * because the runtime would refuse them — surface up-front instead of
+   * compiling clean and failing at first fire.
+   */
+  enableUnsafeShell?: boolean;
 }
 
 /**
@@ -112,6 +119,7 @@ export async function compile(
     const lintResult = await lint(source, {
       ...(skillStore !== undefined ? { skillStore } : {}),
       callSite: "compile-preflight",
+      ...(options.enableUnsafeShell !== undefined ? { enableUnsafeShell: options.enableUnsafeShell } : {}),
     });
     const tier1 = lintResult.findings.filter((f) => f.severity === "error");
     if (tier1.length > 0) {

@@ -23,6 +23,13 @@ export type HarnessClassification =
   | { kind: "pass" }
   | { kind: "needs-inputs"; inputs: Record<string, string> }
   | { kind: "needs-fallback-skill"; fallbackName: string; inputs?: Record<string, string> }
+  // v0.2.11 Bug 7: `$ execute_skill skill_name=<child>` now lint-checks the
+  // child skill name. Cold-author corpus has skills referencing child skills
+  // that don't exist in the corpus (the minion imagined the orchestrator
+  // surface without authoring the leaves). Same shape as needs-fallback-skill
+  // but distinguished for documentation — these are composition references,
+  // not error-handler fallbacks.
+  | { kind: "needs-stub-skills"; stubNames: ReadonlyArray<string>; inputs?: Record<string, string> }
   | { kind: "intentional-failure"; errorPattern: RegExp; reason: string };
 
 export interface HarnessEntry {
@@ -70,18 +77,28 @@ export const HARNESS_MANIFEST: ReadonlyArray<HarnessEntry> = [
 
   // ─── intentional-failure (2) — feature-request manifestos ─────────────
   // Both use hypothetical block-introducing keywords the parser doesn't
-  // recognize. Match loosely so a future Bug 14 diagnostic (unknown-
-  // keyword surfacing) doesn't break this test.
-  { file: "pass-b-1__10__log-fanout-classifier.skill.md", classification: { kind: "intentional-failure", errorPattern: /indent(ation)?|unknown[-_ ]keyword/i, reason: "FR manifesto: `parallel:` / branch-scope / try/catch" } },
-  { file: "pass-b-1__11__streaming-incident-narrator.skill.md", classification: { kind: "intentional-failure", errorPattern: /indent(ation)?|unknown[-_ ]keyword/i, reason: "FR manifesto: `@@` / destructuring / `|json_parse`" } },
+  // recognize. v0.2.11 Bug 14 added a specific `Unknown block-introducer`
+  // diagnostic; pre-Bug-14 they failed with a "Mid-block indent change"
+  // cascade. Pattern matches both forms.
+  { file: "pass-b-1__10__log-fanout-classifier.skill.md", classification: { kind: "intentional-failure", errorPattern: /indent(ation)? change|[Uu]nknown block-introducer/, reason: "FR manifesto: `parallel:` / branch-scope / try/catch" } },
+  { file: "pass-b-1__11__streaming-incident-narrator.skill.md", classification: { kind: "intentional-failure", errorPattern: /indent(ation)? change|[Uu]nknown block-introducer/, reason: "FR manifesto: `@@` / destructuring / `|json_parse`" } },
 
-  // ─── pass (54) ─────────────────────────────────────────────────────────
+  // ─── needs-stub-skills (5) — exercises Bug 7 (v0.2.11) ────────────────
+  // Cold-authored orchestrators that `$ execute_skill skill_name=<child>`
+  // child skills the minion didn't author. Pre-Bug-7, lint silently let
+  // these through; now they hit `unknown-skill-reference`. Test stubs the
+  // child names into the SkillStore (same mechanism as needs-fallback-skill).
+  { file: "pass-a-1__04__schedule-window-router.skill.md", classification: { kind: "needs-stub-skills", stubNames: ["mailbox-digest"] } },
+  { file: "pass-a-1__05__morning-brief.skill.md", classification: { kind: "needs-stub-skills", stubNames: ["calendar-today", "mailbox-digest", "ham-band-watch", "hn-top-five"] } },
+  { file: "pass-b-1__04__pr-triage-orchestrator.skill.md", classification: { kind: "needs-stub-skills", stubNames: ["pr-fetch", "pr-classify", "pr-digest-render"], inputs: inputs("REPO") } },
+  { file: "pass-b-2__01__pr-drift-watch.skill.md", classification: { kind: "needs-stub-skills", stubNames: ["extract-json-number"] } },
+  { file: "pass-b-2__03__drift-detection-orchestrator.skill.md", classification: { kind: "needs-stub-skills", stubNames: ["pr-counter-task1", "stargazer-c1"] } },
+
+  // ─── pass (49) ─────────────────────────────────────────────────────────
   { file: "pass-a-1__00__tide-glance.skill.md", classification: { kind: "pass" } },
   { file: "pass-a-1__01__pre-deploy-gate.skill.md", classification: { kind: "pass" } },
   { file: "pass-a-1__02__thread-stewardship.skill.md", classification: { kind: "pass" } },
   { file: "pass-a-1__03__ham-band-watch.skill.md", classification: { kind: "pass" } },
-  { file: "pass-a-1__04__schedule-window-router.skill.md", classification: { kind: "pass" } },
-  { file: "pass-a-1__05__morning-brief.skill.md", classification: { kind: "pass" } },
   { file: "pass-a-1__06__cluster-distill-driver.skill.md", classification: { kind: "pass" } },
   { file: "pass-a-1__08__candidate-promotion-review.skill.md", classification: { kind: "pass" } },
   { file: "pass-a-1__09__dedup-foreach-walk.skill.md", classification: { kind: "pass" } },
@@ -105,14 +122,11 @@ export const HARNESS_MANIFEST: ReadonlyArray<HarnessEntry> = [
   { file: "pass-b-1__01__disk-watch.skill.md", classification: { kind: "pass" } },
   { file: "pass-b-1__02__weekly-mantra-fragment.skill.md", classification: { kind: "pass" } },
   { file: "pass-b-1__03__morning-card.skill.md", classification: { kind: "pass" } },
-  { file: "pass-b-1__04__pr-triage-orchestrator.skill.md", classification: { kind: "pass" } },
   { file: "pass-b-1__06__mailbox-triage.skill.md", classification: { kind: "pass" } },
   { file: "pass-b-1__07__brief-on-error.skill.md", classification: { kind: "pass" } },
   { file: "pass-b-1__08__fragile-fetch.skill.md", classification: { kind: "pass" } },
   { file: "pass-b-1__09__package-bump-wizard.skill.md", classification: { kind: "pass" } },
   { file: "pass-b-2__00__morning-weather-greet.skill.md", classification: { kind: "pass" } },
-  { file: "pass-b-2__01__pr-drift-watch.skill.md", classification: { kind: "pass" } },
-  { file: "pass-b-2__03__drift-detection-orchestrator.skill.md", classification: { kind: "pass" } },
   { file: "pass-b-2__04__signature-block.skill.md", classification: { kind: "pass" } },
   { file: "pass-b-2__05__brief-with-signature.skill.md", classification: { kind: "pass" } },
   { file: "pass-b-2__06__ticket-triage-router.skill.md", classification: { kind: "pass" } },

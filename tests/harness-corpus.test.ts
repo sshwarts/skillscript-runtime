@@ -48,14 +48,22 @@ beforeAll(async () => {
     try { await wired.skillStore.store(name, src); } catch { /* duplicate name; the second wins */ }
   }
 
-  // Stub minimal fallback skills for the `needs-fallback-skill` entries.
-  // Cold authors declared `# OnError: <name>` for fallbacks they didn't
-  // write. v0.3.0 candidate (Bug 11) would defer this resolution.
+  // Stub minimal fallback skills for the `needs-fallback-skill` and
+  // `needs-stub-skills` entries. Cold authors declared either
+  // `# OnError: <name>` (fallback) or `$ execute_skill skill_name=<name>`
+  // (composition ref) for skills they didn't author themselves. v0.3.0
+  // candidate (Bug 11) would defer this resolution at compile time.
+  const stubBody = (n: string): string =>
+    `# Skill: ${n}\n# Description: stub skill for harness regression test\n# Status: Approved\nfb:\n    ! stub fired\ndefault: fb\n`;
   for (const entry of HARNESS_MANIFEST) {
-    if (entry.classification.kind !== "needs-fallback-skill") continue;
-    const fb = entry.classification.fallbackName;
-    const stub = `# Skill: ${fb}\n# Description: stub fallback skill for harness regression test\n# Status: Approved\nfb:\n    ! fallback fired\ndefault: fb\n`;
-    try { await wired.skillStore.store(fb, stub); } catch { /* already stubbed */ }
+    if (entry.classification.kind === "needs-fallback-skill") {
+      const fb = entry.classification.fallbackName;
+      try { await wired.skillStore.store(fb, stubBody(fb)); } catch { /* already stubbed */ }
+    } else if (entry.classification.kind === "needs-stub-skills") {
+      for (const n of entry.classification.stubNames) {
+        try { await wired.skillStore.store(n, stubBody(n)); } catch { /* already stubbed */ }
+      }
+    }
   }
 });
 
@@ -84,10 +92,10 @@ describe("Wild-and-crazy harness corpus (66 cold-author skills)", () => {
         await expect(compile(src, { skillStore: wired.skillStore, inputs: c.inputs })).resolves.toBeDefined();
         return;
       }
-      if (c.kind === "needs-fallback-skill") {
-        // Stub was wired in beforeAll — should compile clean now. Some
+      if (c.kind === "needs-fallback-skill" || c.kind === "needs-stub-skills") {
+        // Stubs were wired in beforeAll — should compile clean now. Some
         // entries also need inputs (the skill declares required vars on
-        // top of the fallback reference).
+        // top of the stub references).
         const opts = c.inputs !== undefined
           ? { skillStore: wired.skillStore, inputs: c.inputs }
           : { skillStore: wired.skillStore };

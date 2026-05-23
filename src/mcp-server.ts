@@ -542,6 +542,7 @@ export class McpServer {
     const lintResult = await lint(source, {
       skillStore: this.deps.skillStore,
       callSite: "api",
+      ...(this.deps.enableUnsafeShell !== undefined ? { enableUnsafeShell: this.deps.enableUnsafeShell } : {}),
     });
     return {
       diagnostics: lintResult.findings.map((f) => ({
@@ -569,6 +570,7 @@ export class McpServer {
       const compiled = await compile(source, {
         skillStore: this.deps.skillStore,
         ...(inputs !== undefined ? { inputs } : {}),
+        ...(this.deps.enableUnsafeShell !== undefined ? { enableUnsafeShell: this.deps.enableUnsafeShell } : {}),
       });
       return {
         skill_name: compiled.skillName,

@@ -193,6 +193,11 @@ const SET_OP_REGEX = /^\$set\s+([A-Za-z_]\w*)\s*=\s*(.*)$/;
 const FOREACH_OP_REGEX = /^foreach\s+([A-Za-z_]\w*)\s+in\s+(.+?):\s*$/;
 const IF_OP_REGEX = /^if\s+(.+?):\s*$/;
 const ELIF_OP_REGEX = /^elif\s+(.+?):\s*$/;
+// v0.2.11 Bug 14: any `WORD[ WORD...]:` form, used to detect unrecognized
+// block-introducers AFTER the known set (if/elif/else/foreach) has been
+// matched. Word-shape leading token plus optional args, ending in `:`.
+// Excludes target headers (those are matched at depth-0 elsewhere).
+const UNKNOWN_BLOCK_INTRODUCER_RE = /^[A-Za-z_][\w-]*(?:\s+.*)?:\s*$/;
 /**
  * `>` and `~` ops accept optional trailing `(fallback: <value>)` per
  * language reference §9 (Error Handling, Layer 3). Fires when the op
@@ -577,7 +582,12 @@ function parseLocalModelArgs(
 }
 
 interface ScopeFrame {
-  kind: "main" | "target-else" | "foreach" | "if" | "elif" | "conditional-else";
+  // "unknown-block" — frame pushed for an unrecognized block-introducer
+  // (v0.2.11 Bug 14: `parallel:`, `try:`, `catch X:`, etc.). Absorbs any
+  // children at deeper indent so they don't cascade into "Mid-block indent
+  // change" errors. The specific diagnostic was already emitted; this frame
+  // just contains the fallout.
+  kind: "main" | "target-else" | "foreach" | "if" | "elif" | "conditional-else" | "unknown-block";
   target: SkillTarget;
   opsBucket: SkillOp[];
   depth: number;
@@ -1150,6 +1160,29 @@ export function parse(source: string): ParsedSkill {
         ...(atPolicy !== undefined ? { policy: atPolicy } : {}),
         ...(atOutputVar !== undefined ? { outputVar: atOutputVar } : {}),
         ...(atFallback !== undefined ? { fallback: atFallback } : {}),
+      });
+      continue;
+    }
+    // v0.2.11 Bug 14: unrecognized block-introducer (e.g. `parallel:`,
+    // `try:`, `catch X:`, `branch X:`). Pre-Bug-14 this fell silently to
+    // the kind-null no-op branch, and the indented children below it
+    // tripped "Mid-block indent change" — a confusing cascade. Now we
+    // emit a specific diagnostic AND push an "unknown-block" frame to
+    // absorb the children. Known body-scope introducers are if/elif/
+    // else/foreach (all handled earlier in this dispatch).
+    if (UNKNOWN_BLOCK_INTRODUCER_RE.test(stripped0)) {
+      const keyword = stripped0.replace(/[:\s].*$/, "");
+      result.parseErrors.push(
+        `Unknown block-introducer '${keyword}:' in target '${currentTarget.name}'. ` +
+        `Skillscript recognizes \`if COND:\`, \`elif COND:\`, \`else:\`, and \`foreach IT in $(LIST):\` ` +
+        `at body scope (target-level \`else:\` is the error handler). ` +
+        `Composition is via \`& skill-name\` (data-skill inline) or \`$ execute_skill skill_name="..."\` (in-skill invocation), not block syntax.`,
+      );
+      scopeStack.push({
+        kind: "unknown-block",
+        target: currentTarget,
+        opsBucket: [],
+        depth: lineIndent + INDENT_STEP,
       });
     }
   }

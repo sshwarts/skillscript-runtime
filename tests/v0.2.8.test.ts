@@ -55,7 +55,7 @@ describe("v0.2.8 — help MCP tool", () => {
     expect(typeof result["content"]).toBe("string");
     expect((result["content"] as string)).toMatch(/quickstart/i);
     expect((result["content"] as string)).toMatch(/Op symbol legend/);
-    expect(result["available_topics"]).toEqual(["ops", "frontmatter", "examples", "connectors", "lint-codes"]);
+    expect(result["available_topics"]).toEqual(["ops", "frontmatter", "examples", "composition", "connectors", "lint-codes"]);
     // Quickstart should answer 6 minimum-viable questions per Perry's spec.
     expect((result["content"] as string)).toMatch(/Shape of a skill file/);
     expect((result["content"] as string)).toMatch(/Op symbol legend/);

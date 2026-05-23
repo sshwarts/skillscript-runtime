@@ -341,6 +341,94 @@ default: route
 \`\`\`
 
 Demonstrates: \`~\` LocalModel op, named model selection, \`|trim\` filter on LLM output, ref-vs-literal comparison, agent delivery via \`prompt-context:\`, augmenting headers (\`# Delivery-context:\` + \`# Templates:\`).
+
+## 4. Composition — orchestrator invoking child skills
+
+\`\`\`
+# Skill: morning-brief-orchestrator
+# Description: Fan out to three child skills, gather their outputs into one brief.
+# Status: Approved
+# Vars: USER_NAME=Scott
+
+gather:
+    $ execute_skill skill_name=calendar-today USER=$(USER_NAME) -> CAL (fallback: "(no calendar data)")
+    $ execute_skill skill_name=mailbox-triage USER=$(USER_NAME) -> MAIL (fallback: "(mailbox empty)")
+    $ execute_skill skill_name=weather-summary -> WX (fallback: "(weather unavailable)")
+
+render: gather
+    ! Good morning, $(USER_NAME). Today:
+    ! • Calendar: $(CAL)
+    ! • Mailbox: $(MAIL)
+    ! • Weather: $(WX)
+
+default: render
+\`\`\`
+
+Demonstrates: in-skill \`$ execute_skill\` composition (each child runs through the runtime under a depth-counted chain), per-call \`(fallback: ...)\` for resilience, kwarg forwarding (\`USER=$(USER_NAME)\`), \`->\` binding child output for downstream reference.
+`;
+
+const COMPOSITION = `# Composition
+
+Skillscript has three composition primitives — all let one skill draw on another's output, with different semantics around when, where, and how the child runs.
+
+## 1. \`& <skill-name>\` — data-skill inline (compile-time)
+
+Inlines an *Approved data skill* into the host skill's compiled artifact at the call site. The data skill's body becomes part of the rendered prompt. Use for *static* knowledge or templated content (style guides, voice rules, runbooks).
+
+\`\`\`
+brief:
+    ~ prompt="$(VOICE_RULES) Now write a one-line status:" model=qwen -> RESULT
+    & voice-rules
+\`\`\`
+
+- Resolved at \`compile()\` time — the data skill's \`content_hash\` is recorded in the host's provenance block.
+- Provenance lets \`skillfile audit\` detect stale recompiles when a referenced data skill changes.
+- The data skill must be marked \`# Skill-kind: data\` (or live in a path the SkillStore recognizes as data); otherwise it's treated as procedural and won't inline.
+
+## 2. \`& invoke <skill-name>\` — runtime call (per-fire)
+
+Calls a procedural skill at runtime. Each call goes through the runtime under a depth-counted chain (default limit 5) — same recursion guard as Style 3 below.
+
+\`\`\`
+escalate:
+    & invoke notify-oncall
+\`\`\`
+
+- Child skill's outputs flow into the parent's variable scope.
+- Failures propagate as \`OpError\`s.
+
+## 3. \`$ execute_skill skill_name="<child>" ...kwargs -> VAR\` — in-skill execute (per-fire)
+
+The most general form: the host \`$\`-dispatches the literal tool name \`execute_skill\` (intercepted by the runtime, not sent to any MCP server). Same depth-counted chain as Style 2, plus full kwarg forwarding and \`-> VAR\` binding for downstream use.
+
+\`\`\`
+gather:
+    $ execute_skill skill_name="calendar-today" USER=$(USER_NAME) -> CAL (fallback: "(no calendar data)")
+    $ execute_skill skill_name="mailbox-triage" inputs={"USER": "$(USER_NAME)"} -> MAIL
+\`\`\`
+
+Two kwarg styles, both supported (v0.2.9 fix):
+- **Bare kwargs** — \`USER=$(USER_NAME)\` natural skill grammar
+- **\`inputs={...}\` JSON** — MCP-call parity, useful when forwarding many fields verbatim
+
+The bound \`-> VAR\` carries the child's final emit through to the host's scope.
+
+## Limits & lint signals
+
+- **Recursion**: depth-5 chain by default (\`ExecuteSkillRecursionError\` if exceeded). Both \`& invoke\` and \`$ execute_skill\` share the counter.
+- **Lint** (\`unknown-skill-reference\`, tier-1): \`& <name>\`, \`& invoke <name>\`, and \`$ execute_skill skill_name=<name>\` all validate the child skill exists in the SkillStore at compile time (v0.2.11 Bug 7 closed the \`$ execute_skill\` gap).
+- **Lint** (\`disabled-skill-reference\`, tier-1): any composition primitive pointing at a \`# Status: Disabled\` skill blocks compile.
+
+## When to use which
+
+| Use case | Primitive |
+|---|---|
+| Static knowledge in a prompt | \`& <data-skill>\` |
+| Fire-and-forget child call | \`& invoke <skill>\` |
+| Child output bound into parent scope | \`$ execute_skill ... -> VAR\` |
+| Parallel orchestrators (v0.3.0 candidate — not yet shipped) | parked |
+
+See \`help({topic: "examples"})\` example 4 for a worked orchestrator skill.
 `;
 
 const CONNECTORS_PROLOGUE = `# Connectors
@@ -433,7 +521,7 @@ export function helpResponse(
       topic: null,
       version: runtimeVersion,
       content: QUICKSTART,
-      available_topics: ["ops", "frontmatter", "examples", "connectors", "lint-codes"],
+      available_topics: ["ops", "frontmatter", "examples", "composition", "connectors", "lint-codes"],
     };
   }
   let content: string;
@@ -441,10 +529,11 @@ export function helpResponse(
     case "ops":         content = OPS; break;
     case "frontmatter": content = FRONTMATTER; break;
     case "examples":    content = EXAMPLES; break;
+    case "composition": content = COMPOSITION; break;
     case "connectors":  content = renderConnectorsTopic(registry); break;
     case "lint-codes":  content = LINT_CODES; break;
     default:
-      content = `# Unknown topic '${topic}'\n\nValid topics: ops, frontmatter, examples, connectors, lint-codes`;
+      content = `# Unknown topic '${topic}'\n\nValid topics: ops, frontmatter, examples, composition, connectors, lint-codes`;
   }
   return { topic, version: runtimeVersion, content };
 }
