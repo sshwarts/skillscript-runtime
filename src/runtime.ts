@@ -436,6 +436,43 @@ async function execOpInner(
       vars.set(op.setName!, coerced);
       return { lastBoundVar: op.setName!, lastValue: coerced };
     }
+    case "$append": {
+      // v0.3.0 accumulator. Append a value to a list-typed VAR that was
+      // previously initialized in an enclosing scope (via `$set VAR = []`
+      // or `# Vars: VAR=[]`). Substitutes refs in the value first — unlike
+      // $set which is literals-only — because the canonical pattern is
+      // appending an iteration-local ref like `$(M.id)`.
+      const targetName = op.setName!;
+      const existing = vars.get(targetName);
+      if (existing === undefined) {
+        // Lint should have caught this at compile; defensive guard at runtime
+        // for skipLintPreflight paths or programmatic execution.
+        throw new Error(
+          `\`$append ${targetName} ...\`: target variable not initialized. ` +
+          `Add \`$set ${targetName} = []\` before the \`$append\`, or declare ` +
+          `in \`# Vars: ${targetName}=[]\`.`,
+        );
+      }
+      const substituted = substituteRuntime(op.setValue!, vars);
+      const coerced = coerceLiteralValue(substituted);
+      if (ctx.mechanical === true) {
+        // Mechanical mode: emit the append record, do NOT mutate. Per spec —
+        // the placeholder remains in place for downstream refs; the trace
+        // shows what would have been appended.
+        emissions.push(
+          `Would append to $(${targetName}): ${stringifyValue(coerced)} (mechanical: true preview).`,
+        );
+        return { lastBoundVar: targetName, lastValue: existing };
+      }
+      if (!Array.isArray(existing)) {
+        throw new Error(
+          `\`$append ${targetName} ...\`: target is not a list (got ${typeof existing}). ` +
+          `\`$append\` requires the target variable to be a list. Initialize via \`$set ${targetName} = []\` first.`,
+        );
+      }
+      existing.push(coerced);
+      return { lastBoundVar: targetName, lastValue: existing };
+    }
     case "?": {
       const body = substituteRuntime(op.body, vars);
       emissions.push(`Reason: ${body}`);

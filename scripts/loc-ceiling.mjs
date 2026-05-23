@@ -27,6 +27,11 @@
 //            Bug 19 (composition-ref op-kind tagging, ~20 LOC across
 //            three lint-rule call sites). Still tracking close to the
 //            original ERD intent; nudge is bounded fix-driven growth.
+//   v0.3.0:  nudged narrow ceiling 5200 → 5400 for the accumulator slate —
+//            new $append op (parser + runtime, ~50 LOC) + three new
+//            lint rules with scope-tracking walker (~150 LOC). First
+//            actual language extension since v0.2's Bug-driven growth;
+//            nudge is feature-driven, not fix-driven.
 //
 // Run: `pnpm run loc-check`. CI fails the build if the narrow ceiling is
 // breached. The broad count is reported but does NOT fail the build.
@@ -49,7 +54,7 @@ const CORE_PATHS = [
   "connectors/",
 ];
 
-const NARROW_MAX_LOC = 5200;
+const NARROW_MAX_LOC = 5400;
 const NARROW_MAX_FILES = 20;
 const BROAD_INFO_LOC = 9500;
 const BROAD_INFO_FILES = 28;

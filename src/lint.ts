@@ -1076,6 +1076,194 @@ const UNUSED_AUGMENTING_HEADER: LintRule = {
   },
 };
 
+// v0.3.0 accumulator lint helpers. Scope-aware walker tracks nesting
+// via {id, kind} pairs so the accumulator rules can distinguish target-
+// body / foreach / if-branch scopes. An init's path is an ANCESTOR of
+// an append's path iff it's a strict prefix.
+type ScopeNode = { id: number; kind: "foreach" | "if-branch" | "if-else" };
+type ScopePath = ReadonlyArray<ScopeNode>;
+function isAncestorScope(initPath: ScopePath, appendPath: ScopePath): boolean {
+  if (initPath.length >= appendPath.length) return false;
+  for (let i = 0; i < initPath.length; i++) {
+    if (initPath[i]!.id !== appendPath[i]!.id) return false;
+  }
+  return true;
+}
+function isSameScope(a: ScopePath, b: ScopePath): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i]!.id !== b[i]!.id) return false;
+  return true;
+}
+function pathContainsForeach(p: ScopePath): boolean {
+  for (const n of p) if (n.kind === "foreach") return true;
+  return false;
+}
+
+function walkOpsWithScope(
+  ops: SkillOp[],
+  visit: (op: SkillOp, path: ScopePath) => void,
+  nextScopeId: { n: number },
+  path: ScopePath = [],
+): void {
+  for (const op of ops) {
+    visit(op, path);
+    if (op.foreachBody !== undefined) {
+      const child: ScopeNode = { id: nextScopeId.n++, kind: "foreach" };
+      walkOpsWithScope(op.foreachBody, visit, nextScopeId, [...path, child]);
+    }
+    if (op.ifBranches !== undefined) {
+      for (const b of op.ifBranches) {
+        const child: ScopeNode = { id: nextScopeId.n++, kind: "if-branch" };
+        walkOpsWithScope(b.body, visit, nextScopeId, [...path, child]);
+      }
+    }
+    if (op.ifElseBody !== undefined) {
+      const child: ScopeNode = { id: nextScopeId.n++, kind: "if-else" };
+      walkOpsWithScope(op.ifElseBody, visit, nextScopeId, [...path, child]);
+    }
+  }
+}
+
+function isStaticListLiteral(raw: string): boolean {
+  const t = raw.trim();
+  return t.startsWith("[") && t.endsWith("]");
+}
+
+const UNINITIALIZED_APPEND: LintRule = {
+  id: "uninitialized-append",
+  severity: "error",
+  description: "`$append VAR ...` where VAR isn't initialized in any enclosing scope (target body, # Vars: declaration, or shallower foreach/if block).",
+  remediation: "Add `$set VAR = []` before the `$append` (in the target body, not inside the foreach), or declare in `# Vars: VAR=[]`. If you meant a different variable, check the spelling against your declarations.",
+  check: (ctx) => {
+    const declaredGlobal = new Set<string>();
+    for (const v of ctx.parsed.vars) declaredGlobal.add(v.name);
+    for (const r of ctx.parsed.requires) declaredGlobal.add(r.target);
+    const findings: LintFinding[] = [];
+    for (const [targetName, target] of ctx.parsed.targets) {
+      const inits = new Map<string, ScopePath[]>();
+      const sc1 = { n: 1 };
+      walkOpsWithScope(target.ops, (op, path) => {
+        if (op.kind === "$set" && op.setName !== undefined) {
+          const arr = inits.get(op.setName) ?? [];
+          arr.push([...path]);
+          inits.set(op.setName, arr);
+        }
+      }, sc1);
+      const sc2 = { n: 1 };
+      walkOpsWithScope(target.ops, (op, path) => {
+        if (op.kind !== "$append" || op.setName === undefined) return;
+        const varName = op.setName;
+        if (declaredGlobal.has(varName)) return;
+        const initPaths = inits.get(varName) ?? [];
+        const hasAncestor = initPaths.some((ip) => isAncestorScope(ip, path));
+        const hasSame = initPaths.some((ip) => isSameScope(ip, path));
+        // Same-scope counts as "visible" for resolution purposes — the
+        // init runs before the append in the same block (foreach iteration,
+        // straight target body, etc.). Whether it's the RIGHT shape for an
+        // accumulator is `foreach-local-accumulator-target`'s job.
+        const isVisible = hasAncestor || hasSame;
+        const hasOther = initPaths.some((ip) => !isAncestorScope(ip, path) && !isSameScope(ip, path));
+        if (initPaths.length === 0) {
+          findings.push({
+            rule: "uninitialized-append",
+            severity: "error",
+            message: `\`$append ${varName} ...\` in target '${targetName}': ${varName} is not initialized. Add \`$set ${varName} = []\` before the \`$append\` (or declare in \`# Vars: ${varName}=[]\`). If you meant a different variable, check the spelling against your declarations.`,
+            block: targetName,
+            extras: { var_name: varName },
+          });
+        } else if (!isVisible && hasOther) {
+          // init exists in a sibling/inner scope, not visible at the append site.
+          findings.push({
+            rule: "uninitialized-append",
+            severity: "error",
+            message: `\`$append ${varName} ...\` in target '${targetName}': ${varName}'s \`$set\` initialization is in a sibling or inner block, not visible at this append site. Move the init to the target body (or a common enclosing scope) before the \`$append\`.`,
+            block: targetName,
+            extras: { var_name: varName },
+          });
+        }
+      }, sc2);
+    }
+    return findings;
+  },
+};
+
+const FOREACH_LOCAL_ACCUMULATOR_TARGET: LintRule = {
+  id: "foreach-local-accumulator-target",
+  severity: "error",
+  description: "`$append VAR ...` where VAR's `$set VAR = []` initialization is in the SAME scope (typically same foreach body). Each iteration resets VAR; the accumulator silently loses all but the last iteration's append.",
+  remediation: "Move `$set VAR = []` outside the foreach (to the target body), so the append mutates a single outer-scope list that persists across iterations.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    for (const [targetName, target] of ctx.parsed.targets) {
+      const inits = new Map<string, ScopePath[]>();
+      const sc1 = { n: 1 };
+      walkOpsWithScope(target.ops, (op, path) => {
+        if (op.kind === "$set" && op.setName !== undefined) {
+          const arr = inits.get(op.setName) ?? [];
+          arr.push([...path]);
+          inits.set(op.setName, arr);
+        }
+      }, sc1);
+      const sc2 = { n: 1 };
+      walkOpsWithScope(target.ops, (op, path) => {
+        if (op.kind !== "$append" || op.setName === undefined) return;
+        const initPaths = inits.get(op.setName) ?? [];
+        const hasAncestor = initPaths.some((ip) => isAncestorScope(ip, path));
+        const hasSame = initPaths.some((ip) => isSameScope(ip, path));
+        // Only fires when the SAME scope is inside a foreach. Same scope at
+        // target-body level (both ops at depth 0) is fine — that's just
+        // sequential init + append, no iteration to lose data across.
+        if (!hasAncestor && hasSame && pathContainsForeach(path)) {
+          findings.push({
+            rule: "foreach-local-accumulator-target",
+            severity: "error",
+            message: `\`$append ${op.setName} ...\` in target '${targetName}': \`$set ${op.setName} = []\` is in the same scope as the append (typically the same foreach body). Each iteration resets ${op.setName}, silently losing all but the last iteration's data. Move the \`$set ${op.setName} = []\` to the target body, before the foreach.`,
+            block: targetName,
+            extras: { var_name: op.setName },
+          });
+        }
+      }, sc2);
+    }
+    return findings;
+  },
+};
+
+const APPEND_TO_NON_LIST: LintRule = {
+  id: "append-to-non-list",
+  severity: "error",
+  description: "`$append VAR ...` where VAR's static initialization is a non-list value. $append v0.3.0 is list-only.",
+  remediation: "Initialize VAR with a list literal (`$set VAR = []` or `# Vars: VAR=[]`). String concat and map-shaped accumulation are out of scope for v0.3.0.",
+  check: (ctx) => {
+    const staticInits = new Map<string, string>();
+    for (const v of ctx.parsed.vars) {
+      if (v.default !== undefined) staticInits.set(v.name, v.default);
+    }
+    const findings: LintFinding[] = [];
+    for (const [targetName, target] of ctx.parsed.targets) {
+      walkOps(target.ops, (op) => {
+        if (op.kind === "$set" && op.setName !== undefined && op.setValue !== undefined && !/\$\(/.test(op.setValue)) {
+          staticInits.set(op.setName, op.setValue);
+        }
+      });
+      walkOps(target.ops, (op) => {
+        if (op.kind !== "$append" || op.setName === undefined) return;
+        const init = staticInits.get(op.setName);
+        if (init === undefined) return;
+        if (!isStaticListLiteral(init)) {
+          findings.push({
+            rule: "append-to-non-list",
+            severity: "error",
+            message: `\`$append ${op.setName} ...\` in target '${targetName}': ${op.setName} is initialized to a non-list value (\`${init.slice(0, 40)}${init.length > 40 ? "..." : ""}\`). $append v0.3.0 requires a list-typed target.`,
+            block: targetName,
+            extras: { var_name: op.setName, init_value: init },
+          });
+        }
+      });
+    }
+    return findings;
+  },
+};
+
 const RULES: LintRule[] = [
   // Tier-1 (error)
   PARSE_ERROR,
@@ -1093,6 +1281,9 @@ const RULES: LintRule[] = [
   UNKNOWN_SKILL_REFERENCE,
   UNKNOWN_TEMPLATE_REFERENCE,
   UNKNOWN_RETRIEVAL_ARG,
+  UNINITIALIZED_APPEND,
+  FOREACH_LOCAL_ACCUMULATOR_TARGET,
+  APPEND_TO_NON_LIST,
   DISABLED_SKILL_REFERENCE,
   CREDENTIAL_IN_ARGS,
   STATUS_DISABLED,

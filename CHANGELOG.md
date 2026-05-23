@@ -1,5 +1,87 @@
 # Changelog
 
+## 0.3.0 — 2026-05-23
+
+**First minor bump since v0.2.x — language extension, not a fix patch.**
+v0.3.0 ships the loop accumulator: `$append VAR <value>`. Closes the
+structurally-impossible-without dedup-by-id pattern that Perry's harness
+corpus surfaced (the R1 `dedup-foreach-walk` and similar skills were
+*incomplete* pre-v0.3.0 because foreach-local `$set` couldn't accumulate
+across iterations). Spec approved by Perry in memory `442cf4bb`; design
+discussion at `44f9a9e3`.
+
+### Added
+
+- **`$append VAR <value>` op.** Single-value append to a list-typed VAR
+  that was previously initialized in an enclosing scope (via `$set VAR = []`
+  or `# Vars: VAR=[]`). The append mutates the outer-scope binding —
+  unlike `$set` which is loop-local inside `foreach`. Value can be a
+  literal, a `$(REF)`, or a filtered ref; substituted at runtime before
+  append.
+
+  Canonical pattern:
+
+  ```
+  walk:
+      $set FOUND = []
+      foreach M in $(MESSAGES):
+          if $(M.id) not in $(FOUND):
+              $append FOUND $(M.id)
+              ! NEW: $(M.id)
+  ```
+
+- **Three tier-1 lint rules** that catch the accumulator foot-guns:
+  - `uninitialized-append` — `$append VAR ...` without any `$set` or
+    `# Vars:` init in an enclosing scope. Error message teaches the
+    pattern: "Add `$set VAR = []` before the `$append`..."
+  - `foreach-local-accumulator-target` — `$append VAR ...` where the
+    matching `$set VAR = []` is in the same scope as the append (typically
+    the same `foreach` body). Each iteration would reset VAR and silently
+    lose all data. Lint walks the full enclosing scope chain to detect.
+  - `append-to-non-list` — `$append VAR ...` where VAR's static init is a
+    non-list value (e.g., `$set VAR = "abc"`). v0.3.0 is list-only.
+
+- **`help({topic: "ops"})`** updated with `$append` entry under the `$` family.
+- **`help({topic: "examples"})`** gets a 5th worked example: dedup-walk
+  showing the canonical accumulator pattern.
+- **`help({topic: "lint-codes"})`** lists the three new lint codes.
+
+### Notes for v0.3.x
+
+- **Mechanical mode** renders `$append` as a "Would append to $(VAR): ..."
+  record without actually mutating the binding (per the v0.2.12 Bug 23
+  Proxy-placeholder pattern). The placeholder list remains in place for
+  downstream refs.
+- **`$append` inside a future `parallel foreach`** is a tier-1 error in
+  v0.3.0. The decision (forbid permanently vs ship with thread-safe
+  accumulation + iteration-order preservation) deferred to whenever
+  parallel foreach ships — parallel itself is deferred past v0.3.0 per
+  the load-bearing-vs-aesthetic analysis (memory `8876fa1e`).
+- **Single-value append only.** `$extend VAR $(OTHER_LIST)` deferred until
+  a real use case surfaces. Same for string concat (`$append` on a
+  string-typed var fires `append-to-non-list`) and map-shaped
+  accumulation.
+
+### Tests
+- 20 new tests in `tests/v0.3.0.test.ts` covering parser, the 8 lint
+  cases from spec (4 OK + 4 FAIL), runtime dedup + conditional-collect,
+  mechanical-mode rendering, and the help-surface additions.
+- Total suite: **787 passing** (was 767 at v0.2.12).
+
+### Loc-ceiling
+- Narrow core nudged 5200 → 5400. First feature-driven nudge (prior
+  nudges were fix-driven); justified by the new op + 3 lint rules with
+  scope-tracking walker (~200 LOC across parser/runtime/lint).
+
+### v0.3.x roadmap (per `8876fa1e` analysis)
+- **v0.3.1**: forward-reference deferred resolution (demote
+  `unknown-skill-reference` + `unknown-template-reference` to tier-2 at
+  compile; runtime errors at execute time if still unresolved)
+- **v0.3.2**: `|json_parse` filter + `and`/`or` boolean connectives
+  (short-circuit semantics explicit)
+- **v0.3.3+**: destructuring, arithmetic in `$set`/conditionals,
+  parallel — whichever harness rounds surface as needed
+
 ## 0.2.12 — 2026-05-23
 
 **Twelve bug fixes from Perry's wild-and-crazy harness Round 2** (memory

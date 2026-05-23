@@ -483,6 +483,7 @@ function renderOpPrompt(op: SkillOp, targetName: string, resolved: Map<string, s
   switch (op.kind) {
     case "$":     return [`${prefix}- Call tool: ${op.mcpConnector !== undefined ? `${op.mcpConnector}.` : ""}${body} — bind output to $(${op.outputVar ?? `${targetName}.output`})`];
     case "$set":  return [`${prefix}- Bind variable: ${op.setName} = ${op.setValue}`];
+    case "$append": return [`${prefix}- Append to $(${op.setName}): ${op.setValue}`];
     case "?":     return [`${prefix}- Reason: ${body}`];
     case "@":     return [`${prefix}- Run shell: ${body} — bind output to $(${op.outputVar ?? `${targetName}.output`})`];
     case "!":     return [`${prefix}- Tell the user: ${body}`];
@@ -587,6 +588,7 @@ function renderOpProse(op: SkillOp, resolved: Map<string, string>): string[] {
   switch (op.kind) {
     case "$":     return [`Calls a tool: ${op.mcpConnector !== undefined ? `${op.mcpConnector}.` : ""}${body}.`];
     case "$set":  return [`Sets variable ${op.setName} to ${op.setValue}.`];
+    case "$append": return [`Appends ${op.setValue} to list $(${op.setName}).`];
     case "?":     return [`Reasons through: ${body}.`];
     case "@":     return [`Runs a shell command: ${body}.`];
     case "!":     return [`Reports back to the user: ${body}.`];

@@ -2,7 +2,7 @@
 // no resolution against external state. Semantic analysis (variable resolution,
 // data-skill inlining, topo-sort) lives in compile.ts.
 
-export type OpKind = "$" | "$set" | "?" | "@" | "!" | "??" | "foreach" | "if" | ">" | "~" | "&";
+export type OpKind = "$" | "$set" | "$append" | "?" | "@" | "!" | "??" | "foreach" | "if" | ">" | "~" | "&";
 
 export interface SkillOp {
   kind: OpKind;
@@ -190,6 +190,11 @@ const CAPABILITY_TOKEN = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/;
 /** `&` op: `& skill-name [arg=value ...] [-> VARNAME]`. Skill names follow the same charset as filesystem-safe identifiers (alphanumeric, hyphen, underscore). */
 const AMPERSAND_OP_REGEX = /^&\s+([A-Za-z0-9][\w-]*)\s*(.*?)(?:\s*->\s*([A-Za-z_]\w*))?(?:\s+\(fallback\s*:\s*(.+?)\))?\s*$/s;
 const SET_OP_REGEX = /^\$set\s+([A-Za-z_]\w*)\s*=\s*(.*)$/;
+// v0.3.0 accumulator. `$append VAR <value>` — single-value append to a
+// list-typed VAR. Form: `$append IDENT <space> <value>`. Mirrors $set
+// in shape (var name + value) but the runtime mutates an outer-scope
+// list rather than overwriting. See spec memory `9d6079bb` + `442cf4bb`.
+const APPEND_OP_REGEX = /^\$append\s+([A-Za-z_]\w*)\s+(.+)$/;
 const FOREACH_OP_REGEX = /^foreach\s+([A-Za-z_]\w*)\s+in\s+(.+?):\s*$/;
 const IF_OP_REGEX = /^if\s+(.+?):\s*$/;
 const ELIF_OP_REGEX = /^elif\s+(.+?):\s*$/;
@@ -1124,6 +1129,20 @@ export function parse(source: string): ParsedSkill {
           setName: setName!,
           setValue: processSetValue(rawValue!),
         });
+      }
+      continue;
+    } else if (stripped.startsWith("$append ") || stripped === "$append") {
+      const match = APPEND_OP_REGEX.exec(stripped);
+      if (match) {
+        const [, setName, rawValue] = match;
+        opBucket.push({
+          kind: "$append",
+          body: stripped,
+          setName: setName!,
+          setValue: processSetValue(rawValue!),
+        });
+      } else {
+        result.parseErrors.push(`Malformed \`$append\` op in target '${currentTarget.name}' — expected \`$append VAR <value>\` (value can be a literal, \`$(REF)\`, or filtered ref).`);
       }
       continue;
     } else if (stripped.startsWith("$ ") || stripped === "$") {

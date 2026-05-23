@@ -53,6 +53,7 @@ default: target_b                      ← goal target the runtime walks toward
 | \`! text\` | Emit text to the user / output channel |
 | \`?? prompt -> VAR\` | Ask user (interactive mode only) |
 | \`$set NAME=value\` | Explicit variable binding |
+| \`$append VAR <value>\` | Accumulate a value into a list-typed VAR (v0.3.0) |
 | \`& skill-name args -> VAR\` | Inline a data-skill |
 
 ## 3. Result binding
@@ -187,6 +188,25 @@ Interactive only. Autonomous-mode dispatch fails with a clean error.
 $set NAME=value
 $set NAME=$(OTHER_VAR|trim)
 \`\`\`
+
+### \`$append\` — Accumulator (v0.3.0)
+
+\`\`\`
+$append VAR <value>
+\`\`\`
+
+Single-value append to a list-typed VAR. The target must be initialized in an enclosing scope before the append fires:
+
+\`\`\`
+walk:
+    $set FOUND = []
+    foreach M in $(MESSAGES):
+        if $(M.id) not in $(FOUND):
+            $append FOUND $(M.id)
+            ! NEW: $(M.id)
+\`\`\`
+
+The append mutates the outer-scope binding (unlike \`$set\`, which is loop-local inside \`foreach\`). Lint catches: missing init (\`uninitialized-append\`), init inside the same foreach as the append (\`foreach-local-accumulator-target\` — would silently lose data each iteration), init pointing at a non-list value (\`append-to-non-list\`). List-only in v0.3.0 — string concat and map-shaped accumulation deferred.
 
 ### \`&\` — Inline data-skill
 
@@ -403,6 +423,29 @@ default: render
 \`\`\`
 
 Demonstrates: in-skill \`$ execute_skill\` composition (each child runs through the runtime under a depth-counted chain), per-call \`(fallback: ...)\` for resilience, kwarg forwarding (\`USER=$(USER_NAME)\`), \`->\` binding child output for downstream reference.
+
+## 5. Dedup-by-id with the accumulator (v0.3.0)
+
+\`\`\`
+# Skill: dedup-walk
+# Description: Walk a result list, skip items whose id was already seen.
+# Status: Approved
+
+walk:
+    > mode=topical query="$(TOPIC)" limit=50 -> CANDIDATES
+    $set SEEN = []
+    foreach C in $(CANDIDATES):
+        if $(C.id) not in $(SEEN):
+            $append SEEN $(C.id)
+            ! NEW: $(C.id) — $(C.summary)
+        else:
+            ! dup: $(C.id)
+    ! Total novel items: $(SEEN|length)
+
+default: walk
+\`\`\`
+
+Demonstrates: \`$append\` accumulator pattern, \`$set SEEN = []\` init at the target body (before the foreach) so mutations persist across iterations, \`not in\` membership check against the accumulating list, \`|length\` filter on the final collected list. Pre-v0.3.0 this pattern was structurally unimplementable — \`$set\` inside foreach is loop-local, so the SEEN list reset every iteration.
 `;
 
 const COMPOSITION = `# Composition
@@ -528,6 +571,9 @@ Three tiers per ERD §3:
 - \`missing-dependency\` — \`needs:\` references a target not declared
 - \`missing-skillstore-for-data-ref\` — \`&\` op fires without a SkillStore wired
 - \`unsafe-shell-disabled\` — \`@ unsafe\` declared but \`enableUnsafeShell: false\` (v0.2.11 Bug 5; fires only when caller passes the flag explicitly false)
+- \`uninitialized-append\` — \`$append VAR ...\` where VAR has no \`$set\` or \`# Vars:\` init in any enclosing scope (v0.3.0)
+- \`foreach-local-accumulator-target\` — \`$append VAR ...\` where the matching \`$set VAR = []\` is in the same scope as the append (typically same foreach body — would silently lose data each iter) (v0.3.0)
+- \`append-to-non-list\` — \`$append VAR ...\` where VAR's static init is a non-list value (v0.3.0; list-only)
 
 ## Tier-2 (warning)
 
