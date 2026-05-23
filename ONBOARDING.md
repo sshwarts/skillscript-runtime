@@ -21,7 +21,7 @@ Top MCP Servers:
 ## Your Setup Checklist
 
 ### Codebases
-- [ ] skillscript-runtime — https://github.com/sshwarts/skillscript-runtime
+- [ ] skillscript — https://github.com/sshwarts/skillscript
 - [ ] AMP (internal) — local-only at `~/Development/AMP`; ask Scott for access
 
 ### MCP Servers to Activate

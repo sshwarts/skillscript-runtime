@@ -114,7 +114,7 @@ Every skillscript skill is one of three shapes, determined by the relationship t
 | **Augmenting** | a frontier agent's reasoning context, immediately at session start or wake | Session-start briefings, alerts, prepared context |
 | **Template** | a frontier agent's execution loop, as a prompt the agent runs itself | Reusable recipes the agent fetches and follows |
 
-The kinds compose. A Headless monitor fires on cron, evaluates a condition, and routes into an Augmenting skill that wakes an agent with context, which itself references a Template skill for the agent to execute. See the [Language Reference](https://github.com/sshwarts/skillscript-runtime/blob/main/docs/language-reference.md) §1 for the full taxonomy.
+The kinds compose. A Headless monitor fires on cron, evaluates a condition, and routes into an Augmenting skill that wakes an agent with context, which itself references a Template skill for the agent to execute. See the [Language Reference](https://github.com/sshwarts/skillscript/blob/main/docs/language-reference.md) §1 for the full taxonomy.
 
 ### Waking agents
 

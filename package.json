@@ -4,13 +4,13 @@
   "description": "Runtime, compiler, lint, CLI, and dashboard for Skillscript — a small declarative language for authoring agent workflows.",
   "license": "MIT",
   "author": "Scott Shwarts <scotts@pobox.com>",
-  "homepage": "https://github.com/sshwarts/skillscript-runtime",
+  "homepage": "https://github.com/sshwarts/skillscript",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sshwarts/skillscript-runtime.git"
+    "url": "git+https://github.com/sshwarts/skillscript.git"
   },
   "bugs": {
-    "url": "https://github.com/sshwarts/skillscript-runtime/issues"
+    "url": "https://github.com/sshwarts/skillscript/issues"
   },
   "type": "module",
   "main": "./dist/index.js",
