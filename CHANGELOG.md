@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.4 — 2026-05-24
+
+**Dashboard SPA Connectors view shows the wired registry.** Closes the
+"dashboard MCP view" gap (per `08a08316`): pre-v0.4.4 the SPA's
+`#connectors` tab showed only post-hoc activity metrics from
+`health_metrics`, so a user could wire YouTrack through `connectors.json`
+and see an empty page until a skill actually exercised it.
+
+### Fixed
+
+- **`renderConnectors()` polls `runtime_capabilities`** and renders the
+  full wired registry (MCP, Local model, Memory store, Skill store,
+  Agent) above the existing activity-metrics table. Each entry shows
+  class, contract version, and (for MCP) the effective `allowed_tools`
+  allowlist from v0.4.1. Available MCP classes for `connectors.json`
+  surface as a footer note (closed-set registry from v0.4.0).
+
+- **`state.capabilities` field** populates on every poll (30s cadence).
+  Refresh path is `runtime_capabilities` alongside the existing
+  `skill_list` / `list_triggers` / `health_metrics` calls.
+
+### Implementation notes
+
+- **SPA-only change.** No runtime / parser / lint impact. The
+  `runtime_capabilities` MCP tool already surfaced the full registry
+  shape (v0.4.0 + v0.4.1); this release wires the SPA to consume it.
+- **Tests:** 5 new in `tests/v0.4.4.test.ts` covering source-level
+  wiring (polling, render, allowlist, classes) + dist/ build
+  verification (so deployed dashboards get the fix).
+- **LOC unchanged.** SPA changes don't count against narrow core; no
+  ceiling impact.
+
 ## 0.4.3 — 2026-05-24
 
 **CLI auto-discovers `connectors.json` from `$SKILLSCRIPT_HOME`.** Closes

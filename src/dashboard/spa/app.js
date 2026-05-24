@@ -11,6 +11,7 @@ const state = {
   skills: [],
   triggers: [],
   metrics: null,
+  capabilities: null,
   lastUpdate: null,
 };
 
@@ -41,14 +42,16 @@ async function refresh() {
   const ts = new Date();
   document.getElementById("poll-status").textContent = `polling…`;
   try {
-    const [skills, triggers, metrics] = await Promise.all([
+    const [skills, triggers, metrics, capabilities] = await Promise.all([
       callTool("skill_list", {}),
       callTool("list_triggers", {}),
       callTool("health_metrics", {}),
+      callTool("runtime_capabilities", { include: ["mcpConnectors", "mcpConnectorClasses", "localModels", "memoryStores", "skillStores", "agentConnectors", "runtimeVersion"] }),
     ]);
     state.skills = skills;
     state.triggers = triggers;
     state.metrics = metrics;
+    state.capabilities = capabilities;
     state.lastUpdate = ts;
     document.getElementById("poll-status").textContent = `last updated ${ts.toLocaleTimeString()}`;
     renderCurrentView();
@@ -279,16 +282,65 @@ function renderTriggers() {
 }
 
 function renderConnectors() {
-  const connectors = state.metrics ? Object.entries(state.metrics.perConnector) : [];
+  const caps = state.capabilities;
+  const wiredMcp = caps?.mcpConnectors ?? [];
+  const wiredLocal = caps?.localModels ?? [];
+  const wiredMemory = caps?.memoryStores ?? [];
+  const wiredSkill = caps?.skillStores ?? [];
+  const wiredAgent = caps?.agentConnectors ?? [];
+  const classes = caps?.mcpConnectorClasses ?? [];
+  const activity = state.metrics ? Object.entries(state.metrics.perConnector) : [];
+
+  const wiredTable = (label, entries, extraCols) => entries.length === 0
+    ? ""
+    : `<h3>${esc(label)}</h3>
+       <table>
+         <thead><tr><th>Name</th><th>Class</th><th>Contract</th>${extraCols?.headers ?? ""}</tr></thead>
+         <tbody>
+           ${entries.map((e) => `
+             <tr>
+               <td><strong>${esc(e.name)}</strong></td>
+               <td><code>${esc(e.implementation)}</code></td>
+               <td>${esc(e.contract_version)}</td>
+               ${extraCols?.row?.(e) ?? ""}
+             </tr>
+           `).join("")}
+         </tbody>
+       </table>`;
+
+  // MCP connectors get an extra "Allowed tools" column (v0.4.1 allowlist).
+  const mcpExtra = {
+    headers: `<th>Allowed tools</th>`,
+    row: (e) => `<td>${e.allowed_tools === null || e.allowed_tools === undefined
+      ? `<em>all</em>`
+      : e.allowed_tools.length === 0
+        ? `<em>none (disabled)</em>`
+        : e.allowed_tools.map((t) => `<code>${esc(t)}</code>`).join(" ")}</td>`,
+  };
+
   return `
     <h2>Connectors</h2>
     <section>
-      ${connectors.length === 0
+      <h3>Wired</h3>
+      ${wiredMcp.length + wiredLocal.length + wiredMemory.length + wiredSkill.length + wiredAgent.length === 0
+        ? `<div class="empty">No connectors wired in this runtime.</div>`
+        : `${wiredTable("MCP", wiredMcp, mcpExtra)}
+           ${wiredTable("Local model", wiredLocal)}
+           ${wiredTable("Memory store", wiredMemory)}
+           ${wiredTable("Skill store", wiredSkill)}
+           ${wiredTable("Agent", wiredAgent)}`}
+      ${classes.length > 0
+        ? `<p class="meta">Available MCP classes for <code>connectors.json</code>: ${classes.map((c) => `<code>${esc(c)}</code>`).join(", ")}</p>`
+        : ""}
+    </section>
+    <section>
+      <h3>Activity</h3>
+      ${activity.length === 0
         ? `<div class="empty">No connector activity yet. Run a skill that uses <code>$</code>/<code>~</code>/<code>&gt;</code> ops.</div>`
         : `<table>
             <thead><tr><th>Connector</th><th>Calls</th><th>Errors</th><th>p50</th><th>p95</th><th>p99</th><th>Last success</th></tr></thead>
             <tbody>
-              ${connectors.map(([name, c]) => `
+              ${activity.map(([name, c]) => `
                 <tr>
                   <td><strong>${esc(name)}</strong></td>
                   <td>${c.callCount}</td>
