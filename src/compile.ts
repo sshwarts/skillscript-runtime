@@ -509,12 +509,16 @@ export function toposort(targets: Map<string, SkillTarget>, entry: string): stri
  * through verbatim for the runtime to substitute.
  */
 function substitute(body: string, resolved: Map<string, string>): string {
+  // v0.5.0 item 4: regex extended to accept `|filter:"arg"` so refs that
+  // include `|fallback:"X"` parse here too. Compile-time substitution only
+  // applies the first filter (chain support stayed runtime-only); refs
+  // with chained filters pass through verbatim for runtime to handle.
   return body.replace(
-    /\$\(([^|)\s]+)\s*(?:\|\s*([A-Za-z_]\w*))?\s*\)/g,
+    /\$\(([^|)\s]+)\s*(?:\|\s*([A-Za-z_]\w*)(?:\s*:\s*"[^"]*")?)?\s*\)/g,
     (match: string, name: string, filter: string | undefined) => {
       if (!resolved.has(name)) return match;
       const raw = resolved.get(name)!;
-      if (!filter) return raw;
+      if (!filter || filter === "fallback") return raw;
       return applyFilter(raw, filter);
     },
   );

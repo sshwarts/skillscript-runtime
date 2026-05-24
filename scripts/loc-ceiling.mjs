@@ -78,6 +78,18 @@
 //            across Registry + config + lint + runtime. The first
 //            "external-MCP-in-Skillscript" release; proven end-to-end
 //            against real YouTrack via mcp-remote bridge.
+//   v0.5.0:  nudged narrow ceiling 6600 → 6800 for the R3 harness-driven
+//            scope: 8 items total. Bash-shaped string composition pair
+//            ($append string-typed + $set bind-time interpolation),
+//            |fallback:"X" filter (renamed from |default: per design
+//            thread 15a50e29), silent-stub-on-unwired-connector hard
+//            error + tier-1 lint, unquoted-substitution-in-kwarg-value
+//            tier-2 lint (binding-origin-aware walker), $(NOW) ISO-8601
+//            alignment + |isodate filter, outputs.text shape docs.
+//            ~175 LOC across lint.ts (origin walker, two new rules) +
+//            runtime.ts (chain parser + condition-context applier +
+//            ConnectorNotFoundError fold) + filters.ts (parseFilterChain
+//            + isodate). 50+ new tests across 5 v0.5.0 test files.
 //
 // Run: `pnpm run loc-check`. CI fails the build if the narrow ceiling is
 // breached. The broad count is reported but does NOT fail the build.
@@ -100,7 +112,7 @@ const CORE_PATHS = [
   "connectors/",
 ];
 
-const NARROW_MAX_LOC = 6600;
+const NARROW_MAX_LOC = 6800;
 const NARROW_MAX_FILES = 20;
 const BROAD_INFO_LOC = 9500;
 const BROAD_INFO_FILES = 28;

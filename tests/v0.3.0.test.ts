@@ -94,8 +94,17 @@ describe("v0.3.0 — lint: foreach-local-accumulator-target", () => {
 });
 
 describe("v0.3.0 — lint: append-to-non-list", () => {
-  it("FAIL: init is a quoted string literal", async () => {
+  it("OK: init is a quoted string literal (v0.5.0 — string concat permitted)", async () => {
+    // Pre-v0.5.0 this fired append-to-non-list. v0.5.0 item 2 permits
+    // string-typed targets (concat mode); the lint now fires only on
+    // numeric/boolean/null/object inits.
     const src = "# Skill: t\n# Status: Approved\nrun:\n    $set X = \"hello\"\n    $append X \"more\"\ndefault: run\n";
+    const r = await lint(src);
+    expect(r.findings.find((f) => f.rule === "append-to-non-list")).toBeUndefined();
+  });
+
+  it("FAIL: init is a numeric literal (v0.5.0 — still rejected)", async () => {
+    const src = "# Skill: t\n# Status: Approved\nrun:\n    $set X = 42\n    $append X 7\ndefault: run\n";
     const r = await lint(src);
     expect(r.findings.find((f) => f.rule === "append-to-non-list")).toBeDefined();
   });

@@ -1,5 +1,122 @@
 # Changelog
 
+## 0.5.0 — 2026-05-24
+
+**R3 harness-driven cold-author UX wins.** Eight items closing the
+load-bearing footguns the R3 cold-author harness surfaced (Perry kickoff
+`15a50e29`). Bash-shaped string composition lands as a pair (items 2+3);
+the `|fallback:"X"` filter closes ref-level coalesce; silent stubs on
+unwired connectors become hard errors with a tier-1 lint; the
+unquoted-substitution kwarg footgun gets a tier-2 lint with binding-
+origin awareness; `$(NOW)` aligns with its documented ISO-8601 shape;
+docs catch up on outputs.text + kwarg grammar.
+
+### Added (load-bearing)
+
+- **String-typed `$append` (item 2).** `$append VAR "more"` now type-
+  dispatches on the target binding: list → push (existing behavior,
+  regression-protected); string → concatenate (new). Lifts the
+  `append-to-non-list` lint restriction for string-typed inits. Mirrors
+  bash `+=`. Smallest behavior change to existing op that closes the
+  R3 minion 4 string-composition gap.
+
+- **`$set` bind-time interpolation (item 3).** `$set X = "...$(REF)..."`
+  now resolves `$(REF)` at bind time (was: literal binding, refs
+  unresolved at use-time). Mirrors bash double-quoted assignment. Per
+  the design philosophy memory `8cccf5e5`: cold authors approach
+  skillscript with bash intuition; items 2+3 together close the
+  bash-shaped composition category without adding new operator surface.
+  Behavior change called out per `dc824ee4` lesson option 1 — the
+  literals-only spec was the cold-author footgun, not a deliberate
+  call. R3 minion 4 + T6 dogfood independently confirmed in 3 days.
+
+- **`|fallback:"X"` filter (item 4).** `$(VAR.field|fallback:"-")` —
+  coalesce-on-missing-ref. When the upstream ref is unresolved, the
+  filter substitutes the literal arg and the chain continues. Positional
+  within the chain. Named `fallback` (not `default`) to align with
+  op-level `(fallback: ...)` vocabulary — different syntactic site,
+  same universal word for "what to do when a value-producer doesn't
+  produce." Renaming decision: design thread `15a50e29` / `9f59ef63`.
+  The pipe chain IS a primitive (filter-composition algebra); breaking
+  the chain to align with op-level syntax would lose real expressiveness.
+
+- **Silent-stub-on-unwired-connector → hard error + tier-1 lint
+  (item 5).** Pre-v0.5.0: bare `$ TOOL` ops with no `primary` connector
+  and no embedder toolDispatch emitted "Would call tool X (no
+  dispatcher wired)" and bound `null` to the output var. Autonomous
+  skills thought they succeeded. v0.5.0: runtime throws
+  `ConnectorNotFoundError` (caught by op-level `(fallback:)` if
+  declared); new tier-1 `unwired-primary-connector` lint surfaces the
+  same at compile time when the registry is queryable. R3 minion 4
+  motivation.
+
+- **`unquoted-substitution-in-kwarg-value` tier-2 lint (item 1).** Fires
+  when `$ tool key=$(VAR)` has unquoted `$(VAR)` AND VAR's binding
+  origin suggests whitespace (`# Vars:` default with whitespace, `$set`
+  literal with whitespace, `~`/`$`/`>` op output, or foreach iterator).
+  Closes the R3 silent-arg-truncation footgun — pre-v0.5.0 the rendered
+  string `key=value with spaces` re-tokenized at the MCP arg boundary
+  and only the first chunk bound to `key`. Folklore (always quote
+  dynamic kwarg values) becomes lint discipline. Walker tracks binding
+  origin via `# Vars:` / `$set` / op-output / foreach-iter and only
+  fires on suspect origins — no noise on safe literals.
+
+### Added (polish)
+
+- **`$(NOW)` ISO-8601 alignment (item 6).** `$(NOW)` now substitutes as
+  ISO-8601 per the documented spec (was: raw epoch ms — docs/runtime
+  drift identified by R3 minion 2). Numeric epoch ms/sec remain
+  available as `$(EVENT.fired_at)` / `$(EVENT.fired_at_unix)`. New
+  `|isodate` filter formats epoch ms/sec (auto-detected by magnitude)
+  or ISO strings to ISO-8601 — `$(EVENT.fired_at_unix|isodate)`.
+
+- **Docs: outputs.text shape clarification (item 7).** Investigated:
+  the runtime intentionally distinguishes "programmatic surfaces"
+  (`text`, `file:` — default to lastBoundVar, structured) from
+  "human-readable surfaces" (`prompt-context:` / `template:` /
+  `slack:` / `card:` — default to joined emissions). Cold-author
+  surprise (R3 minion 3) was a docs gap, not a runtime bug. Help
+  content now explains both shapes inline with the `# Output:` syntax.
+  Emit-as-binding primitive (`! "text" -> VAR`) deferred to v0.5.1 as
+  its own design item.
+
+- **Docs improvements (item 8).** `# Output:` value-shape per kind
+  documented inline. `$` op kwarg grammar table added (bare string,
+  quoted string, integer, boolean, null, JSON array, JSON object,
+  substitution, quoted substitution) with the v0.5.0 unquoted-kwarg
+  lint warning surfaced inline. `|fallback:"X"` + `|isodate` filter
+  entries added to the pipe-filters table. `$(NOW)` ISO-8601 note in
+  the filters section.
+
+### Changed
+
+- **`|default:"X"` filter renamed to `|fallback:"X"`** (never shipped
+  under the old name — vocabulary alignment landed pre-release, see
+  item 4 above).
+
+- **Runtime `$(NOW)` now substitutes as ISO-8601 string** (was: number
+  with epoch ms). Skills consuming `$(NOW)` as a string get the
+  documented shape; skills doing math on `$(NOW)` must migrate to
+  `$(EVENT.fired_at)` (epoch ms) or `$(EVENT.fired_at_unix)` (sec).
+  No shipped skills are known to math on `$(NOW)` — the surface read
+  as a "current timestamp string" everywhere.
+
+### Implementation notes
+
+- **51 new tests across 5 v0.5.0 test files**: `v0.5.0-bash-pair`,
+  `v0.5.0-fallback-filter`, `v0.5.0-unwired-connector`,
+  `v0.5.0-unquoted-kwarg`, `v0.5.0-now-isodate`, `v0.5.0-outputs-shape`.
+  Suite is 1052/1064 passing (2 failures are the YouTrack proving env
+  gate and the pre-bump LOC ceiling — both expected).
+- **LOC ceiling nudged 6600 → 6800** to accommodate the binding-origin
+  walker + condition-context filter applier + chain parser.
+- **Design discipline**: items 4 and 7 each ran a design-pushback loop
+  (CC pushed back on Perry's primitive-unification framing for item 4;
+  Perry conceded with "adjacent concepts that rhyme aren't the same
+  primitive" sharpening; CC investigated item 7 first per Perry's gate
+  framing, found it was a docs change, deferred emit-as-binding to
+  v0.5.1). Both directions of the pushback pattern, healthy.
+
 ## 0.4.4 — 2026-05-24
 
 **Dashboard SPA Connectors view shows the wired registry.** Closes the

@@ -131,6 +131,29 @@ $ connector.tool_name args -> VAR
 Calls an MCP tool. Without an explicit connector prefix, routes to the
 \`primary\` MCP connector. Fallback binds when dispatch errors.
 
+**Kwarg value grammar.** Each \`key=value\` token follows a small literal
+grammar:
+
+| Form | Example | Type |
+|------|---------|------|
+| Bare string | \`status=open\` | string \`"open"\` |
+| Quoted string | \`query="hello world"\` | string \`"hello world"\` (use when value contains whitespace) |
+| Integer | \`limit=10\` | number \`10\` |
+| Boolean | \`urgent=true\` | boolean \`true\` |
+| Null | \`assignee=null\` | null |
+| JSON array | \`tags=["a","b"]\` | array \`["a","b"]\` |
+| JSON object | \`payload={"k":"v"}\` | object \`{"k":"v"}\` |
+| Substitution | \`id=$(BUG_ID)\` | resolved at dispatch time |
+| Quoted substitution | \`query="$(QUERY)"\` | quoted resolution (recommended when value may contain whitespace) |
+
+**v0.5.0 lint warning** \`unquoted-substitution-in-kwarg-value\` fires when
+an unquoted \`$(VAR)\` substitution sits in kwarg-value position and VAR's
+binding origin suggests whitespace (\`# Vars:\` default with whitespace,
+\`$set\` literal with whitespace, \`~\`/\`$\`/\`>\` op output, or foreach
+iterator). Wrap as \`key="$(VAR)"\` to prevent silent arg truncation if
+the resolved value contains spaces — the MCP arg tokenizer respects
+quoted regions.
+
 **Built-in (v0.2.8):** \`$ execute_skill skill_name=child -> RESULT\` invokes
 another stored skill end-to-end without requiring an MCP connector — pass
 input vars as additional kwargs.
@@ -245,6 +268,13 @@ Apply on \`$(VAR|filter)\` references; chain left-to-right.
 | \`json\` | JSON.stringify |
 | \`trim\` | Whitespace trim |
 | \`length\` | Array element count or string char count (v0.2.5) |
+| \`fallback:"X"\` | (v0.5.0) Coalesce-on-missing: when the upstream ref is unresolved, substitute literal \`X\` and continue the chain. Positional — \`$(VAR|fallback:"-"|upper)\` defaults-then-uppercases. Named to align with op-level \`(fallback: ...)\` vocabulary. |
+| \`isodate\` | (v0.5.0) Format an epoch timestamp (ms or sec, auto-detected by magnitude) as ISO-8601. Passes already-ISO strings through unchanged. \`$(EVENT.fired_at_unix|isodate)\`. |
+
+**v0.5.0 $(NOW) note.** \`$(NOW)\` now substitutes as an ISO-8601 string per
+the documented spec (was: raw epoch ms pre-v0.5.0 — a docs/runtime drift
+identified by R3 minion 2). Numeric epoch values remain available as
+\`$(EVENT.fired_at)\` (ms) and \`$(EVENT.fired_at_unix)\` (sec).
 
 ## Conditional grammar
 
@@ -290,7 +320,7 @@ Skill files open with \`# Key: value\` headers. Order isn't significant.
 - \`# Type: procedural | data\` — \`procedural\` (default) for runtime-fired skills; \`data\` for compile-time-inlined fragments referenced by \`&\` ops.
 - \`# Vars: NAME=default, OTHER\` — declared variables. \`NAME=default\` provides a default; bare \`NAME\` is required at invocation.
 - \`# Triggers: cron: 0 9 * * *, session: start\` — autonomous-dispatch sources. Comma-separated entries split by source-keyword boundary; cron expressions with commas (\`30,45 9 * * 1-5\`) parse correctly.
-- \`# Output: text | slack: chan | prompt-context: agent | template: agent | file: path | card: id | none\` — output routing.
+- \`# Output: text | slack: chan | prompt-context: agent | template: agent | file: path | card: id | none\` — output routing. **Value shape per kind (v0.5.0 clarification):** \`prompt-context:\` / \`template:\` / \`slack:\` / \`card:\` default to **joined emissions string** (the \`!\` lines concatenated with newlines) — these are human-readable delivery surfaces. \`text\` / \`file:\` default to the **last-bound variable value** (structured), falling back to the emissions array when no var was bound. If your skill emits multiple \`!\` lines and a downstream consumer only sees the final tool output via \`outputs.text\`, that's the structured-default behavior — use \`# Output: prompt-context: <agent>\` (or another text-coerced kind) to publish the joined emissions instead.
 - \`# OnError: <fallback-skill-name>\` — error-handler skill invoked when an op fails and no target-level \`else:\` catches.
 - \`# Autonomous: true | false\` — declarative authorship intent for unattended-execution skills (cron-fired, agent-fired, etc.). v0.4.2. Today silences \`unconfirmed-mutation\` lint warnings for the whole skill (since the user-confirmation pattern doesn't apply to autonomous skills); reserved as the canonical autonomous-skill category marker for future rules + scheduling defaults + discovery surfaces. Omitted = interactive (default).
 

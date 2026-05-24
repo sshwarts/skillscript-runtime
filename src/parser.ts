@@ -239,9 +239,9 @@ const MCP_CONNECTOR_PREFIX = /^([a-z_][a-z0-9_-]*)\.(?=[A-Za-z_])([\s\S]*)$/;
 // to match `substituteRuntime`'s chain capture (runtime.ts:1158). Closes the
 // recurring "filter chain works in substitution but not conditions" gap named
 // in dev-log §14. Runtime regex set mirrors this; both update together.
-const COND_TRUTHY = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*$/;
+const COND_TRUTHY = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*$/;
 /** `$(REF) ==/!= "literal"` — ref-vs-string equality. Filter chain on the ref side. */
-const COND_EQ = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*(?:==|!=)\s*"[^"]*"\s*$/;
+const COND_EQ = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*(?:==|!=)\s*"[^"]*"\s*$/;
 /**
  * `$(REF) ==/!= $(REF)` — ref-vs-ref equality. Extended 2026-05-21 per
  * language reference §5; surfaced by the cold-agent skills battery (a
@@ -249,7 +249,7 @@ const COND_EQ = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)
  * the natural change-detection pattern). Filter chain + dotted field
  * access permitted on either side.
  */
-const COND_EQ_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*(?:==|!=)\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*$/;
+const COND_EQ_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*(?:==|!=)\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*$/;
 /**
  * `$(REF) </>/<=/>= "literal"` and `$(REF) </>/<=/>= $(REF)` — numeric
  * comparison. v0.2.5 addition per the orchestration carve-out: comparison
@@ -258,9 +258,9 @@ const COND_EQ_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]
  * chain + dotted field access permitted on either side, matching
  * EQ/EQ_REF shape.
  */
-const COND_CMP = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*(?:<=|>=|<|>)\s*"[^"]*"\s*$/;
-const COND_CMP_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*(?:<=|>=|<|>)\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*$/;
-const COND_IN = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s+(?:not\s+)?in\s+\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\)\s*$/;
+const COND_CMP = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*(?:<=|>=|<|>)\s*"[^"]*"\s*$/;
+const COND_CMP_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*(?:<=|>=|<|>)\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*$/;
+const COND_IN = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s+(?:not\s+)?in\s+\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\)\s*$/;
 
 function validateCondition(cond: string): boolean {
   return validateCompoundCondition(cond.trim());

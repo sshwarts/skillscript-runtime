@@ -1,8 +1,39 @@
 // Pipe-filter implementations. `$(NAME|filter)` syntax dispatches here.
 
 /** The names of every registered filter. Lint's `unknown-filter` rule consults this. */
-export const KNOWN_FILTERS = ["url", "shell", "json", "trim", "length"] as const;
+export const KNOWN_FILTERS = ["url", "shell", "json", "trim", "length", "fallback", "isodate"] as const;
 export type KnownFilter = (typeof KNOWN_FILTERS)[number];
+
+/**
+ * A single filter spec parsed from the `|filter` chain. `arg` is the
+ * double-quoted string after `:` (e.g. `|default:"none"` → `{name:"default", arg:"none"}`).
+ * v0.5.0 item 4 — only `fallback` accepts an arg; other filters that pass
+ * an arg are tolerated by the parser but rejected at apply-time. Named
+ * `fallback` (not `default`) to align vocabulary with op-level `(fallback:)`;
+ * adjacent concept (coalesce-on-missing-ref) shares the universal word
+ * "fallback" without conflating the syntactic site.
+ */
+export interface FilterSpec {
+  name: string;
+  arg?: string;
+}
+
+/**
+ * Parse a filter chain string like `|trim|default:"none"|upper` into specs.
+ * Empty / undefined input returns `[]`. Whitespace tolerant.
+ */
+export function parseFilterChain(chain: string | undefined): FilterSpec[] {
+  if (!chain) return [];
+  const out: FilterSpec[] = [];
+  const re = /\|\s*([A-Za-z_]\w*)(?:\s*:\s*"([^"]*)")?/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(chain)) !== null) {
+    const spec: FilterSpec = { name: m[1]! };
+    if (m[2] !== undefined) spec.arg = m[2];
+    out.push(spec);
+  }
+  return out;
+}
 //
 // Adding a new filter:
 //   1. Add a case in `applyFilter` below.
@@ -44,6 +75,28 @@ export function applyFilter(value: string, filter: string): string {
       return JSON.stringify(value);
     case "trim":
       return value.trim();
+    case "fallback":
+      // v0.5.0 item 4 — `fallback` is binding-aware: it consumes an
+      // undefined ref upstream of the filter chain. By the time
+      // applyFilter sees it, the ref has already resolved (otherwise
+      // substituteRuntime would have substituted the fallback arg before
+      // reaching this point). No-op.
+      return value;
+    case "isodate": {
+      // v0.5.0 item 6: format an epoch timestamp as ISO-8601. Accepts
+      // milliseconds OR seconds — disambiguates by magnitude (>= 10^12
+      // → ms, otherwise seconds). Already-ISO strings pass through
+      // unchanged. Useful for `$(EVENT.fired_at_unix|isodate)` style refs.
+      const n = Number(value);
+      if (Number.isFinite(n)) {
+        const ms = n >= 1e12 ? n : n * 1000;
+        return new Date(ms).toISOString();
+      }
+      // Non-numeric: try parsing as a date string. Round-trips ISO inputs.
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+      throw new Error(`|isodate filter: value '${value.slice(0, 40)}${value.length > 40 ? "..." : ""}' is not a recognizable timestamp (expected epoch ms/sec or ISO-8601 string).`);
+    }
     case "length": {
       // Array-shaped JSON → element count. Anything else (including
       // JSON-parsed-but-not-array, or non-JSON strings) → character count.

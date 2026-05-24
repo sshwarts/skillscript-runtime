@@ -1,7 +1,7 @@
 import type { ParsedSkill, SkillOp, OutputDecl } from "./parser.js";
 import type { DeliveryReceipt, TriggerProvenance } from "./connectors/agent.js";
 import { tokenizeKeywordArgs, processSetValue } from "./parser.js";
-import { applyFilter } from "./filters.js";
+import { applyFilter, parseFilterChain } from "./filters.js";
 import { dispatchExecuteSkillIntercept } from "./composition.js";
 import type { Registry } from "./connectors/registry.js";
 import { spawn } from "node:child_process";
@@ -164,7 +164,12 @@ export async function execute(
   // `$(EVENT.fired_at_unix)` resolves uniformly across dispatch paths).
   const nowMs = Date.now();
   const nowSec = Math.floor(nowMs / 1000);
-  vars.set("NOW", nowMs);
+  // v0.5.0 item 6: align $(NOW) with the documented shape — ISO-8601
+  // timestamp per language reference §3 + help-content frontmatter.
+  // Pre-v0.5.0 substituted raw epoch ms; cold authors (R3 minion 2) hit
+  // the surprise. Numeric epoch ms/sec remain available via
+  // $(EVENT.fired_at) / $(EVENT.fired_at_unix).
+  vars.set("NOW", new Date(nowMs).toISOString());
   vars.set("USER", ctx.agentId ?? "unknown");
   vars.set("SESSION_CONTEXT", "");
   vars.set("TRIGGER_TYPE", "manual");
@@ -433,7 +438,13 @@ async function execOpInner(
 ): Promise<ExecOpsResult> {
   switch (op.kind) {
     case "$set": {
-      const coerced = coerceLiteralValue(op.setValue!);
+      // v0.5.0 item 3 — `$set X = "...$(REF)..."` now resolves $(REF) at
+      // bind time. Pre-v0.5.0 this was literals-only per the v0.2.6 spec
+      // (lesson `dc824ee4`); the cold-author corpus hit the literals-only
+      // footgun twice (T6 dogfood + R3 minion 4) independently. Mirrors
+      // bash double-quoted assignment.
+      const substituted = substituteRuntime(op.setValue!, vars);
+      const coerced = coerceLiteralValue(substituted);
       vars.set(op.setName!, coerced);
       return { lastBoundVar: op.setName!, lastValue: coerced };
     }
@@ -465,14 +476,24 @@ async function execOpInner(
         );
         return { lastBoundVar: targetName, lastValue: existing };
       }
-      if (!Array.isArray(existing)) {
-        throw new Error(
-          `\`$append ${targetName} ...\`: target is not a list (got ${typeof existing}). ` +
-          `\`$append\` requires the target variable to be a list. Initialize via \`$set ${targetName} = []\` first.`,
-        );
+      // v0.5.0 item 2 — bash-shaped pair: type-dispatch on target.
+      // List → push (existing v0.3.0 behavior). String → concatenate
+      // (new). Numeric/object/null → tier-1 error. Closes the
+      // string-composition gap the R3 corpus hit (minion 4).
+      if (Array.isArray(existing)) {
+        existing.push(coerced);
+        return { lastBoundVar: targetName, lastValue: existing };
       }
-      existing.push(coerced);
-      return { lastBoundVar: targetName, lastValue: existing };
+      if (typeof existing === "string") {
+        const appendStr = typeof coerced === "string" ? coerced : stringifyValue(coerced);
+        const concatenated = existing + appendStr;
+        vars.set(targetName, concatenated);
+        return { lastBoundVar: targetName, lastValue: concatenated };
+      }
+      throw new Error(
+        `\`$append ${targetName} ...\`: target must be a list or string (got ${existing === null ? "null" : typeof existing}). ` +
+        `Initialize via \`$set ${targetName} = []\` for list-append, or \`$set ${targetName} = ""\` for string-concat.`,
+      );
     }
     case "?": {
       const body = substituteRuntime(op.body, vars);
@@ -674,7 +695,12 @@ async function execOpInner(
         } else if (op.mcpConnector === undefined && ctx.toolDispatch) {
           rawResult = await dispatchWithTimeout(() => ctx.toolDispatch!(toolName, args), timeoutMs, "$");
           dispatched = true;
-        } else if (op.mcpConnector !== undefined) {
+        } else {
+          // v0.5.0 item 5 — was a silent stub before (emitted "Would call
+          // tool ..." + bound null). That ate connector misconfiguration
+          // errors silently, masking real failures. Now: throw, so the
+          // op-level (fallback:) catch below can recover if declared, or
+          // the error surfaces immediately.
           throw new ConnectorNotFoundError(connectorName, "mcp_connector", "$", targetName);
         }
       } catch (err) {
@@ -684,18 +710,6 @@ async function execOpInner(
           return { lastBoundVar: op.outputVar ?? flatKey, lastValue: dollarFallback };
         }
         throw err;
-      }
-
-      if (!dispatched) {
-        emissions.push(
-          `Would call tool ${connectorLabel}${toolName} with ${JSON.stringify(args)} (no dispatcher wired).`,
-        );
-        vars.set(flatKey, null);
-        if (op.outputVar !== undefined) vars.set(op.outputVar, null);
-        return {
-          lastBoundVar: op.outputVar ?? flatKey,
-          lastValue: null,
-        };
       }
       // c580de5: surface inner-tool `isError: true` as an op error. Otherwise
       // the error text gets bound silently to the output var and the skill
@@ -1256,19 +1270,30 @@ export function substituteRuntime(text: string, vars: Map<string, unknown>): str
   // first filter actually applied because the regex captured exactly one.
   // Now: match the ref + optional `|filter|filter|...` chain; apply each
   // filter in order. `$(RAW|json_parse|length)` now works as documented.
+  // v0.5.0 item 4: `|fallback:"X"` filter accepts a colon-arg; consumes
+  // an undefined upstream ref by substituting X. Positional — comes into
+  // effect at the position it appears in the chain.
   return text.replace(
-    /\$\(([^|)\s]+)\s*((?:\|\s*[A-Za-z_]\w*\s*)*)\)/g,
+    /\$\(([^|)\s]+)\s*((?:\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?\s*)*)\)/g,
     (_match: string, ref: string, filterChain: string) => {
-      const value = resolveRef(ref, vars);
+      let value: unknown = resolveRef(ref, vars);
+      const specs = parseFilterChain(filterChain);
+
+      for (const spec of specs) {
+        if (spec.name === "fallback") {
+          if (value === undefined) value = spec.arg ?? "";
+          continue;
+        }
+        if (value === undefined) {
+          throw new UnresolvedVariableError(ref, "?");
+        }
+        value = applyFilter(stringifyValue(value), spec.name);
+      }
+
       if (value === undefined) {
         throw new UnresolvedVariableError(ref, "?");
       }
-      let s = stringifyValue(value);
-      if (filterChain) {
-        const filters = filterChain.split("|").map((f) => f.trim()).filter((f) => f !== "");
-        for (const filter of filters) s = applyFilter(s, filter);
-      }
-      return s;
+      return stringifyValue(value);
     },
   );
 }
@@ -1343,13 +1368,13 @@ export function stringifyValue(v: unknown): string {
 // becomes `(REF)(|filter)*` matching substituteRuntime's chain pattern
 // (line ~1158). The captured chain string is delegated to
 // `applyFilterChain` below for split + per-filter application.
-const TRUTHY = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*$/;
-const EQ = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*(==|!=)\s*"([^"]*)"\s*$/;
+const TRUTHY = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*$/;
+const EQ = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*(==|!=)\s*"([^"]*)"\s*$/;
 /** Ref-vs-ref equality (per language reference §5 + 2026-05-21 grammar extension). Filter chain + dotted-field-access permitted on either side. */
-const EQ_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*(==|!=)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*$/;
-const CMP = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*(<=|>=|<|>)\s*"([^"]*)"\s*$/;
-const CMP_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*(<=|>=|<|>)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*$/;
-const IN = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s+(not\s+)?in\s+\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\)\s*$/;
+const EQ_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*(==|!=)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*$/;
+const CMP = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*(<=|>=|<|>)\s*"([^"]*)"\s*$/;
+const CMP_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*(<=|>=|<|>)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*$/;
+const IN = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s+(not\s+)?in\s+\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\)\s*$/;
 
 /**
  * Apply a chain of pipe filters to a value. The chain string is the
@@ -1364,10 +1389,33 @@ const IN = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)
  */
 function applyFilterChain(value: string, chain: string | undefined): string {
   if (chain === undefined || chain === "") return value;
-  const filters = chain.split("|").map((f) => f.trim()).filter((f) => f !== "");
+  const specs = parseFilterChain(chain);
   let s = value;
-  for (const filter of filters) s = applyFilter(s, filter);
+  for (const spec of specs) {
+    if (spec.name === "fallback") continue;
+    s = applyFilter(s, spec.name);
+  }
   return s;
+}
+
+/**
+ * Condition-context variant of the chain applier. Threads the original
+ * undefined-ness through so `|fallback:"X"` can consume an unresolved ref.
+ * Used by EQ / CMP / IN paths in evalSimpleCondition. v0.5.0 item 4.
+ */
+function applyFilterChainCondition(value: unknown, chain: string | undefined): string {
+  const specs = parseFilterChain(chain);
+  let current: unknown = value;
+  for (const spec of specs) {
+    if (spec.name === "fallback") {
+      if (current === undefined) current = spec.arg ?? "";
+      continue;
+    }
+    if (current === undefined) current = "";
+    current = applyFilter(stringifyValue(current), spec.name);
+  }
+  if (current === undefined) current = "";
+  return stringifyValue(current);
 }
 
 /**
@@ -1475,31 +1523,25 @@ function evalSimpleCondition(cond: string, vars: Map<string, unknown>): boolean 
   if (e) {
     const [, ref, chain, op, lit] = e;
     const val = resolveRef(ref!, vars);
-    const valStr = val === undefined ? "" : stringifyValue(val);
-    // Filter chain applies BEFORE comparison so `if $(COLOR|trim) == "yellow"` matches
-    // values that local models return with trailing whitespace.
-    const final = applyFilterChain(valStr, chain);
+    // v0.5.0 item 4: condition-aware chain threading so `|default:"X"`
+    // consumes undefined refs in conditional context too.
+    const final = applyFilterChainCondition(val, chain);
     return op === "==" ? final === lit : final !== lit;
   }
   const eRef = EQ_REF.exec(cond);
   if (eRef) {
     const [, lhsRef, lhsChain, op, rhsRef, rhsChain] = eRef;
-    // Both sides resolve via the same path as `EQ` LHS — undefined → ""
-    // (matches the existing tolerance for unresolved refs in conditions).
     const lhsVal = resolveRef(lhsRef!, vars);
     const rhsVal = resolveRef(rhsRef!, vars);
-    const lhsStr = lhsVal === undefined ? "" : stringifyValue(lhsVal);
-    const rhsStr = rhsVal === undefined ? "" : stringifyValue(rhsVal);
-    const lhsFinal = applyFilterChain(lhsStr, lhsChain);
-    const rhsFinal = applyFilterChain(rhsStr, rhsChain);
+    const lhsFinal = applyFilterChainCondition(lhsVal, lhsChain);
+    const rhsFinal = applyFilterChainCondition(rhsVal, rhsChain);
     return op === "==" ? lhsFinal === rhsFinal : lhsFinal !== rhsFinal;
   }
   const cmp = CMP.exec(cond);
   if (cmp) {
     const [, ref, chain, op, lit] = cmp;
     const val = resolveRef(ref!, vars);
-    const valStr = val === undefined ? "" : stringifyValue(val);
-    const final = applyFilterChain(valStr, chain);
+    const final = applyFilterChainCondition(val, chain);
     return compareNumeric(final, op as CmpOp, lit!, `$(${ref}${chain ? chain : ""})`);
   }
   const cmpRef = CMP_REF.exec(cond);
@@ -1507,10 +1549,8 @@ function evalSimpleCondition(cond: string, vars: Map<string, unknown>): boolean 
     const [, lhsRef, lhsChain, op, rhsRef, rhsChain] = cmpRef;
     const lhsVal = resolveRef(lhsRef!, vars);
     const rhsVal = resolveRef(rhsRef!, vars);
-    const lhsStr = lhsVal === undefined ? "" : stringifyValue(lhsVal);
-    const rhsStr = rhsVal === undefined ? "" : stringifyValue(rhsVal);
-    const lhsFinal = applyFilterChain(lhsStr, lhsChain);
-    const rhsFinal = applyFilterChain(rhsStr, rhsChain);
+    const lhsFinal = applyFilterChainCondition(lhsVal, lhsChain);
+    const rhsFinal = applyFilterChainCondition(rhsVal, rhsChain);
     const refDesc = `$(${lhsRef}) ${op} $(${rhsRef})`;
     return compareNumeric(lhsFinal, op as CmpOp, rhsFinal, refDesc);
   }

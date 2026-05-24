@@ -1,4 +1,4 @@
-import { parse, type ParsedSkill, type SkillOp } from "./parser.js";
+import { parse, tokenizeKeywordArgs, type ParsedSkill, type SkillOp } from "./parser.js";
 import { KNOWN_FILTERS } from "./filters.js";
 import type { StaticCapabilities, SkillStore } from "./connectors/types.js";
 import type { Registry } from "./connectors/registry.js";
@@ -644,6 +644,50 @@ const DISALLOWED_TOOL: LintRule = {
           message: `\`$ ${ref}.${toolName}\` in target '${targetName}' is not in the allowlist for connector '${ref}'. ${allowed.length === 0 ? "Allowlist is empty (connector configured but no tools permitted)." : `Allowed: ${allowed.join(", ")}.`} Either rewrite or grant access in connectors.json.`,
           block: targetName,
           extras: { connector: ref, tool: toolName, allowed },
+        });
+      });
+    }
+    return findings;
+  },
+};
+
+// v0.5.0 item 5 — bare `$ TOOL` op (no connector prefix) when no
+// `primary` connector is wired. Runtime now throws ConnectorNotFoundError
+// instead of silent-stub (was: emitted "Would call tool X" + bound null,
+// masking real misconfiguration). Lint surfaces the same diagnostic at
+// compile time when the runtime registry is queryable.
+//
+// False-positive guard: only fires when `mcpConnectorNames` is non-undefined
+// (lint context has real registry info) — embedder contexts that don't
+// expose the registry stay silent rather than risk noise on legitimate
+// toolDispatch-only setups.
+const UNWIRED_PRIMARY_CONNECTOR: LintRule = {
+  id: "unwired-primary-connector",
+  severity: "error",
+  description: "A bare `$ TOOL` op (no connector prefix) requires a `primary` connector in `connectors.json` or an embedder-supplied toolDispatch. Neither is wired.",
+  remediation: "Either add a `primary` entry to connectors.json that handles the tool, or qualify the op as `$ named_connector.TOOL` against a wired connector. Bare ops silent-stubbed prior to v0.5.0; they now hard-error at dispatch time.",
+  check: (ctx) => {
+    if (ctx.mcpConnectorNames === undefined) return [];
+    if (ctx.mcpConnectorNames.includes("primary")) return [];
+    const findings: LintFinding[] = [];
+    const reported = new Set<string>();
+    for (const [targetName, target] of ctx.parsed.targets) {
+      walkOps(target.ops, (op) => {
+        if (op.kind !== "$" || op.mcpConnector !== undefined) return;
+        // Built-in intercepts that don't need a connector at all.
+        const m = /^([A-Za-z_][\w:-]*)/.exec(op.body);
+        if (m === null) return;
+        const toolName = m[1]!;
+        if (toolName === "execute_skill" || toolName === "json_parse") return;
+        const key = `${targetName}:${toolName}`;
+        if (reported.has(key)) return;
+        reported.add(key);
+        findings.push({
+          rule: "unwired-primary-connector",
+          severity: "error",
+          message: `\`$ ${toolName}\` in target '${targetName}' is a bare tool op with no \`primary\` connector wired. Wired connectors: ${ctx.mcpConnectorNames!.length === 0 ? "(none)" : ctx.mcpConnectorNames!.join(", ")}.`,
+          block: targetName,
+          extras: { tool: toolName },
         });
       });
     }
@@ -1373,6 +1417,21 @@ function isStaticListLiteral(raw: string): boolean {
   return t.startsWith("[") && t.endsWith("]");
 }
 
+/**
+ * v0.5.0 item 2 — detect numeric/boolean/null/object literal inits.
+ * `$append` permits list (push) and string (concat) targets; everything
+ * else (number/bool/null/object) doesn't compose with append semantics
+ * and should still error. Mirrors `coerceLiteralValue`'s type detection.
+ */
+function isNumericBooleanOrNullLiteral(raw: string): boolean {
+  const t = raw.trim();
+  if (t === "true" || t === "false" || t === "null") return true;
+  if (/^-?\d+$/.test(t) || /^-?\d+\.\d+$/.test(t)) return true;
+  // Object literal — JSON-shaped, not a string.
+  if (t.startsWith("{") && t.endsWith("}")) return true;
+  return false;
+}
+
 const UNINITIALIZED_APPEND: LintRule = {
   id: "uninitialized-append",
   severity: "error",
@@ -1475,8 +1534,8 @@ const FOREACH_LOCAL_ACCUMULATOR_TARGET: LintRule = {
 const APPEND_TO_NON_LIST: LintRule = {
   id: "append-to-non-list",
   severity: "error",
-  description: "`$append VAR ...` where VAR's static initialization is a non-list value. $append v0.3.0 is list-only.",
-  remediation: "Initialize VAR with a list literal (`$set VAR = []` or `# Vars: VAR=[]`). String concat and map-shaped accumulation are out of scope for v0.3.0.",
+  description: "`$append VAR ...` where VAR's static initialization is a numeric, boolean, null, or object literal. $append v0.5.0 permits list (push) and string (concat) targets only.",
+  remediation: "Initialize VAR with a list literal (`$set VAR = []` for list-append) or a string literal (`$set VAR = \"\"` for string-concat). Numeric/boolean/null/object targets don't compose with `$append`.",
   check: (ctx) => {
     const staticInits = new Map<string, string>();
     for (const v of ctx.parsed.vars) {
@@ -1493,13 +1552,146 @@ const APPEND_TO_NON_LIST: LintRule = {
         if (op.kind !== "$append" || op.setName === undefined) return;
         const init = staticInits.get(op.setName);
         if (init === undefined) return;
-        if (!isStaticListLiteral(init)) {
+        // v0.5.0 item 2 — bash-shaped pair: permit string-typed targets
+        // (concat) alongside list-typed targets (push). Only fire on
+        // initializations that look numeric/boolean/null/object.
+        if (isStaticListLiteral(init)) return;
+        if (!isNumericBooleanOrNullLiteral(init)) return; // string-typed: allow
+        findings.push({
+          rule: "append-to-non-list",
+          severity: "error",
+          message: `\`$append ${op.setName} ...\` in target '${targetName}': ${op.setName} is initialized to a non-list, non-string value (\`${init.slice(0, 40)}${init.length > 40 ? "..." : ""}\`). $append requires a list-typed or string-typed target.`,
+          block: targetName,
+          extras: { var_name: op.setName, init_value: init },
+        });
+      });
+    }
+    return findings;
+  },
+};
+
+// v0.5.0 item 1 — silent arg-truncation footgun: `$ tool key=$(VAR)`
+// without surrounding quotes. If VAR resolves to a value with whitespace
+// at runtime, the rendered string `key=value with spaces` gets re-
+// tokenized by the MCP arg parser and only the first whitespace-delimited
+// chunk binds to `key`. R3 minion 4: "the discipline 'always quote
+// dynamic kwarg values' is folklore — nothing in lint, compile output, or
+// docs warned me." This rule converts the folklore to lint discipline.
+//
+// Tier-2: emits a warning, not an error. The footgun is silent so the
+// warning is high-leverage, but we don't want to block compilation on
+// the false-positive cases (e.g. authors who DO know the kwarg value is
+// safely single-token).
+//
+// Origin policy — fires when VAR's binding origin is "suspect":
+//   - `# Vars: X=default` with whitespace in default
+//   - `$set X = "literal"` with whitespace in the literal
+//   - `$ ... -> X` (tool output, always potentially whitespace-containing)
+//   - `~ ... -> X` (local-model output, always potentially whitespace)
+//   - `> ... -> X` (retrieval, may bind multi-word query result echoes)
+//   - foreach iterator (element shape unknown)
+//
+// Quiet when:
+//   - Value is quoted (`key="$(VAR)"`)
+//   - VAR's `# Vars:` default has no whitespace
+//   - VAR's `$set X = "literal"` has no whitespace
+//   - VAR is unresolved (no binding origin) — let other lints handle that
+type BindingOrigin =
+  | { kind: "vars"; rawDefault?: string }
+  | { kind: "set-literal"; value: string }
+  | { kind: "op-output"; op: "$" | "~" | ">" | "@" }
+  | { kind: "foreach-iter" }
+  | { kind: "set-ref" }; // $set X = $(REF) — propagate, treated as suspect
+
+function buildBindingOrigins(parsed: ParsedSkill): Map<string, BindingOrigin> {
+  const origins = new Map<string, BindingOrigin>();
+  for (const v of parsed.vars) {
+    origins.set(v.name, { kind: "vars", ...(v.default !== undefined ? { rawDefault: v.default } : {}) });
+  }
+  for (const [, target] of parsed.targets) {
+    walkOps(target.ops, (op) => {
+      if (op.kind === "$set" && op.setName !== undefined && op.setValue !== undefined) {
+        // v0.5.0 item 3: $set RHS interpolates $(REF) at bind time. If the
+        // RHS is a static literal (no $(REF)), record its value for the
+        // whitespace check. If it contains $(REF), treat as suspect.
+        if (/\$\(/.test(op.setValue)) {
+          origins.set(op.setName, { kind: "set-ref" });
+        } else {
+          origins.set(op.setName, { kind: "set-literal", value: op.setValue });
+        }
+      }
+      if (op.outputVar !== undefined) {
+        if (op.kind === "$") origins.set(op.outputVar, { kind: "op-output", op: "$" });
+        else if (op.kind === "~") origins.set(op.outputVar, { kind: "op-output", op: "~" });
+        else if (op.kind === ">") origins.set(op.outputVar, { kind: "op-output", op: ">" });
+        else if (op.kind === "@") origins.set(op.outputVar, { kind: "op-output", op: "@" });
+      }
+      if (op.kind === "foreach" && op.foreachIter !== undefined) {
+        origins.set(op.foreachIter, { kind: "foreach-iter" });
+      }
+    });
+  }
+  return origins;
+}
+
+function isOriginSuspect(origin: BindingOrigin | undefined): boolean {
+  if (origin === undefined) return false; // unresolved — don't fire
+  switch (origin.kind) {
+    case "vars":
+      if (origin.rawDefault === undefined) return false;
+      return /\s/.test(origin.rawDefault);
+    case "set-literal":
+      return /\s/.test(origin.value);
+    case "set-ref":
+      return true; // RHS contains a ref — value shape unknown, treat as suspect
+    case "op-output":
+      return true; // tool/model/retrieval outputs are always suspect
+    case "foreach-iter":
+      return true; // element type unknown statically
+  }
+}
+
+const UNQUOTED_SUBSTITUTION_IN_KWARG_VALUE: LintRule = {
+  id: "unquoted-substitution-in-kwarg-value",
+  severity: "warning",
+  description: "A `$ tool key=$(VAR)` op kwarg has an unquoted `$(VAR)` substitution where VAR may resolve to a value containing whitespace. Runtime renders into `key=value with spaces` then re-tokenizes on whitespace — only the first chunk binds to `key`. Silent arg truncation.",
+  remediation: "Wrap the substitution in quotes: `key=\"$(VAR)\"`. The MCP arg tokenizer respects quoted regions, preventing the re-tokenization split.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    const origins = buildBindingOrigins(ctx.parsed);
+    const reported = new Set<string>();
+    for (const [targetName, target] of ctx.parsed.targets) {
+      walkOps(target.ops, (op) => {
+        if (op.kind !== "$") return;
+        // Scan op.body for `key=$(VAR)` patterns where the $( is NOT
+        // immediately preceded by a quote character. Tokenize once, then
+        // inspect each token.
+        const tokens = tokenizeKeywordArgs(op.body);
+        for (const tok of tokens) {
+          const eq = tok.indexOf("=");
+          if (eq === -1) continue;
+          const key = tok.slice(0, eq);
+          const value = tok.slice(eq + 1);
+          // Unquoted $(VAR) pattern: starts with $( (not " or '). May
+          // include filter chain and trailing characters.
+          if (!value.startsWith("$(")) continue;
+          // Extract the var name (everything up to | or ) ).
+          const m = /^\$\(([^|)\s]+)/.exec(value);
+          if (m === null) continue;
+          const varName = m[1]!;
+          // Dotted access: trim to the root.
+          const rootVar = varName.split(".")[0]!;
+          const origin = origins.get(rootVar);
+          if (!isOriginSuspect(origin)) continue;
+          const key2 = `${targetName}:${key}:${varName}`;
+          if (reported.has(key2)) continue;
+          reported.add(key2);
           findings.push({
-            rule: "append-to-non-list",
-            severity: "error",
-            message: `\`$append ${op.setName} ...\` in target '${targetName}': ${op.setName} is initialized to a non-list value (\`${init.slice(0, 40)}${init.length > 40 ? "..." : ""}\`). $append v0.3.0 requires a list-typed target.`,
+            rule: "unquoted-substitution-in-kwarg-value",
+            severity: "warning",
+            message: `\`$ ... ${key}=$(${varName})\` in target '${targetName}': unquoted substitution. ${describeOriginRisk(origin!)} Wrap as \`${key}="$(${varName})"\` to prevent silent arg truncation if the value contains whitespace.`,
             block: targetName,
-            extras: { var_name: op.setName, init_value: init },
+            extras: { kwarg: key, var_name: varName, origin: origin!.kind },
           });
         }
       });
@@ -1507,6 +1699,21 @@ const APPEND_TO_NON_LIST: LintRule = {
     return findings;
   },
 };
+
+function describeOriginRisk(origin: BindingOrigin): string {
+  switch (origin.kind) {
+    case "vars":
+      return `\`# Vars:\` default for this variable contains whitespace.`;
+    case "set-literal":
+      return `\`$set\` literal value contains whitespace.`;
+    case "set-ref":
+      return `\`$set\` RHS contains a \`$(REF)\` substitution — resolved value shape is unknown statically.`;
+    case "op-output":
+      return `Variable is bound from a \`${origin.op}\` op output — tool/model results may contain whitespace.`;
+    case "foreach-iter":
+      return `Variable is a \`foreach\` iterator — element type unknown statically.`;
+  }
+}
 
 const RULES: LintRule[] = [
   // Tier-1 (error)
@@ -1528,6 +1735,7 @@ const RULES: LintRule[] = [
   UNKNOWN_RETRIEVAL_ARG,
   UNKNOWN_CONNECTOR,
   UNKNOWN_CONNECTOR_CLASS,
+  UNWIRED_PRIMARY_CONNECTOR,
   DISALLOWED_TOOL,
   UNINITIALIZED_APPEND,
   FOREACH_LOCAL_ACCUMULATOR_TARGET,
@@ -1544,6 +1752,7 @@ const RULES: LintRule[] = [
   UNSAFE_SHELL_OP,
   UNSAFE_SHELL_DISABLED,
   UNCONFIRMED_MUTATION,
+  UNQUOTED_SUBSTITUTION_IN_KWARG_VALUE,
   MODEL_CONTENTION,
   DRAFT_WITH_TRIGGER,
   REFERENCE_TO_DISABLED_SKILL,
@@ -1602,22 +1811,42 @@ function collectAmpRefsFromOps(ops: SkillOp[]): CompositionRef[] {
 
 function extractVarRefs(op: SkillOp): string[] {
   const text = collectOpText(op);
-  const re = /\$\(([^|)\s]+)(?:\s*\|\s*[A-Za-z_]\w*)?\)/g;
+  // v0.5.0 item 4: refs whose filter chain contains `|fallback:"..."` are
+  // suppressed from undeclared-var. The author has explicitly opted into
+  // "may not resolve at runtime" semantics — making this a lint error
+  // would defeat the purpose.
+  const re = /\$\(([^|)\s]+)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)/g;
   const refs: string[] = [];
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) refs.push(m[1]!);
+  while ((m = re.exec(text)) !== null) {
+    const chain = m[2] ?? "";
+    if (/\|\s*fallback(?:\s*:|[\s|)])/.test(chain)) continue;
+    refs.push(m[1]!);
+  }
   return refs;
 }
 
 function extractVarRefsWithFilter(op: SkillOp): Array<{ name: string; filter?: string }> {
   const text = collectOpText(op);
-  const re = /\$\(([^|)\s]+)(?:\s*\|\s*([A-Za-z_]\w*))?\)/g;
+  // v0.5.0 item 4: accept `:"arg"` after filter name so `|default:"X"` parses.
+  // Multiple filters in a chain produce one entry per filter (preserves
+  // the per-filter unknown-filter check that pre-existed for single-filter
+  // refs).
+  const re = /\$\(([^|)\s]+)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)/g;
   const out: Array<{ name: string; filter?: string }> = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    const entry: { name: string; filter?: string } = { name: m[1]! };
-    if (m[2] !== undefined) entry.filter = m[2];
-    out.push(entry);
+    const name = m[1]!;
+    const chain = m[2]!;
+    if (!chain) {
+      out.push({ name });
+      continue;
+    }
+    const filterRe = /\|\s*([A-Za-z_]\w*)(?:\s*:\s*"[^"]*")?/g;
+    let fm: RegExpExecArray | null;
+    while ((fm = filterRe.exec(chain)) !== null) {
+      out.push({ name, filter: fm[1]! });
+    }
   }
   return out;
 }
