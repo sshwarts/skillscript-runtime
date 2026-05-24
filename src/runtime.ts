@@ -1263,13 +1263,36 @@ export function stringifyValue(v: unknown): string {
   return JSON.stringify(v);
 }
 
-const TRUTHY = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*$/;
-const EQ = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*(==|!=)\s*"([^"]*)"\s*$/;
-/** Ref-vs-ref equality (per language reference §5 + 2026-05-21 grammar extension). Filter + dotted-field-access permitted on either side. */
-const EQ_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*(==|!=)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*$/;
-const CMP = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*(<=|>=|<|>)\s*"([^"]*)"\s*$/;
-const CMP_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*(<=|>=|<|>)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s*$/;
-const IN = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s*\|\s*([A-Za-z_]\w*))?\)\s+(not\s+)?in\s+\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\)\s*$/;
+// v0.3.4 — filter chain support in conditions. Each `(REF)(|filter)?`
+// becomes `(REF)(|filter)*` matching substituteRuntime's chain pattern
+// (line ~1158). The captured chain string is delegated to
+// `applyFilterChain` below for split + per-filter application.
+const TRUTHY = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*$/;
+const EQ = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*(==|!=)\s*"([^"]*)"\s*$/;
+/** Ref-vs-ref equality (per language reference §5 + 2026-05-21 grammar extension). Filter chain + dotted-field-access permitted on either side. */
+const EQ_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*(==|!=)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*$/;
+const CMP = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*(<=|>=|<|>)\s*"([^"]*)"\s*$/;
+const CMP_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*(<=|>=|<|>)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s*$/;
+const IN = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*)*)\)\s+(not\s+)?in\s+\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\)\s*$/;
+
+/**
+ * Apply a chain of pipe filters to a value. The chain string is the
+ * raw `|f1|f2|...` segment captured by condition regexes; this helper
+ * trims, splits, drops empties, and runs each filter in order.
+ * Empty chain → returns the input untouched.
+ *
+ * Mirrors `substituteRuntime`'s chain-apply loop so the two surfaces
+ * (substitution + conditions) carry identical filter semantics — closes
+ * the recurring "filter chain works in substitution but not conditions"
+ * gap named in dev-log §14.
+ */
+function applyFilterChain(value: string, chain: string | undefined): string {
+  if (chain === undefined || chain === "") return value;
+  const filters = chain.split("|").map((f) => f.trim()).filter((f) => f !== "");
+  let s = value;
+  for (const filter of filters) s = applyFilter(s, filter);
+  return s;
+}
 
 /**
  * v0.3.2 — find the index of a top-level token (`and`, `or`) at paren-depth 0
@@ -1368,56 +1391,56 @@ function evalSimpleCondition(cond: string, vars: Map<string, unknown>): boolean 
   const t = TRUTHY.exec(cond);
   if (t) {
     const val = resolveRef(t[1]!, vars);
-    const filter = t[2];
-    const filtered = filter && val !== undefined ? applyFilter(stringifyValue(val), filter) : val;
+    const chain = t[2];
+    const filtered = chain && val !== undefined ? applyFilterChain(stringifyValue(val), chain) : val;
     return isTruthy(filtered);
   }
   const e = EQ.exec(cond);
   if (e) {
-    const [, ref, filter, op, lit] = e;
+    const [, ref, chain, op, lit] = e;
     const val = resolveRef(ref!, vars);
     const valStr = val === undefined ? "" : stringifyValue(val);
-    // Filter applies BEFORE comparison so `if $(COLOR|trim) == "yellow"` matches
+    // Filter chain applies BEFORE comparison so `if $(COLOR|trim) == "yellow"` matches
     // values that local models return with trailing whitespace.
-    const final = filter !== undefined ? applyFilter(valStr, filter) : valStr;
+    const final = applyFilterChain(valStr, chain);
     return op === "==" ? final === lit : final !== lit;
   }
   const eRef = EQ_REF.exec(cond);
   if (eRef) {
-    const [, lhsRef, lhsFilter, op, rhsRef, rhsFilter] = eRef;
+    const [, lhsRef, lhsChain, op, rhsRef, rhsChain] = eRef;
     // Both sides resolve via the same path as `EQ` LHS — undefined → ""
     // (matches the existing tolerance for unresolved refs in conditions).
     const lhsVal = resolveRef(lhsRef!, vars);
     const rhsVal = resolveRef(rhsRef!, vars);
     const lhsStr = lhsVal === undefined ? "" : stringifyValue(lhsVal);
     const rhsStr = rhsVal === undefined ? "" : stringifyValue(rhsVal);
-    const lhsFinal = lhsFilter !== undefined ? applyFilter(lhsStr, lhsFilter) : lhsStr;
-    const rhsFinal = rhsFilter !== undefined ? applyFilter(rhsStr, rhsFilter) : rhsStr;
+    const lhsFinal = applyFilterChain(lhsStr, lhsChain);
+    const rhsFinal = applyFilterChain(rhsStr, rhsChain);
     return op === "==" ? lhsFinal === rhsFinal : lhsFinal !== rhsFinal;
   }
   const cmp = CMP.exec(cond);
   if (cmp) {
-    const [, ref, filter, op, lit] = cmp;
+    const [, ref, chain, op, lit] = cmp;
     const val = resolveRef(ref!, vars);
     const valStr = val === undefined ? "" : stringifyValue(val);
-    const final = filter !== undefined ? applyFilter(valStr, filter) : valStr;
-    return compareNumeric(final, op as CmpOp, lit!, `$(${ref}${filter !== undefined ? `|${filter}` : ""})`);
+    const final = applyFilterChain(valStr, chain);
+    return compareNumeric(final, op as CmpOp, lit!, `$(${ref}${chain ? chain : ""})`);
   }
   const cmpRef = CMP_REF.exec(cond);
   if (cmpRef) {
-    const [, lhsRef, lhsFilter, op, rhsRef, rhsFilter] = cmpRef;
+    const [, lhsRef, lhsChain, op, rhsRef, rhsChain] = cmpRef;
     const lhsVal = resolveRef(lhsRef!, vars);
     const rhsVal = resolveRef(rhsRef!, vars);
     const lhsStr = lhsVal === undefined ? "" : stringifyValue(lhsVal);
     const rhsStr = rhsVal === undefined ? "" : stringifyValue(rhsVal);
-    const lhsFinal = lhsFilter !== undefined ? applyFilter(lhsStr, lhsFilter) : lhsStr;
-    const rhsFinal = rhsFilter !== undefined ? applyFilter(rhsStr, rhsFilter) : rhsStr;
+    const lhsFinal = applyFilterChain(lhsStr, lhsChain);
+    const rhsFinal = applyFilterChain(rhsStr, rhsChain);
     const refDesc = `$(${lhsRef}) ${op} $(${rhsRef})`;
     return compareNumeric(lhsFinal, op as CmpOp, rhsFinal, refDesc);
   }
   const i = IN.exec(cond);
   if (i) {
-    const [, lhsRef, lhsFilter, notKey, rhsRef] = i;
+    const [, lhsRef, lhsChain, notKey, rhsRef] = i;
     let rhsVal = resolveRef(rhsRef!, vars);
     if (rhsVal === undefined) {
       throw new Error(`Runtime error in \`in\` condition: RHS \`$(${rhsRef})\` is unresolved`);
@@ -1456,9 +1479,7 @@ function evalSimpleCondition(cond: string, vars: Map<string, unknown>): boolean 
     }
     const lhsVal = resolveRef(lhsRef!, vars);
     if (lhsVal === undefined) return false;
-    const lhsStr = lhsFilter !== undefined
-      ? applyFilter(stringifyValue(lhsVal), lhsFilter)
-      : stringifyValue(lhsVal);
+    const lhsStr = applyFilterChain(stringifyValue(lhsVal), lhsChain);
     const found = rhsVal.some((item) => stringifyValue(item) === lhsStr);
     return notKey !== undefined ? !found : found;
   }

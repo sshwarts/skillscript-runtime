@@ -40,7 +40,7 @@ src/
 ```
 
 Narrow-core LOC history (nudges driven by language extensions):
-- 5000 (T7 baseline) → 5100 (v0.2.10 parser robustness) → 5200 (v0.2.12 lint coverage) → 5400 (v0.3.0 `$append` accumulator) → 5500 (v0.3.1 forward-reference deferred resolution) → 5650 (v0.3.2 and/or/not + filter chain + `|json_parse`) → 5700 (v0.3.3 `$ json_parse` op + lint advisory + Bug D parser-recovery; `|json_parse` filter removed)
+- 5000 (T7 baseline) → 5100 (v0.2.10 parser robustness) → 5200 (v0.2.12 lint coverage) → 5400 (v0.3.0 `$append` accumulator) → 5500 (v0.3.1 forward-reference deferred resolution) → 5650 (v0.3.2 and/or/not + filter chain + `|json_parse`) → 5700 (v0.3.3 `$ json_parse` op + lint advisory + Bug D parser-recovery; `|json_parse` filter removed) → 5750 (v0.3.4 conditional multi-filter chain + parse-error dedup + unified sink-scope recovery)
 
 ## What each narrow-core file owns
 

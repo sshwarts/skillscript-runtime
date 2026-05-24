@@ -14,7 +14,7 @@ default: t
 `;
 
 describe("lint — baseline rules", async () => {
-  it("reports parse-error for malformed grammar", async () => {
+  it("reports invalid-conditional-syntax for malformed condition (no parse-error echo since v0.3.4)", async () => {
     const src = `t:
     if $(A) && $(B):
         ! both
@@ -23,7 +23,10 @@ default: t
 `;
     const r = await lint(src);
     expect(r.errorCount).toBeGreaterThan(0);
-    expect(r.findings.some((f) => f.rule === "parse-error")).toBe(true);
+    // v0.3.4: invalid-conditional-syntax owns the diagnostic; parse-error
+    // no longer echoes the same message.
+    expect(r.findings.some((f) => f.rule === "invalid-conditional-syntax")).toBe(true);
+    expect(r.findings.some((f) => f.rule === "parse-error")).toBe(false);
   });
 
   it("reports orphan-target as warning", async () => {

@@ -52,6 +52,14 @@
 //            |json_parse filter case. Closes the v0.3.2 spec gap from
 //            af14b7d8 (filter+field can't propagate parsed structure)
 //            with an op-based alternative — same end-user outcome.
+//   v0.3.4:  nudged narrow ceiling 5700 → 5750 for conditional multi-
+//            filter chain + parse-error dedup + unified sink-scope
+//            parser recovery. Net ~60 LOC: ~30 for the 12-regex chain
+//            sweep + applyFilterChain helper in runtime.ts, ~5 for the
+//            PARSE_ERROR filter (item 2), ~25 for sink-scope consistency
+//            on the single-= rejection path (Bug D extension caught by
+//            v0.3.4 item-2 test). Closes the recurring "conditional
+//            grammar weak link" pattern named in dev-log §14.
 //
 // Run: `pnpm run loc-check`. CI fails the build if the narrow ceiling is
 // breached. The broad count is reported but does NOT fail the build.
@@ -74,7 +82,7 @@ const CORE_PATHS = [
   "connectors/",
 ];
 
-const NARROW_MAX_LOC = 5700;
+const NARROW_MAX_LOC = 5750;
 const NARROW_MAX_FILES = 20;
 const BROAD_INFO_LOC = 9500;
 const BROAD_INFO_FILES = 28;

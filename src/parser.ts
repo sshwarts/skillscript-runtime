@@ -220,29 +220,33 @@ const RETRIEVAL_OP_REGEX = /^>\s+(.+?)\s+->\s+([A-Za-z_]\w*)(?:\s+\(fallback\s*:
 const LOCAL_MODEL_OP_REGEX = /^~\s+(.+?)\s+->\s+([A-Za-z_]\w*)(?:\s+\(fallback\s*:\s*(.+?)\))?\s*$/s;
 const MCP_CONNECTOR_PREFIX = /^([a-z_][a-z0-9_-]*)\.(?=[A-Za-z_])([\s\S]*)$/;
 
-// Narrow v1 condition grammar. AND/OR, numeric comparisons, defined-checks
-// are deliberately excluded — lint surfaces complexity-creep at authoring time.
-const COND_TRUTHY = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s*$/;
-/** `$(REF) ==/!= "literal"` — ref-vs-string equality. */
-const COND_EQ = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s*(?:==|!=)\s*"[^"]*"\s*$/;
+// Narrow v1 condition grammar.
+// v0.3.4: filter chain support — each `(REF)(|filter)?` became `(REF)(|filter)*`
+// to match `substituteRuntime`'s chain capture (runtime.ts:1158). Closes the
+// recurring "filter chain works in substitution but not conditions" gap named
+// in dev-log §14. Runtime regex set mirrors this; both update together.
+const COND_TRUTHY = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*$/;
+/** `$(REF) ==/!= "literal"` — ref-vs-string equality. Filter chain on the ref side. */
+const COND_EQ = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*(?:==|!=)\s*"[^"]*"\s*$/;
 /**
  * `$(REF) ==/!= $(REF)` — ref-vs-ref equality. Extended 2026-05-21 per
  * language reference §5; surfaced by the cold-agent skills battery (a
  * sub-agent reached for `$(FP|trim) == $(LAST_FP|trim)` unprompted as
- * the natural change-detection pattern). Filters + dotted field access
- * permitted on either side.
+ * the natural change-detection pattern). Filter chain + dotted field
+ * access permitted on either side.
  */
-const COND_EQ_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s*(?:==|!=)\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s*$/;
+const COND_EQ_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*(?:==|!=)\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*$/;
 /**
  * `$(REF) </>/<=/>= "literal"` and `$(REF) </>/<=/>= $(REF)` — numeric
  * comparison. v0.2.5 addition per the orchestration carve-out: comparison
  * is orchestration; arithmetic + aggregates stay in tools. Both sides
- * coerce to number at runtime; non-numeric → TypeMismatchError. Filters +
- * dotted field access permitted on either side, matching EQ/EQ_REF shape.
+ * coerce to number at runtime; non-numeric → TypeMismatchError. Filter
+ * chain + dotted field access permitted on either side, matching
+ * EQ/EQ_REF shape.
  */
-const COND_CMP = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s*(?:<=|>=|<|>)\s*"[^"]*"\s*$/;
-const COND_CMP_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s*(?:<=|>=|<|>)\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s*$/;
-const COND_IN = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)?\)\s+(?:not\s+)?in\s+\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\)\s*$/;
+const COND_CMP = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*(?:<=|>=|<|>)\s*"[^"]*"\s*$/;
+const COND_CMP_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*(?:<=|>=|<|>)\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s*$/;
+const COND_IN = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*)*\)\s+(?:not\s+)?in\s+\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\)\s*$/;
 
 function validateCondition(cond: string): boolean {
   return validateCompoundCondition(cond.trim());
@@ -978,6 +982,17 @@ export function parse(source: string): ParsedSkill {
         const eqDiag = detectSingleEqualsInCondition(cond);
         if (eqDiag !== null) {
           result.parseErrors.push(`\`elif\` in target '${currentTarget.name}': ${eqDiag}`);
+          // v0.3.4: sink-scope for parser-recovery consistency with
+          // the `if` single-= path and the validateCondition rejection
+          // path. Body lines drop into throwaway bucket; no cascade.
+          const sinkBranch = { cond, body: [] };
+          scopeStack.push({
+            kind: "elif",
+            target: currentTarget,
+            opsBucket: sinkBranch.body,
+            depth: continuationDepth,
+            ifOp,
+          });
           continue;
         }
         if (!validateCondition(cond)) {
@@ -1051,6 +1066,19 @@ export function parse(source: string): ParsedSkill {
       const eqDiag = detectSingleEqualsInCondition(cond);
       if (eqDiag !== null) {
         result.parseErrors.push(`\`if\` in target '${currentTarget.name}': ${eqDiag}`);
+        // v0.3.4: same sink-scope treatment as the validateCondition
+        // rejection path below — kills the indent cascade after a
+        // rejected single-= condition. Parser-recovery should be
+        // consistent across all condition-rejection paths.
+        const sinkBranch = { cond, body: [] };
+        const sinkIfOp: SkillOp = { kind: "if", body: stripped0, ifBranches: [sinkBranch] };
+        scopeStack.push({
+          kind: "if",
+          target: currentTarget,
+          opsBucket: sinkBranch.body,
+          depth: lineIndent + INDENT_STEP,
+          ifOp: sinkIfOp,
+        });
         continue;
       }
       if (!validateCondition(cond)) {

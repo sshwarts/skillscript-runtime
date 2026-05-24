@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.3.4 — 2026-05-24
+
+**Conditional multi-filter chain + parse-error dedup + unified sink-scope
+parser recovery.** Closes the recurring "filter chain works in
+substitution but lags in conditional grammar" pattern named in dev-log
+§14 (`a838ca2d`) — third occurrence in the v0.3.x arc. Spec drafted at
+`7bafcc8c` (Perry), approved at `221982fc`.
+
+### Added
+
+- **Filter chain support in conditions.** Pre-v0.3.4 the six condition
+  regexes (TRUTHY / EQ / EQ_REF / CMP / CMP_REF / IN) captured at most
+  one filter — `if $(X|json_parse|length) > "0":` failed grammar
+  despite `substituteRuntime` having supported chains since v0.3.2.
+  Now both layers carry identical chain semantics. New
+  `applyFilterChain(value, chain)` helper in `runtime.ts` (single-
+  sourced split + per-filter loop, mirrors `substituteRuntime`'s
+  chain-apply at line 1158).
+
+  ```
+  if $(X|trim|length) > "0":             ← compiles + evaluates
+  if $(A|trim) == $(B|trim):             ← chain on both sides
+  if $(A|trim|length) > "0" and          ← chain inside compound
+     $(B|trim|length) > "0":
+  ```
+
+  No change to compound dispatcher (and/or/not splitter operates above
+  the leaf-shape layer; chain only touches leaf matchers).
+
+### Fixed
+
+- **Duplicate parse-error / invalid-conditional-syntax echo (item 2).**
+  Pre-v0.3.4, when an `if` / `elif` condition was rejected, both the
+  generic `parse-error` rule and the specific `invalid-conditional-
+  syntax` rule fired with identical message bodies — cold authors saw
+  the long supported-shapes text twice in the diagnostics. Same shape
+  for the single-`=` case. `PARSE_ERROR` rule now skips messages owned
+  by `invalid-conditional-syntax` / `single-equals`; still fires as
+  catch-all for header issues, malformed ops, indent errors, etc.
+
+- **Unified parser-recovery on all condition-rejection paths.** v0.3.3
+  added sink-scope frames after rejected `if` / `elif` conditions
+  (Bug D) so body lines wouldn't cascade into phantom "Mid-block indent
+  change" errors. The single-`=` rejection path was missed in that
+  pass — same cascade fired for those authors. v0.3.4 extends the
+  sink-scope treatment to the single-`=` paths in both `if` and
+  `elif`, making parser-recovery consistent across all
+  condition-rejection paths.
+
+### Implementation notes
+
+- **Narrow-core LOC ceiling 5700 → 5750.** Net ~60 LOC: ~30 for the
+  12-regex chain sweep (6 in `runtime.ts` + 6 in `parser.ts`) +
+  `applyFilterChain` helper, ~5 for the `PARSE_ERROR` filter (item 2),
+  ~25 for sink-scope consistency on the single-`=` rejection paths.
+  History entry in `scripts/loc-ceiling.mjs`.
+
+- **Tests:** 16 new in `tests/v0.3.4.test.ts` covering parser
+  acceptance of chains in all five condition shapes, runtime
+  evaluation of chains via `evalCondition`, compound-with-chains
+  cross-feature interaction, parse-error dedup for both conditional-
+  syntax and single-equals, and regression coverage for non-
+  conditional parse-error paths. Plus 1 update in `tests/lint.test.ts`
+  reflecting the dedup. 862/865 passing (3 long-skip browser dogfood).
+
 ## 0.3.3 — 2026-05-23
 
 **`$ json_parse` op + `|json_parse` filter removal + cleaner conditional

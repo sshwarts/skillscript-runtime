@@ -192,13 +192,20 @@ export function formatLintResult(result: LintResult): string {
 const PARSE_ERROR: LintRule = {
   id: "parse-error",
   severity: "error",
-  description: "Any syntax error collected by the parser.",
+  description: "Any syntax error collected by the parser (catch-all for shapes not owned by a more specific tier-1 rule).",
   remediation: "Fix the grammar error per the message. Check op syntax, header form, indent levels.",
-  check: (ctx) => ctx.parsed.parseErrors.map((msg) => ({
-    rule: "parse-error",
-    severity: "error",
-    message: msg,
-  })),
+  check: (ctx) => ctx.parsed.parseErrors
+    // v0.3.4: skip messages a more specific tier-1 rule already owns —
+    // pre-fix both this rule and the specific one fired identical bodies,
+    // doubling noise. invalid-conditional-syntax / single-equals each
+    // surface their own findings; this rule stays catch-all for the rest
+    // (header issues, malformed ops, indent errors, etc.).
+    .filter((msg) => !/Unsupported condition|`=` is not valid in a condition/.test(msg))
+    .map((msg) => ({
+      rule: "parse-error",
+      severity: "error",
+      message: msg,
+    })),
 };
 
 const NO_TARGETS: LintRule = {
