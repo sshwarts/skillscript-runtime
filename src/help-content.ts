@@ -658,7 +658,7 @@ Skillscript skills don't import packages — they invoke connectors. The runtime
 | \`McpConnector\` | MCP tool dispatch — all external tools | \`$ <connector_name> args\` |
 | \`AgentConnector\` | Deliver augment/template payloads | \`# Output: prompt-context:\` / \`template:\` |
 
-**v0.7.0 substrate framing.** Canonical syntax routes substrate-specific dispatch through MCP (\`$ llm\` / \`$ memory\` rather than \`~\` / \`>\`). Tradita and adopters wire whatever substrate-backing connector names read well at the call sites; \`LocalModel\` + \`MemoryStore\` contracts continue to back the legacy \`~\` / \`>\` ops during the grace period. v0.7.2 adds \`LocalModelMcpConnector\` + \`MemoryStoreMcpConnector\` bridges so the canonical \`$ llm\` / \`$ memory\` paths work in default deployments.
+**v0.7.0 substrate framing.** Canonical syntax routes substrate-specific dispatch through MCP (\`$ llm\` / \`$ memory\` rather than \`~\` / \`>\`). Adopters wire whatever substrate-backing connector names read well at the call sites; \`LocalModel\` + \`MemoryStore\` contracts continue to back the legacy \`~\` / \`>\` ops during the grace period. v0.7.2 adds \`LocalModelMcpConnector\` + \`MemoryStoreMcpConnector\` bridges so the canonical \`$ llm\` / \`$ memory\` paths work in default deployments.
 
 ## Discovery
 
@@ -728,6 +728,7 @@ Three tiers per ERD §3:
 - \`plugin-collision\` — placeholder for v1.x plugin-loader name conflicts
 - \`deferred-skill-reference\` — composition ref (\`&\` / \`$ execute_skill\` / \`# Templates:\`) targets a skill not currently in the SkillStore; resolution deferred to execute time (v0.3.1+). Confirms the forward-reference path is engaged; clears once the target is stored.
 - \`unparsed-json-field-access\` — op text contains \`$(VAR|json_parse).field\`; the \`|json_parse\` filter was removed in v0.3.3. Replace with \`$ json_parse $(VAR) -> P\` then \`$(P.field)\`.
+- \`object-iteration-advisory\` (v0.7.2) — \`foreach IT in \${VAR}\` iterates a bound variable whose origin is a \`$\` MCP tool output, without a \`.field\` accessor. MCP tools commonly wrap arrays in an envelope object (\`.items\`, \`.results\`, \`.issuesPage\`, \`.data\`, \`.records\`). Check the tool's response shape; rewrite as \`foreach IT in \${VAR.items}\` (or the correct field). Placeholder for v0.8 tool-schema introspection that catches this precisely.
 - \`disallowed-tool\` (tier-1, v0.4.1) — \`$ name.tool\` references a tool not in the connector's \`allowed_tools\` allowlist. Either rewrite the skill to use a permitted tool or update \`connectors.json\` to grant access. Runtime defense-in-depth refuses disallowed dispatch even if lint is bypassed.
 
 \`compile_skill({source})\` runs the full lint preflight and reports

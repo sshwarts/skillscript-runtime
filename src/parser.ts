@@ -558,20 +558,50 @@ function splitTriggersLine(value: string): string[] {
 }
 
 /**
- * `$set` and `>` / `~` arg-value quote-strip rules:
- *   - Matching outer `"..."` or `'...'`: stripped, inner whitespace preserved.
+ * `$set` / `>` / `~` / kwarg arg-value quote-strip rules:
+ *   - Matching outer `"..."`: stripped + interpret \n/\t/\\/\" escapes (v0.7.2).
+ *   - Matching outer `'...'`: stripped, no escape interpretation (literal).
  *   - Mismatched / unquoted: verbatim, trailing whitespace trimmed.
+ *
+ * v0.7.2 — escape interpretation in double-quoted strings closes the R4
+ * cold-author footgun where `$set X = "line1\nline2"` stored literal
+ * `\n` bytes. Bash/Python/JS/Go all interpret these escapes; skillscript
+ * not interpreting was the surprise. Single-quoted strings reserved for
+ * v0.8+ explicit literal-pass-through semantics if a real use case
+ * surfaces.
  */
 export function processSetValue(raw: string): string {
   const trimmed = raw.replace(/\s+$/, "");
   if (trimmed.length >= 2) {
     const first = trimmed[0]!;
     const last = trimmed[trimmed.length - 1]!;
-    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+    if (first === '"' && last === '"') {
+      return interpretDoubleQuotedEscapes(trimmed.slice(1, -1));
+    }
+    if (first === "'" && last === "'") {
       return trimmed.slice(1, -1);
     }
   }
   return trimmed;
+}
+
+/**
+ * v0.7.2 — interpret common escape sequences in double-quoted string
+ * literals: `\n` → newline, `\t` → tab, `\\` → literal backslash,
+ * `\"` → literal quote. Other `\X` sequences pass through verbatim
+ * (no over-eager interpretation; future v0.8+ may add `\r` / `\0` /
+ * etc. if cold-author demand surfaces).
+ */
+function interpretDoubleQuotedEscapes(s: string): string {
+  return s.replace(/\\(["\\nt])/g, (match, ch: string) => {
+    switch (ch) {
+      case '"': return '"';
+      case "\\": return "\\";
+      case "n": return "\n";
+      case "t": return "\t";
+      default: return match;
+    }
+  });
 }
 
 /**

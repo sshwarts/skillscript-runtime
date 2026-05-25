@@ -91,10 +91,11 @@ describe("v0.5.0 item 2 — string-typed $append", () => {
     const src = `# Skill: t\n# Status: Approved\n# Vars: ITEMS=[apple, banana, cherry]\nrun:\n    $set REPORT = "Fruits:\\n"\n    foreach I in $(ITEMS):\n        $append REPORT "- $(I)\\n"\n    ! $(REPORT)\ndefault: run\n`;
     const result = await runSkill(src);
     expect(result.errors).toEqual([]);
-    // The accumulated string is rendered in a single emit. The \n becomes
-    // an actual newline in the emitted string; the emission contains it
-    // verbatim.
-    expect(result.emissions[0]).toMatch(/Fruits:\\n- apple\\n- banana\\n- cherry\\n/);
+    // v0.7.2 — escape interpretation in double-quoted strings means \n
+    // becomes an actual newline at parse time. The emitted string contains
+    // real line breaks. (Pre-v0.7.2 this stored literal "\n" bytes — the
+    // R4 minion 4 footgun. Now closed.)
+    expect(result.emissions[0]).toBe("Fruits:\n- apple\n- banana\n- cherry\n");
   });
 
   it("$append to list still pushes (regression)", async () => {
