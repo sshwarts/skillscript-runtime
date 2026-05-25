@@ -168,14 +168,14 @@ describe("v0.3.3 — compile_skill warnings/advisories surface (Bug C)", () => {
   });
 
   it("CompileResult.advisories is an array (empty for clean skills)", async () => {
-    const src = `# Skill: t\n# Status: Approved\nrun:\n    ! hello\ndefault: run\n`;
+    const src = `# Skill: t\n# Status: Approved\nrun:\n    emit(text="hello")\ndefault: run\n`;
     const result = await compile(src);
     expect(Array.isArray(result.advisories)).toBe(true);
     expect(result.advisories).toEqual([]);
   });
 
   it("CompileResult.warnings stays empty for clean skills", async () => {
-    const src = `# Skill: t\n# Status: Approved\nrun:\n    ! hello\ndefault: run\n`;
+    const src = `# Skill: t\n# Status: Approved\nrun:\n    emit(text="hello")\ndefault: run\n`;
     const result = await compile(src);
     expect(result.warnings).toEqual([]);
   });

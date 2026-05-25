@@ -1,19 +1,21 @@
 {
-  "_comment": "Optional connector registry overrides. The bundled defaults are wired automatically by skillfile run — entries here are additions and overrides. Per the v1 spec, multi-instance is first-class: register as many SkillStore / MemoryStore / LocalModel / McpConnector instances as you need.",
+  "_comment": "Per-host connector wiring. Copied to ~/.skillscript/connectors.json by `skillfile init`. Each top-level key is a connector instance name referenced via `$ name args` in skill source. Pick names that read well at your call sites (e.g. `llm`, `memory`, `youtrack`, `github`).",
 
-  "mcp_connectors": {
-    "_example_disabled": {
-      "comment": "Uncomment and configure to wire an MCP server. Bundled `CallbackMcpConnector` is for embedders. Real HTTP-bridge `McpHttpConnector` lands in a follow-up release.",
-      "kind": "callback",
-      "endpoint": "(configured in code)"
-    }
-  },
+  "_comment_substrate": "v0.7.0 substrate framing: language-level dispatch is via `$ <connector_name>`. Wire whatever substrate you want under whatever name reads well. Tradita's deployment is separate from this scaffold; ship your own wiring here.",
 
-  "memory_stores": {
-    "_example_disabled": {
-      "comment": "Register additional MemoryStore instances here if you need more than the bundled-default SQLite store at ~/.skillscript/memory.db.",
-      "kind": "sqlite-fts",
-      "db_path": "~/.skillscript/scratch.db"
+  "_comment_classes": "v0.4.0+ closed-set class registry. Available: `RemoteMcpConnector` (stdio-bridged remote MCP). Use `runtime_capabilities({include:['mcpConnectorClasses']})` to introspect the runtime's available class set. v0.7.2 plans to ship `LocalModelMcpConnector` + `MemoryStoreMcpConnector` bridges so `$ llm` / `$ memory` work canonically.",
+
+  "_comment_security": "This file is secret-bearing when filled with real credentials. The repo's `.gitignore` excludes `connectors.json` (the live copy) but tracks `connectors.json.example`. Prefer `${VAR}` substitution over in-file literals for deployments.",
+
+  "_example_disabled_remote_mcp": {
+    "comment": "Uncomment and adapt to wire any remote MCP server. The example shows the stdio-bridged shape used by `mcp-remote` and similar.",
+    "class": "RemoteMcpConnector",
+    "config": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://example.com/mcp", "--header", "Authorization:${AUTH_HEADER}"],
+      "env": {
+        "AUTH_HEADER": "Bearer ${YOUR_TOKEN_ENV_VAR}"
+      }
     }
   }
 }

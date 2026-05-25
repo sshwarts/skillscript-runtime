@@ -8,7 +8,7 @@ import { Registry } from "../src/connectors/registry.js";
 
 const TRIVIAL = `# Skill: t
 t:
-    ! hi
+    emit(text="hi")
 
 default: t
 `;
@@ -31,10 +31,10 @@ default: t
 
   it("reports orphan-target as warning", async () => {
     const src = `a:
-    ! a
+    emit(text="a")
 
 orphan:
-    ! never
+    emit(text="never")
 
 default: a
 `;

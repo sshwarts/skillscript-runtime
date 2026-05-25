@@ -23,6 +23,7 @@
 - [What you get](#what-you-get)
 - [The bet](#the-bet)
 - [Quickstart](#quickstart)
+  - [A canonical autonomous skill](#a-canonical-autonomous-skill)
 - [Connector model](#connector-model)
 - [CLI](#cli)
 - [MCP server surface](#mcp-server-surface)
@@ -90,7 +91,7 @@ Skillscript deliberately constrains expressiveness. It's not Turing complete. It
 - **Sandboxed grammar.** The language can only do what configured connectors permit.
 - **Declarative legibility.** Skills are DAGs of typed dispatches. A human reading a skill sees exactly which tools get called, which memory writes happen, which model prompts fire. The same source produces the same audit diagram every time.
 - **Connector-mediated capability.** Skills don't import packages, they invoke connectors, gated artifacts with curated tool surfaces. Python doesn't disappear from the system; it moves out of the agent's hands and into the connector implementations adopters write deliberately. The safety boundary moves to the connector edge.
-- **Static validation before admission.** A skill that fails the linter can't enter the library. Structural issues , missing dependencies, undeclared variables, mutation paths without confirmation gates are caught at authorship time, not at 3am.
+- **Static validation before admission.** A skill that fails the linter can't enter the library. Structural issues, missing dependencies, undeclared variables, mutation paths without confirmation gates are caught at authorship time, not at 3am.
 - **Asymmetric cost.** Routine work (classify, dispatch, transform) costs local-model tokens. The frontier model is reserved for the small fraction of work that actually needs frontier judgment.
 
 ## Why not just have the agent write a Skill?
@@ -116,13 +117,35 @@ Every skillscript skill is one of three shapes, determined by the relationship t
 | **Augmenting** | a frontier agent's reasoning context, immediately at session start or wake | Session-start briefings, alerts, prepared context |
 | **Template** | a frontier agent's execution loop, as a prompt the agent runs itself | Reusable recipes the agent fetches and follows |
 
-The kinds compose. A Headless monitor fires on cron, evaluates a condition, and routes into an Augmenting skill that wakes an agent with context, which itself references a Template skill for the agent to execute. See the [Language Reference](https://github.com/sshwarts/skillscript/blob/main/docs/language-reference.md) §1 for the full taxonomy.
+The kinds compose. A Headless monitor fires on cron, evaluates a condition, and routes into an Augmenting skill that wakes an agent with context, which itself references a Template skill for the agent to execute.
+
+The three kinds describe the skill's *role* (who consumes the output). Orthogonal to that is the skill's *delivery channel* — the actual op that ships the result. Three channels are first-class: `emit(text="...")` for embedded prompt-context, `$ memory_write content="..." addressed_to="<agent>"` for memory handoff, and `file_write(path="...", content="...")` for file handoff. A single skill can use any combination. See the [Language Reference](https://github.com/sshwarts/skillscript/blob/main/docs/language-reference.md) §1 for the full taxonomy.
 
 ### Waking agents
 
 Augmenting and Template skills don't just write somewhere; they deliver to a frontier agent through `AgentConnector`. The contract is substrate-neutral: a Headless monitor detects a condition, evaluates whether action is warranted, and either resolves silently or calls `AgentConnector.deliver(agent_id, payload)`. The implementation might write a memory the agent reads at next session, post to a chat thread the agent monitors, send a push notification, write to a tmux pane, or invoke a webhook. All the adopter's call.
 
-The runtime ships `NoOpAgentConnector` by default; production deployments wire their own.
+The runtime ships `NoOpAgentConnector` by default; production deployments wire their own. AgentConnector wiring is embedder-only in v0.7.0 — deployments instantiate a concrete impl in code at runtime startup and register it via the runtime's connector registry, rather than declaring it in `connectors.json`. Common wirings look like:
+
+```typescript
+// At runtime startup
+import { Runtime, AgentConnector } from "skillscript-runtime";
+
+class TmuxAgentConnector implements AgentConnector {
+  async deliver(agent_id, payload) {
+    // tmux send-keys to the pane for agent_id with payload.content
+  }
+  async wake(agent_id, opts) { /* ... */ }
+  async list_agents() { /* ... */ }
+}
+
+const runtime = new Runtime({
+  agentConnector: new TmuxAgentConnector(),
+  // ...
+});
+```
+
+Adopter impls can write to memory, post to a chat thread, send a webhook, write to a tmux pane, or anything else that wakes the receiving agent.
 
 This is what makes *"Headless monitor → wake agent with context"* a real composition primitive, not just a pattern adopters bolt on. Skills don't know what substrate they're waking into; the substrate doesn't know what skill triggered it. The contract handles the seam.
 
@@ -216,7 +239,7 @@ EOF
 SKILLSCRIPT_HOME=./skills skillfile dashboard --port 7878
 
 # In another terminal, run the skill
-skillfile run hello
+skillfile execute hello
 
 # Open the dashboard
 open http://localhost:7878
@@ -230,6 +253,35 @@ docker run -p 7878:7878 -v $(pwd)/skills:/skills \
   ghcr.io/sshwarts/skillscript-runtime:latest
 ```
 
+### A canonical autonomous skill
+
+The hello example is a single static target. A more representative shape is a cron-fired skill that pulls data, processes it, and delivers via file. The example below uses only runtime-intrinsic ops (`shell`, `file_write`, `emit`) — no adopter-wired connectors required, so it runs against a fresh install:
+
+```
+# Skill: daily-disk-check
+# Status: Approved
+# Description: Cron-fired daily disk usage snapshot to /var/log/skillscript/disk.txt.
+# Triggers: cron:"0 6 * * *"
+# Autonomous: true
+
+snapshot:
+    shell(command="df -h --output=source,pcent,target") -> USAGE
+    file_write(path="/var/log/skillscript/disk-${EVENT.fired_at_unix}.txt",
+               content="${USAGE}",
+               approved="cron-fired daily snapshot")
+    emit(text="Snapshot written for ${NOW}")
+
+default: snapshot
+```
+
+Three things to notice:
+
+1. **`# Triggers: cron:"..."`** — the runtime registers the cron schedule at load time; no external scheduler.
+2. **`# Autonomous: true`** — the skill-author's declaration that mutation ops (here `file_write`) are authorized to fire without per-call confirmation. Without this header, mutation ops require the inline `approved="<reason>"` kwarg shown above on each call site. Pick one; both work.
+3. **`${EVENT.fired_at_unix}` + `${NOW}`** — ambient refs the runtime substitutes per-fire. `EVENT.*` covers the trigger payload; `NOW` is the ISO timestamp at op dispatch. See [Language Reference §3](docs/language-reference.md) for the full ambient list.
+
+Swap in `$ ticketing_search`, `$ llm`, `$ memory_write` once you've wired connectors, and the same skill shape becomes a real triage pipeline.
+
 ## Connector model
 
 Skills don't know what they're talking to. Five contracts decouple language from substrate:
@@ -237,10 +289,12 @@ Skills don't know what they're talking to. Five contracts decouple language from
 | Contract | Purpose | Routes |
 |---|---|---|
 | `SkillStore` | Skill source persistence | `.skill.md` files (filesystem default) |
-| `LocalModel` | Local LLM dispatch — Ollama backed by default | `~ prompt=...` legacy op + future `$ llm` MCP bridge |
-| `MemoryStore` | Retrieval over a knowledge store — SQLite-backed by default | `>` legacy op + future `$ memory` MCP bridge |
+| `LocalModel` † | Local LLM dispatch — Ollama backed by default | `~ prompt=...` legacy op + future `$ llm` MCP bridge |
+| `MemoryStore` † | Retrieval over a knowledge store — SQLite-backed by default | `>` legacy op + future `$ memory` MCP bridge |
 | `McpConnector` | MCP tool invocation — external dispatch (any wired connector) | `$ <connector> args` ops |
 | `AgentConnector` | Delivery to a frontier agent | `prompt-context:` and `template:` outputs |
+
+<sub>† `LocalModel` and `MemoryStore` are scheduled to be deprivileged to adopter-level wiring in v0.7.1 via the generic bridge classes (`LocalModelMcpConnector`, `MemoryStoreMcpConnector`). They back the legacy `~` and `>` ops during the v0.7.x grace period; the canonical v0.7.0+ path routes through `$ llm` / `$ memory` MCP dispatch instead. The language-relevant contracts going forward are `McpConnector`, `AgentConnector`, and `SkillStore`.</sub>
 
 **v0.7.0 substrate framing.** The canonical syntax routes everything substrate-specific through MCP dispatch — `$ llm prompt="..."` rather than the legacy `~`, `$ memory mode=fts query="..."` rather than the legacy `>`. This keeps skill source portable across adopters who wire different substrates. Pick the connector names that read well at your call sites: `llm`, `memory`, `openai_chat`, `pinecone_query` — whatever matches the substrate.
 
@@ -253,6 +307,8 @@ Skills don't know what they're talking to. Five contracts decouple language from
 The migration tool that ran on `examples/` rewrote everything to canonical form on the assumption that v0.7.1's bridge connectors will land; until then, examples that use `$ llm` / `$ memory` need adopter-wired connectors to execute.
 
 Wire your own by implementing the interface and registering in `connectors.json`. See [`docs/language-reference.md`](docs/language-reference.md) §10 for full contracts.
+
+**Coming from v0.5.x or earlier?** v0.7.0 is a breaking-shape release: symbol-form ops (`~`, `>`, `@`, `!`, `??`, `&`) and `$(VAR)` substitution are deprecated. They still compile in v0.7.x during the grace period; v0.7.1 ships visibility-nudge lints (`deprecated-symbol-op`, `deprecated-substitution-shape`); removal slated for v0.8.x or v0.9. The mechanical rewrite rules are documented in [`CHANGELOG.md`](CHANGELOG.md) under `## 0.7.0 — Migration`. Most adopters writing new skills against canonical surface won't need to migrate anything.
 
 ### `connectors.json` (v0.4.0)
 

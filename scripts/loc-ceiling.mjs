@@ -90,6 +90,11 @@
 //            runtime.ts (chain parser + condition-context applier +
 //            ConnectorNotFoundError fold) + filters.ts (parseFilterChain
 //            + isodate). 50+ new tests across 5 v0.5.0 test files.
+//   v0.7.1:  nudged narrow ceiling 7150 → 7250 for grace-period polish:
+//            deprecated-symbol-op + deprecated-substitution-shape tier-2
+//            lints (~85 LOC across lint.ts) + unconfirmed-mutation
+//            broadening to file_write + memory_write + approved= kwarg
+//            (~20 LOC). Help-content refresh is a content swap, no net LOC.
 //   v0.7.0:  nudged narrow ceiling 6800 → 7150 for the syntax-revamp arc
 //            (Perry kickoff `50a83a88`, final framework `c48fca7e`).
 //            ${VAR} canonical substitution (alongside $(VAR) for grace
@@ -127,7 +132,7 @@ const CORE_PATHS = [
   "connectors/",
 ];
 
-const NARROW_MAX_LOC = 7150;
+const NARROW_MAX_LOC = 7250;
 const NARROW_MAX_FILES = 20;
 const BROAD_INFO_LOC = 9500;
 const BROAD_INFO_FILES = 28;

@@ -107,6 +107,18 @@ export interface SkillOp {
    * when `# Autonomous: true` is not declared.
    */
   approved?: string;
+  /**
+   * v0.7.1 — source-form marker. The parser collapses canonical
+   * function-call ops (`emit(text="...")`, `shell(command="...")`, etc.)
+   * to the same AST `kind` as the legacy symbol form (`! ...`, `@ ...`,
+   * etc.) so runtime/render/lint share one dispatch path. This field
+   * preserves which surface the author wrote so the `deprecated-symbol-op`
+   * lint can fire only on legacy-form occurrences.
+   *
+   * `"function-call"` = author wrote `verb(kwargs)` shape.
+   * `undefined` = author wrote symbol form (legacy).
+   */
+  sourceForm?: "function-call";
 }
 
 export interface SkillTarget {
@@ -1434,6 +1446,7 @@ export function parse(source: string): ParsedSkill {
             body: text,
             ...(outputVar !== undefined ? { outputVar } : {}),
             ...(approved !== undefined ? { approved } : {}),
+            sourceForm: "function-call",
           });
           continue;
         }
@@ -1444,6 +1457,7 @@ export function parse(source: string): ParsedSkill {
             body: prompt,
             ...(outputVar !== undefined ? { outputVar } : {}),
             ...(approved !== undefined ? { approved } : {}),
+            sourceForm: "function-call",
           });
           continue;
         }
@@ -1456,6 +1470,7 @@ export function parse(source: string): ParsedSkill {
             ...(outputVar !== undefined ? { outputVar } : {}),
             ...(fallback !== undefined ? { fallback } : {}),
             ...(approved !== undefined ? { approved } : {}),
+            sourceForm: "function-call",
           });
           continue;
         }
@@ -1469,6 +1484,7 @@ export function parse(source: string): ParsedSkill {
             ...(outputVar !== undefined ? { outputVar } : {}),
             ...(fallback !== undefined ? { fallback } : {}),
             ...(approved !== undefined ? { approved } : {}),
+            sourceForm: "function-call",
           });
           continue;
         }
@@ -1482,6 +1498,7 @@ export function parse(source: string): ParsedSkill {
             ...(outputVar !== undefined ? { outputVar } : {}),
             ...(fallback !== undefined ? { fallback } : {}),
             ...(approved !== undefined ? { approved } : {}),
+            sourceForm: "function-call",
           });
           continue;
         }
@@ -1493,6 +1510,7 @@ export function parse(source: string): ParsedSkill {
             fileParams: { path },
             ...(outputVar !== undefined ? { outputVar } : {}),
             ...(fallback !== undefined ? { fallback } : {}),
+            sourceForm: "function-call",
           });
           continue;
         }
@@ -1505,6 +1523,7 @@ export function parse(source: string): ParsedSkill {
             fileParams: { path, content },
             ...(outputVar !== undefined ? { outputVar } : {}),
             ...(approved !== undefined ? { approved } : {}),
+            sourceForm: "function-call",
           });
           continue;
         }

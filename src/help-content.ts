@@ -16,14 +16,40 @@
 
 import type { Registry } from "./connectors/registry.js";
 
-const QUICKSTART = `# Skillscript — quickstart
+const QUICKSTART = `# Skillscript — quickstart (v0.7.0+ canonical surface)
 
 Skillscript is a declarative language for authoring agent workflows. A
 skill is a small program with named targets composed of typed ops. The
 runtime walks dependencies backward from the goal target (declared via
 \`default:\`) and dispatches each op in topological order.
 
-## 1. Shape of a skill file
+## 1. The skill model — trigger → process → deliver
+
+Every skill follows the same shape:
+
+1. **Trigger fires** — cron, command, event, session-start, or programmatic invocation
+2. **Process** — pull data (MCP / memory / file), classify / compose via sub-LLM + iteration, build the deliverable
+3. **Deliver** — via one or more of three channels
+
+The three delivery channels are all first-class:
+
+| Channel | Op | When you'd use it |
+|---|---|---|
+| **Embedded prompt** | \`emit(text="...")\` | Skill output is injected into the agent's turn as prompt-context |
+| **Memory handoff** | \`$ memory_write content="..." addressed_to="<agent>" -> R\` | Skill writes a memory the target agent picks up via mailbox |
+| **File handoff** | \`file_write(path="...", content="...")\` | Skill writes a file at a known location for the agent to read |
+
+## 2. The three op classes
+
+| Class | Shape | Examples |
+|---|---|---|
+| **Mutation statements** | \`$verb VAR = value\` / \`$verb VAR <value>\` | \`$set NAME = "Scott"\`, \`$append LIST <item>\` |
+| **Runtime-intrinsic function-calls** | \`verb(kwarg=value, ...) [-> BINDING]\` | \`emit(text="...")\`, \`ask(prompt="...") -> R\`, \`inline(skill="...")\`, \`execute_skill(skill_name="...") -> R\`, \`shell(command="...") -> R\`, \`file_read(path="...") -> R\`, \`file_write(path="...", content="...")\` |
+| **External MCP dispatch** | \`$ <connector> kwarg=value, ... [-> BINDING]\` | \`$ youtrack_search query="..." -> R\`, \`$ llm prompt="..." -> R\`, \`$ memory mode=fts query="..." -> R\` |
+
+The \`$\` prefix marks **state-affecting ops** (mutation OR external dispatch). Function-call shape marks **language-intrinsic ops the runtime knows directly**.
+
+## 3. Shape of a skill file
 
 \`\`\`
 # Skill: my-skill                      ← required: skill name
@@ -33,57 +59,46 @@ runtime walks dependencies backward from the goal target (declared via
 # Triggers: cron: 0 9 * * *            ← optional: autonomous-dispatch sources
 
 target_a:                              ← a named block of ops
-    @ curl -s https://example.com -> RAW
-    ~ prompt="Summarize: $(RAW)" -> SUMMARY
+    $ ticketing_search query="state:open" -> ISSUES
+    $ llm prompt="Summarize: \${ISSUES}" -> SUMMARY
 
 target_b: target_a                     ← Make-style: target_b depends on target_a
-    ! $(SUMMARY)
+    emit(text="\${SUMMARY}")
 
 default: target_b                      ← goal target the runtime walks toward
 \`\`\`
 
-## 2. Op symbol legend
+## 4. Variable substitution
 
-| Op | Meaning |
-|---|---|
-| \`$ tool args -> VAR\` | MCP tool invocation; binds result to VAR |
-| \`~ prompt="..." -> VAR\` | LocalModel call; binds output |
-| \`> mode=... query=... limit=N -> VAR\` | Memory retrieval |
-| \`@ command args -> VAR\` | Shell exec (structural sandbox; \`@ unsafe\` for full bash) |
-| \`! text\` | Emit text to the user / output channel |
-| \`?? prompt -> VAR\` | Ask user (interactive mode only) |
-| \`$set NAME=value\` | Explicit variable binding |
-| \`$append VAR <value>\` | Accumulate a value into a list-typed VAR (v0.3.0) |
-| \`& skill-name args -> VAR\` | Inline a data-skill |
+Use \`\${VAR}\` (canonical) inside any kwarg value or emit body. Field access works: \`\${ISSUE.title}\`. Filter chains: \`\${VAR|trim|length}\`. Missing-value fallback: \`\${VAR|fallback:"-"}\`.
 
-## 3. Result binding
+The legacy \`$(VAR)\` form still compiles during the v0.7.x grace period (tier-2 \`deprecated-substitution-shape\` warning); tier-1 promotion in v0.8/v0.9.
 
-Most ops accept \`-> VAR\` to bind their output. Reference later via \`$(VAR)\`.
-Optional \`(fallback: "default")\` after \`-> VAR\` binds the fallback on dispatch
-error instead of propagating.
+## 5. Result binding + fallback
 
-## 4. Branching
+Most dispatch ops accept \`-> VAR\` to bind their output. Reference later via \`\${VAR}\`. Optional \`(fallback: "default")\` after \`-> VAR\` binds the fallback on dispatch error instead of propagating.
+
+## 6. Branching
 
 \`\`\`
-if $(VERDICT) == "urgent":
-    ! sound the alarm
-elif $(COUNT) > "10":
-    ! threshold breached: $(COUNT) items
+if \${VERDICT} == "urgent":
+    emit(text="sound the alarm")
+elif \${COUNT} > "10":
+    emit(text="threshold breached: \${COUNT} items")
 else:
-    ! all clear
+    emit(text="all clear")
 \`\`\`
 
-Numeric comparison (\`<\` / \`>\` / \`<=\` / \`>=\`) coerces both sides via Number();
-non-numeric operands raise TypeMismatchError.
+Numeric comparison (\`<\` / \`>\` / \`<=\` / \`>=\`) coerces both sides via Number(); non-numeric operands raise TypeMismatchError.
 
-## 5. Iteration
+## 7. Iteration
 
 \`\`\`
-foreach M in $(MEMORIES):
-    ! Processing $(M.id): $(M.summary)
+foreach M in \${MEMORIES}:
+    emit(text="Processing \${M.id}: \${M.summary}")
 \`\`\`
 
-## 6. How to see what's broken
+## 8. How to see what's broken
 
 - \`lint_skill({source})\` — diagnostics across tier-1 (errors), tier-2 (warnings), tier-3 (advisories)
 - \`compile_skill({source, inputs?})\` — render the compiled artifact + surface compile errors
@@ -92,29 +107,36 @@ foreach M in $(MEMORIES):
 ## Worked end-to-end example
 
 \`\`\`
-# Skill: morning-temperature-alert
-# Description: Cron-fired check; alerts when overnight temp drops below threshold
+# Skill: morning-showstopper-sweep
+# Description: Cron-fired pre-triage; delivers triaged showstoppers to oncall agent via memory handoff
 # Status: Approved
-# Vars: LOCATION=Asheville,NC, THRESHOLD=40
-# Triggers: cron: 0 7 * * *
+# Vars: PROJECT=INFRA
+# Triggers: cron: 0 8 * * MON-FRI
 
-fetch:
-    @ curl -s "wttr.in/$(LOCATION|url)?format=j1" -> RAW (fallback: "")
+run:
+    $ ticketing_search query="project:\${PROJECT} severity:showstopper state:Open" limit=20 -> ISSUES
 
-evaluate: fetch
-    ~ prompt="Extract overnight low temperature in F from this JSON. Reply with only the number: $(RAW)" model=qwen -> TEMP
+    $set REPORT = "Morning showstoppers (\${ISSUES.totalCount}):\\n"
+    foreach ISSUE in \${ISSUES.items}:
+        $ llm prompt="Two-line triage hypothesis for: \${ISSUE.summary}" -> ANALYSIS
+        $append REPORT <line>## \${ISSUE.id}: \${ISSUE.summary} — \${ANALYSIS}</line>
 
-alert: evaluate
-    if $(TEMP|trim) < $(THRESHOLD):
-        ! Cold morning: overnight low $(TEMP|trim)°F (threshold $(THRESHOLD)°F)
-    else:
-        ! Temp ok: $(TEMP|trim)°F
+    $ memory_write content="\${REPORT}" addressed_to="oncall" tags="morning-sweep" approved="cron-fired daily roundup" -> SWEEP_ID
+    emit(text="Roundup filed as \${SWEEP_ID}")
 
-default: alert
+default: run
 \`\`\`
+
+What this example demonstrates:
+- **Trigger** — cron at 8am weekdays
+- **Process** — \`$ ticketing_search\` MCP dispatch (substrate-portable: adopters wire whatever ticketing connector they have), \`foreach\` iteration with per-item \`$ llm\` sub-classification, \`$append\` building the report string
+- **Deliver** — \`$ memory_write\` with \`addressed_to=\` for the oncall mailbox, plus \`emit(text=...)\` confirmation receipt
+- **Authorization** — \`approved="..."\` kwarg authorizes the mutation without needing \`# Autonomous: true\` or a preceding \`ask(...)\` step
 
 Use \`help({topic: "ops"})\`, \`help({topic: "frontmatter"})\`, \`help({topic: "examples"})\`,
 \`help({topic: "connectors"})\`, or \`help({topic: "lint-codes"})\` for deeper sections.
+
+**Note on legacy syntax.** Legacy symbol-form ops (\`~\`, \`>\`, \`@\`, \`!\`, \`??\`, \`&\`) and \`$(VAR)\` substitution continue to compile during the v0.7.x grace period with tier-2 deprecation warnings. CHANGELOG.md \`## 0.7.0 — Migration\` documents the rewrite rules.
 `;
 
 const OPS = `# Op symbols — full reference
@@ -636,12 +658,14 @@ Three tiers per ERD §3:
 ## Tier-2 (warning)
 
 - \`deprecated-question\` — bare \`?\` op (deprecated v1; compile-error in v1.x)
+- \`deprecated-symbol-op\` (v0.7.1) — legacy symbol-form op (\`~\`, \`>\`, \`@\`, \`!\`, \`??\`, \`&\`) compiles but warns with canonical replacement. Tier-1 promotion (refuse-to-compile) lands in v0.8/v0.9.
+- \`deprecated-substitution-shape\` (v0.7.1) — \`$(VAR)\` substitution form compiles but warns; rewrite to \`\${VAR}\`. Tier-1 promotion in v0.8/v0.9.
 - \`unsafe-shell-ambiguous-subst\` — \`$(NAME)\` inside \`@ unsafe\` body that isn't a declared variable; collides with bash command-sub syntax
 - \`unsafe-shell-op\` — \`@ unsafe\` op present; requires human review every time
 - \`unknown-retrieval-arg\` — \`>\` op carries kwargs outside mode/query/limit/connector/fallback (v0.2.12 Bug 26)
 - \`unknown-skill-reference\` — \`&\` or \`$ execute_skill\` references a skill not in the store (demoted from tier-1 in v0.3.1; runtime throws \`MissingSkillReferenceError\` if still unresolved at execute)
 - \`unknown-template-reference\` — \`# Templates: <name>\` references a skill not in the store (demoted from tier-1 in v0.3.1)
-- \`unconfirmed-mutation\` — \`$\` op invokes a tool whose name suggests mutation (write/update/delete) without a preceding \`??\` confirmation. Silent when the skill declares \`# Autonomous: true\` (v0.4.2 — the autonomous-skill category exempts the rule since the user-confirmation pattern doesn't apply to unattended-execution skills)
+- \`unconfirmed-mutation\` — mutation-class op (\`$\` tool with mutating-name shape, \`$ memory_write\`, \`file_write(...)\`) runs without authorization. v0.7.0+ accepts the captured \`approved="reason"\` per-op kwarg as authorization (any non-empty string; presence is what matters). Silent when the skill declares \`# Autonomous: true\` (v0.4.2 — the autonomous-skill category exempts the rule since the user-confirmation pattern doesn't apply to unattended-execution skills) or when a preceding \`??\` / \`ask(...)\` op gates the mutation in the same target.
 - \`model-contention\` — async + sync ops on the same model serialize on a single runtime worker
 - \`draft-with-trigger\` — \`# Status: Draft\` skill has \`# Triggers:\` declared; triggers won't fire until Approved
 - \`reference-to-disabled-skill\` — \`&\` op references a Disabled skill (also tier-1 in some contexts)

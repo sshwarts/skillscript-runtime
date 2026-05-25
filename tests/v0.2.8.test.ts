@@ -54,11 +54,11 @@ describe("v0.2.8 — help MCP tool", () => {
     expect(result["topic"]).toBeNull();
     expect(typeof result["content"]).toBe("string");
     expect((result["content"] as string)).toMatch(/quickstart/i);
-    expect((result["content"] as string)).toMatch(/Op symbol legend/);
     expect(result["available_topics"]).toEqual(["ops", "frontmatter", "examples", "composition", "connectors", "lint-codes"]);
-    // Quickstart should answer 6 minimum-viable questions per Perry's spec.
+    // v0.7.1 quickstart structure — trigger→process→deliver model, three op classes,
+    // canonical surface, plus the basics (branching, iteration, lint).
+    expect((result["content"] as string)).toMatch(/trigger.*process.*deliver|three.*op.*class/i);
     expect((result["content"] as string)).toMatch(/Shape of a skill file/);
-    expect((result["content"] as string)).toMatch(/Op symbol legend/);
     expect((result["content"] as string)).toMatch(/Result binding/);
     expect((result["content"] as string)).toMatch(/Branching/);
     expect((result["content"] as string)).toMatch(/Iteration/);

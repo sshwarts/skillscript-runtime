@@ -1174,8 +1174,8 @@ const MUTATING_TOOL_PATTERN = /^(?:write_|update_|delete_|remove_|set_|create_|i
 const UNCONFIRMED_MUTATION: LintRule = {
   id: "unconfirmed-mutation",
   severity: "warning",
-  description: "A `$` op invokes a tool whose name suggests mutation (write/update/delete/...) without a preceding `??` confirmation step. Silent when the skill declares `# Autonomous: true` (v0.4.2).",
-  remediation: "Add a `??` confirmation op before the mutation, or declare `# Autonomous: true` at the skill header level when the skill is intentionally autonomous (cron-fired, agent-fired, etc.) and the user-confirmation pattern doesn't apply.",
+  description: "A mutation-class op runs without author authorization. Mutation classes: `$ tool` with mutating-name shape (write/update/delete/...); `$ memory_write` MCP dispatch; `file_write(...)` function-call op. Silent when the skill declares `# Autonomous: true` (v0.4.2), when a preceding `??` / `ask(...)` confirmation gates the op, or (v0.7.0+) when the op carries `approved=\"reason\"` per-op authorization.",
+  remediation: "Three ways to authorize: (1) add `# Autonomous: true` at the skill header for cron/agent-fired skills; (2) add a preceding `??` / `ask(prompt=\"...\")` confirmation op in the same target; (3) v0.7.0+: pass `approved=\"reason\"` kwarg on the mutation op itself (any non-empty string; presence is what matters, value not parsed semantically).",
   check: (ctx) => {
     // v0.4.2 — `# Autonomous: true` skills are unattended by design;
     // the user-confirmation pattern doesn't apply. Silent for the
@@ -1185,17 +1185,40 @@ const UNCONFIRMED_MUTATION: LintRule = {
     for (const [targetName, target] of ctx.parsed.targets) {
       let sawConfirm = false;
       for (const op of target.ops) {
+        // v0.7.0+: ask(prompt=...) parses to kind "??" in the AST, so the
+        // existing check captures both legacy `??` and canonical `ask()`.
         if (op.kind === "??") sawConfirm = true;
-        if (op.kind === "$" && !sawConfirm) {
+        if (sawConfirm) continue;
+        // v0.7.0+: per-op `approved="reason"` kwarg authorizes individual ops
+        // without requiring # Autonomous: true skill-level or `??` step.
+        const isApproved = typeof op.approved === "string" && op.approved.length > 0;
+        if (isApproved) continue;
+        // Class 1: `$` MCP dispatch with mutating tool name.
+        if (op.kind === "$") {
           const toolName = op.body.split(/\s+/)[0] ?? "";
-          if (MUTATING_TOOL_PATTERN.test(toolName)) {
+          // memory_write is explicitly a mutation tool name — flag it even
+          // though it doesn't start with `write_` (the pattern's anchor).
+          const isMemoryWrite = toolName === "memory_write" || /(?:^|_)memory_write(?:_|$)/.test(toolName);
+          if (MUTATING_TOOL_PATTERN.test(toolName) || isMemoryWrite) {
             findings.push({
               rule: "unconfirmed-mutation",
               severity: "warning",
-              message: `\`$\` op in target '${targetName}' invokes '${toolName}' (mutating shape) without a preceding \`??\` confirmation.`,
+              message: `\`$\` op in target '${targetName}' invokes '${toolName}' (mutating shape) without authorization. Add \`approved="..."\` kwarg, precede with \`ask(...)\`, or declare \`# Autonomous: true\`.`,
               block: targetName,
+              extras: { tool_name: toolName },
             });
           }
+        }
+        // Class 2: file_write runtime-intrinsic op (v0.7.0).
+        if (op.kind === "file_write") {
+          const path = op.fileParams?.path ?? "";
+          findings.push({
+            rule: "unconfirmed-mutation",
+            severity: "warning",
+            message: `\`file_write(path="${path}")\` in target '${targetName}' is a mutation op without authorization. Add \`approved="..."\` kwarg, precede with \`ask(...)\`, or declare \`# Autonomous: true\`.`,
+            block: targetName,
+            extras: { op_kind: "file_write", path },
+          });
         }
       }
     }
@@ -1715,6 +1738,129 @@ function describeOriginRisk(origin: BindingOrigin): string {
   }
 }
 
+/**
+ * v0.7.1 — tier-2 visibility nudge for legacy symbol-form ops (`~`, `>`,
+ * `@`, `!`, `??`, `&`). The parser still accepts these during the v0.7.x
+ * grace period; the runtime dispatches them as before. This rule surfaces
+ * the canonical replacement so authors editing skills see the migration
+ * path. Tier-1 promotion (refuse-to-compile) lands in v0.8 or v0.9 once
+ * the adopter ecosystem confirms migration is settled.
+ *
+ * The `$ tool` op is NOT flagged — that shape is canonical (MCP dispatch
+ * marker). Only the 6 symbol ops that became function-call ops in v0.7.0.
+ */
+const DEPRECATED_SYMBOL_OP_REPLACEMENT: Record<string, string> = {
+  "~": "$ llm prompt=\"...\" -> R   (or your wired LLM connector name)",
+  ">": "$ memory mode=... query=\"...\" limit=N -> R   (or your wired memory connector name)",
+  "@": "shell(command=\"...\") [-> R]",
+  "!": "emit(text=\"...\")",
+  "??": "ask(prompt=\"...\") -> R",
+  "&": "inline(skill=\"...\")   (or execute_skill(skill_name=\"...\", ...) -> R for procedural composition)",
+};
+
+const DEPRECATED_SYMBOL_OP: LintRule = {
+  id: "deprecated-symbol-op",
+  severity: "warning",
+  description: "An op uses the legacy symbol form deprecated in v0.7.0.",
+  remediation: "Rewrite to the canonical v0.7.0 form (see message). All legacy ops continue to compile during the grace period; tier-1 promotion (refuse-to-compile) lands in v0.8/v0.9. See CHANGELOG.md `## 0.7.0 — Migration` for the full rewrite rules.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    for (const [targetName, target] of ctx.parsed.targets) {
+      const reported = new Set<string>();
+      walkOps(target.ops, (op) => {
+        const replacement = DEPRECATED_SYMBOL_OP_REPLACEMENT[op.kind];
+        if (replacement === undefined) return;
+        // v0.7.1: skip ops authored in canonical function-call form. The
+        // parser collapses both `! x` and `emit(text="x")` to kind "!",
+        // so without the sourceForm marker the lint would fire on
+        // canonical code. Source-form marker preserves which surface
+        // the author wrote.
+        if (op.sourceForm === "function-call") return;
+        // Dedupe per-kind-per-target — one nudge per legacy op type per
+        // target is plenty; further occurrences don't add signal.
+        const key = `${targetName}:${op.kind}`;
+        if (reported.has(key)) return;
+        reported.add(key);
+        findings.push({
+          rule: "deprecated-symbol-op",
+          severity: "warning",
+          message: `Op '${op.kind}' in target '${targetName}' is deprecated in v0.7.0. Rewrite as: \`${replacement}\``,
+          block: targetName,
+          extras: { legacy_op: op.kind, canonical_replacement: replacement },
+        });
+      });
+      if (target.elseBlock !== undefined) {
+        walkOps(target.elseBlock, (op) => {
+          const replacement = DEPRECATED_SYMBOL_OP_REPLACEMENT[op.kind];
+          if (replacement === undefined) return;
+          if (op.sourceForm === "function-call") return;
+          const key = `${targetName}:else:${op.kind}`;
+          if (reported.has(key)) return;
+          reported.add(key);
+          findings.push({
+            rule: "deprecated-symbol-op",
+            severity: "warning",
+            message: `Op '${op.kind}' in target '${targetName}' (else block) is deprecated in v0.7.0. Rewrite as: \`${replacement}\``,
+            block: targetName,
+            extras: { legacy_op: op.kind, canonical_replacement: replacement },
+          });
+        });
+      }
+    }
+    return findings;
+  },
+};
+
+/**
+ * v0.7.1 — tier-2 visibility nudge for legacy `$(VAR)` substitution form.
+ * Canonical v0.7.0+ form is `${VAR}`. Parser/runtime accept both during
+ * grace period. Dedupes per-var-per-target; one nudge per `$(VAR)` form
+ * per scope.
+ *
+ * Skips the `$$(...)` escape (used in `@ unsafe` op bodies for shell
+ * literal pass-through). Skips ops where the body is `$set` source
+ * (because $set's RHS is its own substitution context and the lint would
+ * double-fire).
+ */
+const DEPRECATED_SUBSTITUTION_SHAPE: LintRule = {
+  id: "deprecated-substitution-shape",
+  severity: "warning",
+  description: "A `$(VAR)` substitution uses the legacy v0.6.x form deprecated in v0.7.0.",
+  remediation: "Rewrite to `${VAR}` canonical form. Both forms produce identical results during the v0.7.x grace period; tier-1 promotion lands in v0.8/v0.9. The `$$(VAR)` escape (for `@ unsafe` shell literal pass-through) is unchanged.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    // Negative lookbehind blocks `$$(VAR)` escape form so the lint doesn't
+    // fire on shell-escape sites authors deliberately wrote.
+    const legacyRe = /(?<!\$)\$\(([^|)\s]+)/g;
+    for (const [targetName, target] of ctx.parsed.targets) {
+      const reported = new Set<string>();
+      const scanOp = (op: SkillOp, scope: string): void => {
+        const text = collectOpText(op);
+        let m: RegExpExecArray | null;
+        while ((m = legacyRe.exec(text)) !== null) {
+          const varName = m[1]!;
+          const key = `${targetName}:${scope}:${varName}`;
+          if (reported.has(key)) continue;
+          reported.add(key);
+          findings.push({
+            rule: "deprecated-substitution-shape",
+            severity: "warning",
+            message: `Substitution '$(${varName})' in target '${targetName}'${scope === "else" ? " (else block)" : ""} uses the legacy v0.6.x form. Rewrite as '\${${varName}}'.`,
+            block: targetName,
+            extras: { var_name: varName, legacy_form: `$(${varName})`, canonical_form: `\${${varName}}` },
+          });
+        }
+        legacyRe.lastIndex = 0;
+      };
+      walkOps(target.ops, (op) => scanOp(op, "main"));
+      if (target.elseBlock !== undefined) {
+        walkOps(target.elseBlock, (op) => scanOp(op, "else"));
+      }
+    }
+    return findings;
+  },
+};
+
 const RULES: LintRule[] = [
   // Tier-1 (error)
   PARSE_ERROR,
@@ -1748,6 +1894,8 @@ const RULES: LintRule[] = [
   MISSING_SKILLSTORE_FOR_DATA_REF,
   // Tier-2 (warning)
   DEPRECATED_QUESTION,
+  DEPRECATED_SYMBOL_OP,
+  DEPRECATED_SUBSTITUTION_SHAPE,
   UNSAFE_SHELL_AMBIGUOUS_SUBST,
   UNSAFE_SHELL_OP,
   UNSAFE_SHELL_DISABLED,

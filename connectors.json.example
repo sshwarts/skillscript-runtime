@@ -1,31 +1,49 @@
 {
-  "_comment_": "connectors.json — per-host MCP connector configuration (v0.4.0). Copy to `connectors.json` (which is gitignored) and fill in real values. Each top-level key is a connector instance name referenced via `$ name.tool` in skill source.",
+  "_comment_": "connectors.json — per-host connector wiring (v0.4.0+). Copy to `connectors.json` (which is gitignored) and fill in real values. Each top-level key is a connector instance name referenced via `$ <name> args` in skill source.",
+
+  "_comment_substrate_": "v0.7.0 substrate framing: language-level dispatch is via `$ <connector_name>`. Skills don't assume any specific substrate; adopters wire their LLM / memory / business-tool MCPs under whatever names read well at the call sites. Common patterns: `llm`, `memory`, `youtrack`, `github`, `slack`. The legacy `~` (local model) and `>` (memory query) ops continue to work during the v0.7.x grace period via the bundled `LocalModel` / `MemoryStore` implementations; tier-1 deprecation lands in v0.8/v0.9.",
 
   "_comment_security_": "Credentials in this file are SECRET-BEARING. Default `.gitignore` excludes `connectors.json` from version control. For deployed environments, prefer the `${VAR}` substitution shape (resolved from process env at load time) over literal in-file values.",
 
-  "_comment_classes_": "v0.4.0 closed-set: `CallbackMcpConnector` (wired via embedder code only, not configurable via JSON). v0.4.1 adds `RemoteMcpConnector` for stdio-bridged remote MCPs (mcp-remote, etc.). Use `runtime_capabilities({include:['mcpConnectorClasses']})` to introspect the available set in your runtime.",
+  "_comment_classes_": "v0.4.0+ closed-set class registry: `RemoteMcpConnector` (stdio-bridged remote MCP, v0.4.1+). `CallbackMcpConnector` is embedder-wired, not configurable from JSON. Use `runtime_capabilities({include:['mcpConnectorClasses']})` to introspect the runtime's available set. v0.7.2 plans `LocalModelMcpConnector` + `MemoryStoreMcpConnector` bridge classes so `$ llm` / `$ memory` work canonically against the bundled Ollama + SQLite implementations.",
 
-  "_example_v041_youtrack": {
+  "_example_business_tool_remote": {
     "class": "RemoteMcpConnector",
-    "comment": "Available starting v0.4.1. Bridges to YouTrack's remote MCP via npx mcp-remote.",
+    "comment": "Wire a remote MCP service (YouTrack, Linear, GitHub, etc.) via the stdio-bridged remote-mcp adapter. Replace endpoint + auth env-var name as needed.",
     "config": {
       "command": "npx",
-      "args": ["mcp-remote", "https://example.youtrack.cloud/mcp", "--header", "Authorization:${AUTH_HEADER}"],
+      "args": ["mcp-remote", "https://example.com/mcp", "--header", "Authorization:${AUTH_HEADER}"],
       "env": {
-        "AUTH_HEADER": "Bearer ${YOUTRACK_TOKEN}"
+        "AUTH_HEADER": "Bearer ${YOUR_TOKEN_ENV_VAR}"
       }
     }
   },
 
-  "_example_v041_literal_credential": {
+  "_example_literal_credential": {
     "class": "RemoteMcpConnector",
-    "comment": "Same as above but with an in-file literal credential (less safe; document discipline says prefer ${VAR}).",
+    "comment": "Same shape with an in-file literal credential (less safe; document discipline says prefer ${VAR} substitution).",
     "config": {
       "command": "npx",
       "args": ["mcp-remote", "https://example.com/mcp"],
       "env": {
         "AUTH_HEADER": "Bearer plnt-XXXXXXXXXXXXXXXXXXXX"
       }
+    }
+  },
+
+  "_example_v072_local_model_bridge": {
+    "comment": "PLANNED v0.7.2 — `LocalModelMcpConnector` will bridge any registered `LocalModel` (Ollama backed by default) as an MCP connector named whatever you choose. The wiring shape will look like the below; the class doesn't exist yet in v0.7.1.",
+    "_class_planned": "LocalModelMcpConnector",
+    "_config_planned": {
+      "local_model_name": "default"
+    }
+  },
+
+  "_example_v072_memory_store_bridge": {
+    "comment": "PLANNED v0.7.2 — `MemoryStoreMcpConnector` will bridge any registered `MemoryStore` (SQLite-FTS backed by default) as an MCP connector. Wiring shape will look like the below.",
+    "_class_planned": "MemoryStoreMcpConnector",
+    "_config_planned": {
+      "memory_store_name": "default"
     }
   }
 }

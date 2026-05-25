@@ -1,5 +1,91 @@
 # Changelog
 
+## 0.7.1 — 2026-05-25
+
+**R4-enabling polish.** Help-content refresh (was the R4 cold-author harness
+blocker), tier-2 deprecation visibility lints, broadened `unconfirmed-mutation`
+enforcement using the captured `approved="..."` kwarg from v0.7.0, scaffold
+hygiene. Per Perry's v0.7.1 kickoff `7f31c7a4`. Bridge classes
+(`LocalModelMcpConnector` + `MemoryStoreMcpConnector`) deferred to v0.7.2
+as a dedicated AMP-substrate dogfooding release.
+
+### Added
+
+- **Tier-2 `deprecated-symbol-op` lint.** Fires on legacy symbol-form ops
+  (`~`, `>`, `@`, `!`, `??`, `&`) with the canonical replacement in the
+  remediation message (`emit(text="...")`, `shell(command="...")`, etc.).
+  Tier-2 (warning, not error) during the v0.7.x grace period; tier-1
+  promotion (refuse-to-compile) lands in v0.8/v0.9. Dedupes per-kind-per-
+  target — one nudge per legacy op type per target. Uses a new
+  `op.sourceForm` AST marker to distinguish canonical function-call ops
+  (silent) from legacy symbol-form ops (warned), since both parse to the
+  same AST kind in v0.7.0.
+
+- **Tier-2 `deprecated-substitution-shape` lint.** Fires on legacy
+  `$(VAR)` substitution form, advises rewrite to `${VAR}` canonical. Skips
+  the `$$(VAR)` escape (used in `@ unsafe` for bash literal pass-through).
+  Dedupes per-var-per-target. Tier-1 promotion in v0.8/v0.9.
+
+- **`unconfirmed-mutation` broadening.** Closes the captured-but-not-
+  enforced gap from v0.7.0. The lint now covers:
+  - `$` MCP dispatch with mutating-shape tool name (unchanged)
+  - `$ memory_write` MCP dispatch (new — matches the canonical memory-
+    delivery channel name)
+  - `file_write(...)` runtime-intrinsic op (new — v0.7.0 ship)
+
+  Three authorization paths recognized:
+  1. `# Autonomous: true` skill flag (existing, v0.4.2)
+  2. Preceding `??` / `ask(prompt="...")` confirmation op in same target
+  3. **New (v0.7.0+):** `approved="reason"` per-op kwarg — any non-empty
+     string. Value not parsed semantically; presence is what matters.
+     Replaces the v0.4.2-era `(approved: "...")` trailer for function-
+     call ops.
+
+- **`help()` content refresh (R4 blocker).** Quickstart (default `help()`
+  call) rewritten to lead with the v0.7.0 framework — trigger → process →
+  deliver model, three op classes, three delivery channels, canonical
+  `${VAR}` substitution and function-call op shape throughout. Worked
+  end-to-end example uses canonical syntax (morning-showstopper-sweep
+  pattern with memory-handoff delivery). Legacy syntax footnoted with
+  grace-period note. `LINT_CODES` topic updated with the two new
+  deprecation rules + broadened `unconfirmed-mutation` semantics.
+
+- **Scaffold hygiene** (`scaffold/connectors.json` +
+  `connectors.json.example`). Updated to v0.4.0+ class-registry format,
+  explicit v0.7.0 substrate-framing comments, planned `LocalModelMcpConnector`
+  + `MemoryStoreMcpConnector` v0.7.2 entries as future-reference templates.
+  All internal naming (Tradita, AmpMcpConnector, amp_query_memories)
+  scrubbed — scaffold is adopter-neutral.
+
+### Changed
+
+- **AST:** new optional field `op.sourceForm?: "function-call"` set by the
+  parser's function-call dispatch path. Distinguishes canonical from
+  legacy at lint time without changing runtime/render dispatch (both
+  paths still produce identical AST kinds).
+
+### Roadmap update
+
+- **v0.10 `foreach parallel` cut from roadmap.** Cron windowing covers
+  the use case; parallel `$append` opens thread-safety + ordering
+  complexity in a constrained language; adopters can implement parallel
+  inside an MCP tool. Speculative gap, not load-bearing for the
+  broker-replacement north star.
+
+### LOC ceiling
+
+Narrow-core ceiling nudged 7150 → 7250. ~105 LOC across lint.ts (two new
+tier-2 rules + `unconfirmed-mutation` broadening) + ~5 LOC in parser.ts
+(sourceForm marker setters). Help-content refresh is content swap, no
+net LOC.
+
+### Tests
+
+14 new tests in `tests/v0.7.1-deprecation-lints.test.ts` covering the
+two deprecation rules + `unconfirmed-mutation` broadening (file_write +
+`$ memory_write` + `approved=` kwarg + `# Autonomous: true` + preceding
+`ask()` gate). Suite: 910 passing, 10 skipped, 1 env-gated YouTrack.
+
 ## 0.7.0 — 2026-05-25
 
 **Syntax revamp + pre-adoption clean break.** Two grammar additions

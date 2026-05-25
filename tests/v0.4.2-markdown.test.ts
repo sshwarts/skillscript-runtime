@@ -145,7 +145,7 @@ Use this skill to pull recent issues. Configuration:
 # Skill: morning
 # Status: Approved
 fetch:
-    ! morning
+    emit(text="morning")
 default: fetch
 \`\`\`
 
