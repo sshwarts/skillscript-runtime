@@ -11,6 +11,8 @@ import { Registry } from "./connectors/registry.js";
 import { FilesystemSkillStore } from "./connectors/skill-store.js";
 import { OllamaLocalModel } from "./connectors/local-model.js";
 import { SqliteMemoryStore } from "./connectors/memory-store.js";
+import { LocalModelMcpConnector } from "./connectors/local-model-mcp.js";
+import { MemoryStoreMcpConnector } from "./connectors/memory-store-mcp.js";
 import { loadConnectorsConfig, detectGitignoreRisk } from "./connectors/config.js";
 import { FilesystemTraceStore } from "./trace.js";
 import { Scheduler, type ResolvableTriggerSource, type TriggerRegistration } from "./scheduler.js";
@@ -119,6 +121,20 @@ export function defaultRegistry(opts: DefaultRegistryOpts): { registry: Registry
   registry.registerLocalModel("default", new OllamaLocalModel({ baseUrl: ollamaUrl, defaultModelTag: "gemma2:9b" }));
   registry.registerLocalModel("gemma2", new OllamaLocalModel({ baseUrl: ollamaUrl, defaultModelTag: "gemma2:9b" }));
   registry.registerLocalModel("qwen", new OllamaLocalModel({ baseUrl: ollamaUrl, defaultModelTag: "qwen2.5:7b" }));
+
+  // v0.7.2 — auto-wire bridge connectors so the canonical `$ llm` and
+  // `$ memory` MCP-dispatch paths Just Work in default deployments. The
+  // bridges wrap the LocalModel + MemoryStore impls registered above as
+  // McpConnector instances. Adopters override by re-registering "llm"
+  // or "memory" with their own connector (post-bootstrap) OR by adding
+  // entries to connectors.json — connectors.json loading runs AFTER
+  // defaultRegistry, so adopter overrides win.
+  const defaultLocalModel = registry.getLocalModel("default");
+  registry.registerMcpConnector("llm", new LocalModelMcpConnector(defaultLocalModel));
+  const memoryStore = registry.listMemoryStores().find((e) => e.name === "primary");
+  if (memoryStore !== undefined) {
+    registry.registerMcpConnector("memory", new MemoryStoreMcpConnector(memoryStore.instance));
+  }
 
   return { registry, skillStore };
 }

@@ -1,5 +1,168 @@
 # Changelog
 
+## 0.7.2 — 2026-05-25
+
+**R4-driven punchlist + bridge classes.** Closes the cold-author findings
+from the R4 harness round (Perry's report `d284763f`, Scott's decisions
+`d89905f3`, bridge-class scope-lock `831c2661`, Perry's GO `5f471b0a`).
+The hypothesis test passed in R4 — minions reached for canonical
+`emit()`, `file_write()`, `${VAR}` naturally; friction moved deeper into
+substantive language semantics. v0.7.2 closes the substantive friction
+and lands the substrate-portability story end-to-end.
+
+### Added — language semantics
+
+- **String escape interpretation in double-quoted strings.** `\n`, `\t`,
+  `\\`, `\"` interpret to their actual chars inside `"..."`. Bash /
+  Python / JS / Go / C all do this; skillscript joins the prior. R4
+  minion 4 was reaching for `@ printf %b "${VAR}"` as a workaround;
+  now `$set X = "line1\nline2"` produces real newlines. Single-quoted
+  strings stay literal pass-through (reserved for v0.8+ literal
+  semantics). **Breaking change** — pre-adoption rule applies (no
+  external users to disrupt); any skill relying on literal `\n` bytes
+  needs a one-time rewrite.
+
+- **Triple-quote multi-line string literals.** `"""..."""` for prose-
+  shaped content. Spans line breaks naturally; embedded single `"`
+  doesn't terminate (three consecutive `"` chars don't accidentally
+  appear in natural English). Escape interpretation applies same as
+  single double-quote. Use cases: long-form `emit(text="""...""")`,
+  `file_write(content="""...""")`, multi-line `$set X = """..."""`
+  reports.
+
+- **`${VAR}` substitution in `# Output:` target slot.** Compile-time
+  inputs resolution (caller-passed `inputs` to `compile_skill`,
+  `# Vars:` defaults, `# Requires:` cascade values). Runtime-bound
+  refs (from `$` op outputs) explicitly deferred — needs two-phase
+  frontmatter resolution architectural call. Closes R4 finding #6
+  (minion 5 wrote `# Output: prompt-context: ${TARGET_AGENT}` expecting
+  parameterized routing; now works).
+
+### Added — lints
+
+- **Tier-3 `object-iteration-advisory` lint.** R4's strongest signal
+  (4 of 5 minions hit it). Fires on `foreach IT in ${VAR}` where VAR's
+  binding origin is a `$` MCP tool output without `.field` accessor.
+  Hints at common envelope-field names (`.items`, `.results`,
+  `.issuesPage`, `.data`, `.records`). Placeholder for v0.8 tool-schema
+  introspection that catches this precisely.
+
+- **`unconfirmed-mutation` broadened to legacy `@` ops.** Closes R4
+  minion 4 sub-finding: `@ printf %b ${REPORT}` silently word-split
+  when `REPORT` contained whitespace. Lint now flags any suspect
+  `${VAR}` substitution in `@` op bodies (same origin-detection logic
+  as the existing `$` op coverage). Pattern also widened to recognize
+  both `$(VAR)` and `${VAR}` forms.
+
+### Added — bridge classes (substrate-portability lands)
+
+- **`LocalModelMcpConnector`.** Bridge class that exposes a registered
+  `LocalModel` instance as an `McpConnector`. Wraps `LocalModel.run`
+  per the canonical contract:
+  `$ <connector> prompt="..." [maxTokens=N] [model="..."] -> R` where
+  R is the model's response string.
+
+- **`MemoryStoreMcpConnector`.** Bridge class that exposes a registered
+  `MemoryStore` instance as an `McpConnector`. Wraps `MemoryStore.query`:
+  `$ <connector> mode="fts|semantic|rerank" query="..." limit=N
+  [...extras] -> R` where R = `{items: PortableMemory[]}` envelope
+  (consistent with the object-iteration-advisory's hint pattern).
+
+- **Bootstrap auto-wire.** Bridges wire automatically at bootstrap as
+  connector instances `llm` (default LocalModel) + `memory` (default
+  MemoryStore, when SQLite db exists). Zero-config — `$ llm prompt="..."`
+  and `$ memory mode=fts query="..." limit=10` work in default
+  deployments without adopter wiring. Adopters override by re-registering
+  the names or wiring entries in `connectors.json`.
+
+### Architectural framing — canonical MCP-dispatch contract
+
+v0.7.2 doesn't just ship bridge code — it **defines what `$ llm` and
+`$ memory` MEAN in skillscript** by shipping with explicit kwarg surfaces.
+
+**Two layers of substrate portability:**
+
+1. **`LocalModel` + `MemoryStore` interface contracts** (typed contracts
+   within the runtime). Adopters implement these to plug in their
+   substrate without writing MCP servers. Bundled `OllamaLocalModel` +
+   `SqliteMemoryStore` are reference impls.
+2. **MCP dispatch via `$ <name>`** — bridge classes expose Layer 1 as
+   MCP; adopters can also bypass bridges and wire any MCP server under
+   any name (`$ pinecone_vector`, `$ amp.amp_query_memories`, etc.).
+
+**Bundled memory surface is ONE canonical call** (per Perry's scope-lock
+`5f471b0a`):
+```
+$ memory mode="fts|semantic|rerank" query="..." limit=N [...extras] -> R
+```
+Read-only, FTS-flavored. Substrate-portable across any `MemoryStore`-
+interface impl. Explicitly **not** bundled (adopter wires via dotted-form
+escape hatch `$ <connector>.<tool>`):
+- `$ memory_write`, `$ memory_get` (no MemoryStore interface methods)
+- Thread operations (`$ thread_get`, `$ thread_close`,
+  `$ thread_check_mailbox`, etc.) — substrate-specific
+- Introspection / traversal / promote / reinforce — substrate-specific
+- Mutations beyond write — substrate-specific
+
+For Tradita-style deployments, AMP wires as `$ amp.<tool>` with the
+full ~15-tool surface available; `$ memory` covers the canonical query
+path, `$ amp.<tool>` covers AMP-specific operations.
+
+### Changed
+
+- **`deprecated-symbol-op` lint** — remediation messages now confidently
+  suggest `$ llm` / `$ memory` (the bridge auto-wire makes these
+  load-bearing in default deployments). No more "(or your wired LLM
+  connector name)" caveat.
+
+- **`help()` content** — all six topics (quickstart, ops, frontmatter,
+  examples, composition, connectors, lint-codes) refreshed to canonical
+  v0.7.0+ surface. Container FS isolation note added. `object-iteration-
+  advisory` indexed. Tradita-internal naming scrubbed from connectors
+  topic.
+
+- **Quickstart hero example** — broken `$append REPORT <line>...</line>`
+  accumulator pattern replaced with `emit(text="...")` per-line +
+  `# Output: prompt-context:` delivery channel. Matches Perry's
+  corrected §1 doc atom.
+
+- **AST**: `op.sourceForm?: "function-call"` field already added in v0.7.1
+  to distinguish canonical from legacy at lint time. Continues to do
+  load-bearing work for the deprecated-symbol-op lint.
+
+### LOC ceiling
+
+Narrow-core ceiling 7250 → 7550. Bridges add ~80 LOC each (auxiliary
+surface). String-escape interpreter + triple-quote tokenizer state +
+${VAR}-in-Output substitution + object-iteration advisory + @-op
+unquoted-subst extension add ~200 LOC narrow-core total.
+
+### Tests
+
+53 new tests across 5 v0.7.2-specific test files:
+- `v0.7.2-object-iteration-advisory.test.ts` — 6 tests
+- `v0.7.2-string-escapes.test.ts` — 12 tests
+- `v0.7.2-triple-quote-literals.test.ts` — 14 tests
+- `v0.7.2-output-substitution.test.ts` — 9 tests
+- `v0.7.2-unquoted-subst-at-op.test.ts` — 7 tests
+- `v0.7.2-bridge-classes.test.ts` — 16 tests (unit + closed-set registry)
+
+Plus updated fixtures across test files where bootstrap auto-wire
+shifted expected behavior. Suite: 974 passing, 10 skipped, 1 env-gated
+YouTrack.
+
+### Deferred to v0.8 (per locked roadmap)
+
+- **Tool-schema introspection** that adapts the object-iteration-advisory
+  + deprecation lints based on actual connector availability
+- **Richer memory contract** covering vector / embedding / hybrid
+  substrates beyond FTS-flavored query
+- **`MemoryStore.write()`** interface addition to enable a bundled
+  `$ memory_write` bridge (currently adopter-wired)
+- **Pagination / `while` loop** primitive (v0.9)
+- **Phase 2 trigger sources** (event + agent-event) — v0.11
+- **Output routers** (slack + card) — v0.12
+
 ## 0.7.1 — 2026-05-25
 
 **R4-enabling polish.** Help-content refresh (was the R4 cold-author harness

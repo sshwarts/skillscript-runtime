@@ -90,6 +90,11 @@
 //            runtime.ts (chain parser + condition-context applier +
 //            ConnectorNotFoundError fold) + filters.ts (parseFilterChain
 //            + isodate). 50+ new tests across 5 v0.5.0 test files.
+//   v0.7.2b: nudged narrow ceiling 7400 → 7550 for v0.7.2 bridge classes
+//            (LocalModelMcpConnector + MemoryStoreMcpConnector) — ~80 LOC
+//            each in src/connectors/, plus ~15 LOC bootstrap auto-wire +
+//            class-registry update. Bridges define the canonical MCP-
+//            dispatch contract for `$ llm` and `$ memory` op classes.
 //   v0.7.2:  nudged narrow ceiling 7250 → 7400 for v0.7.2 R4-driven
 //            additions: tier-3 object-iteration-advisory lint (~40 LOC) +
 //            string escape interpretation in double-quoted strings
@@ -141,7 +146,7 @@ const CORE_PATHS = [
   "connectors/",
 ];
 
-const NARROW_MAX_LOC = 7400;
+const NARROW_MAX_LOC = 7550;
 const NARROW_MAX_FILES = 20;
 const BROAD_INFO_LOC = 9500;
 const BROAD_INFO_FILES = 28;

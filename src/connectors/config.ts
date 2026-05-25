@@ -26,6 +26,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, basename, resolve } from "node:path";
 import { CallbackMcpConnector } from "./mcp.js";
 import { RemoteMcpConnector } from "./mcp-remote.js";
+import { LocalModelMcpConnector } from "./local-model-mcp.js";
+import { MemoryStoreMcpConnector } from "./memory-store-mcp.js";
 import type { McpConnector, McpConnectorClass } from "./types.js";
 
 /**
@@ -62,6 +64,14 @@ export const KNOWN_CONNECTOR_CLASSES: ReadonlyMap<string, ConnectorClassEntry> =
       fromConfig: (config: Record<string, unknown>) => RemoteMcpConnector.fromConfig(config),
     },
   ],
+  // v0.7.2 — bridge classes registered for discoverability via
+  // `runtime_capabilities({include:["mcpConnectorClasses"]})`. Like
+  // `CallbackMcpConnector`, these are NOT JSON-config-wired (they need
+  // a runtime LocalModel/MemoryStore instance, not just config). Bootstrap
+  // auto-wires them via embedder code; adopters override by re-registering
+  // under the same instance name.
+  ["LocalModelMcpConnector", { ctor: LocalModelMcpConnector }],
+  ["MemoryStoreMcpConnector", { ctor: MemoryStoreMcpConnector }],
 ]);
 
 /** Listable for error messages + runtime_capabilities discovery. */

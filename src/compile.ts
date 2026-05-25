@@ -257,7 +257,19 @@ export async function compile(
 
 
   // Default output declaration when `# Output:` is absent.
-  const outputs: OutputDecl[] = parsed.outputs.length > 0 ? parsed.outputs : [{ kind: "text" }];
+  // v0.7.2: ${VAR} substitution in the `target` slot, resolved against
+  // compile-time inputs only — caller-passed inputs + # Vars: defaults +
+  // # Requires: cascade values (the `resolved` map). Runtime-bound refs
+  // (from `$` op outputs etc.) pass through verbatim; the delivery layer
+  // will see the literal template and produce a clear error. Two-phase
+  // frontmatter resolution that covers runtime refs is deferred per
+  // architectural decision (Scott + Perry, v0.7.2 punchlist d89905f3).
+  const rawOutputs: OutputDecl[] = parsed.outputs.length > 0 ? parsed.outputs : [{ kind: "text" }];
+  const outputs: OutputDecl[] = rawOutputs.map((decl) => {
+    if (decl.target === undefined) return decl;
+    const resolvedTarget = substitute(decl.target, resolved);
+    return { ...decl, target: resolvedTarget };
+  });
 
   const warnings: string[] = [];
   if (order.length < parsed.targets.size) {

@@ -296,7 +296,9 @@ $ memory mode=fts query="recent incidents" limit=10 -> CONTEXT
 $ memory_write content="\${REPORT}" addressed_to="oncall" tags="morning-sweep" approved="cron deliverable" -> R
 \`\`\`
 
-**Today's reality (v0.7.x grace period).** No \`llm\` or \`memory\` MCP connector ships by default — bridge classes (\`LocalModelMcpConnector\` + \`MemoryStoreMcpConnector\`) land in v0.7.2. Until then, the legacy \`~ prompt=...\` and \`> mode=... query=...\` ops continue to dispatch through the bundled \`LocalModel\` / \`MemoryStore\` contracts (Ollama + SQLite by default) — v0.7.x grace.
+**Today's reality (v0.7.2).** Default deployments auto-wire \`llm\` + \`memory\` MCP connectors via bundled bridges (\`LocalModelMcpConnector\` over \`LocalModel\`; \`MemoryStoreMcpConnector\` over \`MemoryStore\`), so \`$ llm\` and \`$ memory\` work zero-config against the bundled Ollama + SQLite contracts. Adopters override by re-registering the same connector names against their own substrate. The legacy \`~ prompt=...\` and \`> mode=... query=...\` ops continue to dispatch through the bundled typed contracts during the v0.7.x grace period with tier-2 \`deprecated-symbol-op\` warnings. \`$ memory_write\` is deferred past v0.7.2 (requires \`MemoryStore.write\` interface, not yet shipped).
+
+**One canonical call surface per concern.** \`$ memory\` is **the** memory-retrieval call surface — one contract (\`mode=... query=... limit=N -> R\` returning \`{items: [...]}\` envelope), one connector name. Both bare-form (\`$ memory ...\`) and dotted-form (\`$ memory.query ...\`) dispatch through the same registered connector. Same shape for \`$ llm\` (one \`prompt=... [maxTokens=N] [model="..."] -> R\` contract returning the response string). Author against the canonical \`$ llm\` / \`$ memory\` surfaces today; legacy \`~\` / \`>\` removal lands in v0.8/v0.9.
 
 ## Pipe filters
 
@@ -350,8 +352,8 @@ Branches via \`if:\` / \`elif COND:\` / \`else:\`. The \`else:\` after a target 
 | \`@ cmd args [-> R]\` | \`shell(command="cmd args") [-> R]\` |
 | \`@ unsafe cmd\` | \`shell(command="cmd", unsafe=true)\` |
 | \`& skill-name\` | \`inline(skill="skill-name")\` |
-| \`~ prompt="..." -> R\` | \`$ llm prompt="..." -> R\` (requires \`llm\` MCP connector wired — v0.7.2 bridge classes) |
-| \`> mode=... query=... -> R\` | \`$ memory mode=... query=... -> R\` (requires \`memory\` MCP connector wired) |
+| \`~ prompt="..." -> R\` | \`$ llm prompt="..." -> R\` (auto-wired via \`LocalModelMcpConnector\` bridge in default deployments) |
+| \`> mode=... query=... -> R\` | \`$ memory mode=... query=... -> R\` (auto-wired via \`MemoryStoreMcpConnector\` bridge in default deployments) |
 | \`$(VAR)\` | \`\${VAR}\` |
 | \`(approved: "reason")\` trailer | \`approved="reason"\` kwarg |
 
@@ -653,12 +655,14 @@ Skillscript skills don't import packages — they invoke connectors. The runtime
 | Contract | Purpose | Op surface |
 |---|---|---|
 | \`SkillStore\` | Skill source persistence + status lifecycle | implicit (\`inline\` / \`execute_skill\` reference) |
-| \`LocalModel\` | LLM inference (Ollama by default) | legacy \`~\` op (grace period) + future \`$ llm\` MCP bridge (v0.7.2) |
-| \`MemoryStore\` | Knowledge retrieval (SQLite-FTS by default) | legacy \`>\` op (grace period) + future \`$ memory\` MCP bridge (v0.7.2) |
+| \`LocalModel\` | LLM inference (Ollama by default) | \`$ llm\` MCP dispatch via auto-wired \`LocalModelMcpConnector\` bridge (v0.7.2); legacy \`~\` op during grace period |
+| \`MemoryStore\` | Knowledge retrieval (SQLite-FTS by default) | \`$ memory\` MCP dispatch via auto-wired \`MemoryStoreMcpConnector\` bridge (v0.7.2); legacy \`>\` op during grace period |
 | \`McpConnector\` | MCP tool dispatch — all external tools | \`$ <connector_name> args\` |
 | \`AgentConnector\` | Deliver augment/template payloads | \`# Output: prompt-context:\` / \`template:\` |
 
-**v0.7.0 substrate framing.** Canonical syntax routes substrate-specific dispatch through MCP (\`$ llm\` / \`$ memory\` rather than \`~\` / \`>\`). Adopters wire whatever substrate-backing connector names read well at the call sites; \`LocalModel\` + \`MemoryStore\` contracts continue to back the legacy \`~\` / \`>\` ops during the grace period. v0.7.2 adds \`LocalModelMcpConnector\` + \`MemoryStoreMcpConnector\` bridges so the canonical \`$ llm\` / \`$ memory\` paths work in default deployments.
+**v0.7.2 substrate framing.** Canonical syntax routes substrate-specific dispatch through MCP (\`$ llm\` / \`$ memory\` rather than legacy \`~\` / \`>\`). Default deployments auto-wire the \`llm\` and \`memory\` connector names via bundled bridges (\`LocalModelMcpConnector\` over \`LocalModel\`; \`MemoryStoreMcpConnector\` over \`MemoryStore\`), so \`$ llm\` and \`$ memory\` work zero-config. Adopters override by re-registering those same connector names against their own substrate (e.g., a hosted-model MCP server in place of the local Ollama bridge); the canonical call sites don't change.
+
+**One canonical call surface per concern.** \`$ memory\` is **the** memory-retrieval call surface — one contract (\`mode=... query=... limit=N -> R\` returning \`{items: [...]}\` envelope), one connector name. Both bare-form (\`$ memory ...\`) and dotted-form (\`$ memory.query ...\`) dispatch through the same registered connector. Same shape for \`$ llm\` (one \`prompt=... [maxTokens=N] [model="..."] -> R\` contract returning the response string). The legacy \`~\` / \`>\` removal lands in v0.8/v0.9 — author against the canonical \`$ llm\` / \`$ memory\` surfaces today.
 
 ## Discovery
 
@@ -668,7 +672,7 @@ For shell execution (\`shell(...)\` op), \`runtime_capabilities\` also reports \
 
 ## Container filesystem isolation
 
-When the runtime is sandboxed (Docker container, deployed VM, etc.), the runtime's filesystem is namespace-isolated from the author's host. \`file_read("/tmp/x")\` and \`file_write(path="/tmp/x", ...)\` operate on the *runtime's* \`/tmp\`, not the host's. For cross-namespace work, use a known shared volume path or expose the file via a mount point both sides see. \`runtime_capabilities()\` (planned v0.7.2+) will report writable base paths to make this discoverable from cold-author position.
+When the runtime is sandboxed (Docker container, deployed VM, etc.), the runtime's filesystem is namespace-isolated from the author's host. \`file_read("/tmp/x")\` and \`file_write(path="/tmp/x", ...)\` operate on the *runtime's* \`/tmp\`, not the host's. For cross-namespace work, use a known shared volume path or expose the file via a mount point both sides see. \`runtime_capabilities()\` (planned v0.8+) will report writable base paths to make this discoverable from cold-author position.
 `;
 
 

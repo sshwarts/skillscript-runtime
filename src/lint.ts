@@ -1677,45 +1677,73 @@ function isOriginSuspect(origin: BindingOrigin | undefined): boolean {
 const UNQUOTED_SUBSTITUTION_IN_KWARG_VALUE: LintRule = {
   id: "unquoted-substitution-in-kwarg-value",
   severity: "warning",
-  description: "A `$ tool key=$(VAR)` op kwarg has an unquoted `$(VAR)` substitution where VAR may resolve to a value containing whitespace. Runtime renders into `key=value with spaces` then re-tokenizes on whitespace — only the first chunk binds to `key`. Silent arg truncation.",
-  remediation: "Wrap the substitution in quotes: `key=\"$(VAR)\"`. The MCP arg tokenizer respects quoted regions, preventing the re-tokenization split.",
+  description: "A `$ tool key=$(VAR)` op kwarg OR a legacy `@ cmd ... $(VAR)` shell arg has an unquoted `$(VAR)` / `${VAR}` substitution where VAR may resolve to a value containing whitespace. Runtime renders into `key=value with spaces` then re-tokenizes on whitespace — only the first chunk binds to `key` (MCP) or first arg (shell). Silent arg truncation. v0.7.2 extends coverage from `$` ops to `@` ops per R4 minion 4 finding.",
+  remediation: "Wrap the substitution in quotes: `key=\"$(VAR)\"` for MCP kwargs, `\"$(VAR)\"` for shell args. The arg tokenizer respects quoted regions, preventing the re-tokenization split.",
   check: (ctx) => {
     const findings: LintFinding[] = [];
     const origins = buildBindingOrigins(ctx.parsed);
     const reported = new Set<string>();
+    // v0.7.2: shared pattern matches both legacy `$(VAR)` and canonical
+    // `${VAR}` substitution forms. Only the opening delimiter + var-name
+    // are required to match (no closing `)`/`}`) so filter chains like
+    // `$(VAR|trim)` and `${VAR|filter:"x"}` parse cleanly. The capture
+    // groups (1 = paren-form name, 2 = brace-form name) get coalesced.
+    const subStPattern = /\$(?:\(([^|)\s]+)|\{([^|}\s]+))/;
     for (const [targetName, target] of ctx.parsed.targets) {
       walkOps(target.ops, (op) => {
-        if (op.kind !== "$") return;
-        // Scan op.body for `key=$(VAR)` patterns where the $( is NOT
-        // immediately preceded by a quote character. Tokenize once, then
-        // inspect each token.
-        const tokens = tokenizeKeywordArgs(op.body);
-        for (const tok of tokens) {
-          const eq = tok.indexOf("=");
-          if (eq === -1) continue;
-          const key = tok.slice(0, eq);
-          const value = tok.slice(eq + 1);
-          // Unquoted $(VAR) pattern: starts with $( (not " or '). May
-          // include filter chain and trailing characters.
-          if (!value.startsWith("$(")) continue;
-          // Extract the var name (everything up to | or ) ).
-          const m = /^\$\(([^|)\s]+)/.exec(value);
-          if (m === null) continue;
-          const varName = m[1]!;
-          // Dotted access: trim to the root.
-          const rootVar = varName.split(".")[0]!;
-          const origin = origins.get(rootVar);
-          if (!isOriginSuspect(origin)) continue;
-          const key2 = `${targetName}:${key}:${varName}`;
-          if (reported.has(key2)) continue;
-          reported.add(key2);
-          findings.push({
-            rule: "unquoted-substitution-in-kwarg-value",
-            severity: "warning",
-            message: `\`$ ... ${key}=$(${varName})\` in target '${targetName}': unquoted substitution. ${describeOriginRisk(origin!)} Wrap as \`${key}="$(${varName})"\` to prevent silent arg truncation if the value contains whitespace.`,
-            block: targetName,
-            extras: { kwarg: key, var_name: varName, origin: origin!.kind },
-          });
+        if (op.kind === "$") {
+          // $ MCP dispatch — scan kwarg values for unquoted substitutions.
+          const tokens = tokenizeKeywordArgs(op.body);
+          for (const tok of tokens) {
+            const eq = tok.indexOf("=");
+            if (eq === -1) continue;
+            const key = tok.slice(0, eq);
+            const value = tok.slice(eq + 1);
+            if (!(value.startsWith("$(") || value.startsWith("${"))) continue;
+            const m = subStPattern.exec(value);
+            if (m === null) continue;
+            const varName = (m[1] ?? m[2])!;
+            const rootVar = varName.split(".")[0]!;
+            const origin = origins.get(rootVar);
+            if (!isOriginSuspect(origin)) continue;
+            const dedupKey = `${targetName}:$:${key}:${varName}`;
+            if (reported.has(dedupKey)) continue;
+            reported.add(dedupKey);
+            findings.push({
+              rule: "unquoted-substitution-in-kwarg-value",
+              severity: "warning",
+              message: `\`$ ... ${key}=\${${varName}}\` in target '${targetName}': unquoted substitution. ${describeOriginRisk(origin!)} Wrap as \`${key}="\${${varName}}"\` to prevent silent arg truncation if the value contains whitespace.`,
+              block: targetName,
+              extras: { kwarg: key, var_name: varName, origin: origin!.kind, op: "$" },
+            });
+          }
+        } else if (op.kind === "@") {
+          // v0.7.2 — legacy @ shell op. Tokenize the body the same way the
+          // runtime would (whitespace-separated, quotes respected), then
+          // flag any token that is a bare unquoted substitution. Quoted
+          // tokens (`"${VAR}"` / `'${VAR}'`) are safe.
+          const tokens = tokenizeKeywordArgs(op.body);
+          for (const tok of tokens) {
+            // Skip quoted tokens — the quotes protect against whitespace split.
+            if ((tok.startsWith('"') && tok.endsWith('"')) || (tok.startsWith("'") && tok.endsWith("'"))) continue;
+            if (!(tok.startsWith("$(") || tok.startsWith("${"))) continue;
+            const m = subStPattern.exec(tok);
+            if (m === null) continue;
+            const varName = (m[1] ?? m[2])!;
+            const rootVar = varName.split(".")[0]!;
+            const origin = origins.get(rootVar);
+            if (!isOriginSuspect(origin)) continue;
+            const dedupKey = `${targetName}:@:${varName}`;
+            if (reported.has(dedupKey)) continue;
+            reported.add(dedupKey);
+            findings.push({
+              rule: "unquoted-substitution-in-kwarg-value",
+              severity: "warning",
+              message: `\`@ ... \${${varName}}\` shell arg in target '${targetName}': unquoted substitution. ${describeOriginRisk(origin!)} Wrap as \`"\${${varName}}"\` to prevent silent word-splitting if the value contains whitespace.`,
+              block: targetName,
+              extras: { var_name: varName, origin: origin!.kind, op: "@" },
+            });
+          }
         }
       });
     }
@@ -1750,8 +1778,11 @@ function describeOriginRisk(origin: BindingOrigin): string {
  * marker). Only the 6 symbol ops that became function-call ops in v0.7.0.
  */
 const DEPRECATED_SYMBOL_OP_REPLACEMENT: Record<string, string> = {
-  "~": "$ llm prompt=\"...\" -> R   (or your wired LLM connector name)",
-  ">": "$ memory mode=... query=\"...\" limit=N -> R   (or your wired memory connector name)",
+  // v0.7.2: bridge classes ship default-wired so `$ llm` / `$ memory` work
+  // out of the box in default deployments. Suggestions are load-bearing
+  // (no more "(or your wired connector name)" caveat).
+  "~": "$ llm prompt=\"...\" [maxTokens=N] [model=\"...\"] -> R",
+  ">": "$ memory mode=\"fts|semantic|rerank\" query=\"...\" limit=N -> R",
   "@": "shell(command=\"...\") [-> R]",
   "!": "emit(text=\"...\")",
   "??": "ask(prompt=\"...\") -> R",

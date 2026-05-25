@@ -712,7 +712,19 @@ async function execOpInner(
         return { lastBoundVar: op.outputVar ?? flatKey, lastValue: parsed };
       }
 
-      const connectorName = op.mcpConnector ?? "primary";
+      // v0.7.2 — bare-form name-match dispatch resolution. When `$ <name> ...`
+      // is bare (no dotted prefix) AND `<name>` matches a registered
+      // connector name, route to that connector directly. This makes the
+      // canonical `$ llm prompt="..."` and `$ memory mode=... query=...
+      // limit=N` paths work in default deployments where the bridges are
+      // auto-wired as `llm` + `memory` (rather than as `primary`). If
+      // `<name>` isn't a registered connector, fall back to the legacy
+      // `primary` lookup — preserves backward-compat for skills that wrote
+      // `$ <tool>` expecting routing through the primary MCP connector.
+      let connectorName = op.mcpConnector ?? "primary";
+      if (op.mcpConnector === undefined && ctx.registry.hasMcpConnector(toolName)) {
+        connectorName = toolName;
+      }
 
       // v0.4.1 — defense-in-depth allowlist check. Lint catches this at
       // compile time via `disallowed-tool`; this runtime check is the

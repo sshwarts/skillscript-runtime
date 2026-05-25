@@ -272,9 +272,15 @@ describe("v0.2.8 — $ execute_skill in-skill composition", () => {
       .toEqual([`inputs={"outer": {"inner": "v"}, "list": [1, 2]}`]);
   });
 
-  it("$ execute_skill works without an MCP connector wired (built-in intercept)", async () => {
+  it("$ execute_skill works without a user-wired MCP connector (built-in intercept)", async () => {
     const wired = bootstrap({ skillsDir: join(home, "skills"), traceDir: join(home, "traces") });
-    expect(wired.registry.listMcpConnectors()).toEqual([]);
+    // v0.7.2 — bootstrap auto-wires `llm` bridge connector (and `memory` if
+    // SQLite memory.db exists). The `$ execute_skill` test ensures the
+    // built-in intercept fires for ANY composition op regardless of whether
+    // user MCP connectors are wired. We confirm the auto-wired bridges are
+    // present (they should be) and proceed.
+    const connectors = wired.registry.listMcpConnectors();
+    expect(connectors.some((c) => c.name === "llm")).toBe(true);
     await wired.skillStore.store("alpha",
       "# Skill: alpha\n# Status: Approved\nm:\n    ! alpha-out\ndefault: m\n");
     await wired.skillStore.store("beta",
