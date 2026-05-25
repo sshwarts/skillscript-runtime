@@ -8,64 +8,109 @@ Companion docs under the Skillscript project anchor:
 - `skillscript-prd` — product positioning, value prop, roadmap
 - `skillscript-erd` — engineering requirements, system architecture, runtime mechanics
 
-## Overview & language model — declarative dispatch DAG, goal-directed execution
+## Overview & language model — trigger → process → deliver, three delivery channels, three op classes (v0.7.0)
+
+**DRAFT — pending v0.7.0 ship.** Replaces `b0a8e612-14bc-401e-80d1-b7979c4493ff` (v0.5.0 §1) on doc anchor swap when v0.7.0 lands. Reflects the locked v0.7.0 framework (`50a83a88` thread, approved `783a10a4`).
+
+---
 
 Skillscript is a constrained domain-specific language for authoring agent workflows. A skillscript is a declarative recipe: a small program with a dependency DAG of named targets, each composed of typed operations. Skillscripts are written once and executed many times.
 
-## Language model
+## Language model — trigger → process → deliver
+
+Every skill follows the same shape:
+
+1. **Trigger** — what fires the skill: cron, command, session-start, agent-event, file-watch, webhook, etc.
+2. **Process** — pull data (MCP / memory / file), classify or compose via sub-LLM + iteration, build the deliverable.
+3. **Deliver** — emit the result via one or more delivery channels (see below).
+
+Skillscript's job is to express this pipeline declaratively. When there is an agent above the skill, the agent's job is to act on the delivered artifact. When there isn't (autonomous fires), the delivery channel IS the outcome.
 
 **Declarative DAG, not imperative script.** A skillscript declares targets and their dependencies (`needs:` keyword); the interpreter topologically sorts and executes them in dependency order. Write blocks in any order — the runtime walks the graph.
 
 **Goal-directed, not entry-point-directed.** The `default:` declaration names the *goal target* — the terminal node whose result is the skill's output. The runtime walks dependencies backward from the goal through the topo-sort. A skill with a single target obscures this (goal == entry trivially); skills with multi-target DAGs make the shape visible.
 
-**Authored by agents, executed by interpreter or compiled to agent prompts.** Two execution paths from the same source:
-- **Runtime-mediated** — the interpreter walks ops and dispatches them directly through configured connectors (MemoryStore, LocalModel, MCP). Used for autonomous fires (cron, session-triggered, event-triggered). Safety boundary is the connector config.
-- **Agent-mediated** — the compiler renders the skill as a prompt; an agent reads the prompt and executes ops through its own tools (Bash, MCP clients, etc.). Used when an agent invokes a skill mid-conversation. Safety boundary is the agent's harness tool permissions.
+## Two execution paths
+
+**Runtime-mediated** — the interpreter walks ops and dispatches them directly through configured connectors. Used for autonomous fires (cron, session-triggered, event-triggered). Safety boundary is the connector config + per-op gating (see §2).
+
+**Agent-mediated** — the compiler renders the skill as a prompt; an agent reads the prompt and executes ops through its own tools. Used when an agent invokes a skill mid-conversation. Safety boundary is the agent's harness tool permissions.
 
 The language is identical in both paths. The execution model is a deployment-time + invocation-time decision.
 
-## Three kinds of skill
+## Three delivery channels
 
-Skills deliver value in one of three shapes, determined by the relationship between the skill and the *frontier agent* that may consume its output:
+A skill delivers its work via one or more of three channels. Delivery channel is not a property of skill type — it's just which ops a skill ends with.
 
-- **Headless** — the skill runs end-to-end via the runtime and emits its result to a destination (Slack, file, database, none). No frontier agent is involved in the execution. Example: a cron-fired log-analysis skill that posts a summary to a destination channel.
-- **Augmenting** — the skill runs (typically runtime-mediated) and delivers an artifact to a frontier agent for consumption. The agent uses the delivered data, context, or transformed input in its own reasoning. Example: a `session: start` skill that emits `prompt-context:` content prepended to the next inference.
-- **Template** — the skill compiles to a prompt that a frontier agent executes itself. The runtime doesn't dispatch ops; it renders a prompt the agent follows. Example: a reusable "how to triage a bug report" recipe an agent invokes mid-conversation via the compile-to-prompt API.
+| Channel | Op | When you'd use it |
+|---|---|---|
+| **Embedded prompt** | `emit(text="...")` | Skill output is prompt-context for the agent's next turn; agent reads it inline. Pattern: agent-augmenting skills declared via `# Output: prompt-context:<agent>`. |
+| **Memory handoff** | `$ memory_write content="..." addressed_to="<agent>" -> R` | Skill writes a memory the target agent picks up via mailbox at next session. Pattern: async carrier skills, autonomous fires that hand off to a future session. |
+| **File handoff** | `file_write(path="...", content="...")` | Skill writes a file at a known location; agent or downstream process reads when working in the area. Pattern: autonomous reports, status snapshots, queue files. |
 
-The kind is determined by `# Output:` and the invocation path, not by a separate declaration. A skill author chooses by deciding *who consumes the output*: a destination, a frontier agent's reasoning, or a frontier agent's execution loop. The Headless/Augmenting/Template distinction is orthogonal to the runtime-mediated/agent-mediated execution-mode distinction described above.
+A single skill can use any combination. An autonomous cron-fired sweep might write a memory addressed to the on-call agent AND emit a file for the dashboard. A command-invoked skill might emit prompt-context AND file one memory as a deliverable. The combinations are unconstrained — the per-op gating model (§2) governs which mutating ops are authorized, not which channels a skill uses.
 
-**The kinds compose.** In practice, skills route between kinds based on runtime decisions. A Headless skill running on a cron fires, evaluates a condition, and based on the result either stays Headless (writes a log entry, posts to a channel, exits quietly) or invokes a downstream skill that delivers Augmenting context to wake a frontier agent — or writes out a Template the agent picks up later. The taxonomy describes the delivery shape of a *single execution path*; a chain of skills traverses multiple kinds. Most non-trivial skill systems mix all three.
+## Three op classes
+
+The op surface is three classes, each with its own grammar:
+
+| Class | Shape | Resolution |
+|---|---|---|
+| **Mutation statements** | `$set VAR = value`, `$append VAR <value>` | Reserved keywords. |
+| **Runtime-intrinsic function-calls** | `verb(kwarg=value, ...) [-> BINDING]` | Closed built-in list (§2). Unknown verb → tier-1 lint `unknown-runtime-op`. |
+| **External MCP dispatch** | `$ <connector> kwarg=value, ... [-> BINDING]` | Resolved against `connectors.json`. Unknown connector → tier-1 lint `unknown-connector`. |
+
+The `$` prefix is information-bearing: it marks **state-affecting ops** (mutation OR external dispatch). Function-call shape marks **language-intrinsic ops the runtime knows directly**.
+
+Full op catalog and per-op semantics in §2.
+
+## Substrate portability
+
+The language doesn't privilege any backend. `$ llm`, `$ memory`, `$ ticketing_search` are not language built-ins — they're connector names declared in `connectors.json` and wired to whichever substrate the adopter chooses. The same skill source runs against any conforming connector set:
+
+| Connector slot | Adopter A wires | Adopter B wires |
+|---|---|---|
+| `llm` | Local model (Ollama) | OpenAI Chat Completions |
+| `memory` | AMP query | Pinecone query |
+| `memory_write` | AMP write | Pinecone upsert |
+| `ticketing_search` | YouTrack search | Jira search |
+| `agent_notify` | Claude Code spawn (webhook) | tmux send-keys |
+
+Skill source doesn't change. Adopter wires their substrate; language is agnostic.
 
 ## Anatomy of a skill
 
 ```
-# Skill: get-weather
-# Description: Fetch current weather for the user's location
-# Vars: LOCATION=ip-based, UNITS=imperial
-# Requires: user-var:location -> LOCATION (fallback: ip-based)
-# Triggers:
-# Output: text
+# Skill: morning-showstopper-sweep
+# Description: Pre-triage open showstoppers before the human arrives; deliver via addressed memory.
+# Triggers: cron:"0 8 * * MON-FRI"
+# Vars: PROJECT = "INFRA"
 
-fetch:
-    @ curl -s "wttr.in/$(LOCATION|url)?format=j1" -> RAW
-    ~ prompt="Format weather summary: $(RAW)" -> SUMMARY
-    ! $(SUMMARY)
+# Process: pull showstoppers + pre-triage each via sub-LLM
+$ ticketing_search query="project:${PROJECT} severity:showstopper state:Open" -> SHOWSTOPPERS
 
-default: fetch
+$set REPORT = "Morning showstoppers (${SHOWSTOPPERS.totalCount}):\n\n"
+foreach ISSUE in ${SHOWSTOPPERS.items}:
+  $ llm prompt="Two-line summary + top hypothesis for: ${ISSUE.summary}\n\n${ISSUE.description}" -> ANALYSIS
+  $append REPORT <line>## ${ISSUE.id}: ${ISSUE.summary}</line>
+  $append REPORT <line>${ANALYSIS}</line>
+
+# Deliver: memory handoff to the on-call agent
+$ memory_write content="${REPORT}" addressed_to="cc" tags="morning-sweep" approved="cron-fired daily sweep" -> SWEEP_ID
+
+default: deliver
 ```
 
 Three layers of declaration:
-1. **Header metadata** (`# Key: value` lines) — name, description, declared variables, dependencies, triggers, output routing, error fallbacks
+1. **Header metadata** (`# Key: value` lines) — name, description, declared variables, triggers, optional `# Output:` routing, `# Autonomous:` flag, error fallbacks
 2. **Targets** — named blocks of typed ops, optionally with `needs:` dependencies
 3. **`default:`** — names the goal target the runtime walks toward
 
 ## Lexical conventions
 
-The grammar is small but strict. A few rules that determine how the parser reads source:
-
 ### Indentation: spaces only
 
-Block structure (`foreach`, `if`/`elif`/`else:`, target bodies, error-handler `else:` blocks) is determined by indentation. **Use spaces. Tabs are a parse error.** Mixed tabs+spaces in a single file is a parse error. No convention to debate, no editor config to align — the language enforces one rule.
+Block structure (`foreach`, `if`/`elif`/`else:`, target bodies, error-handler `else:` blocks) is determined by indentation. **Use spaces. Tabs are a parse error.** Mixed tabs+spaces in a single file is a parse error.
 
 The conventional indent is 4 spaces, but any consistent depth within a block is acceptable. The parser tracks each block's indent level on entry and rejects mid-block changes.
 
@@ -73,24 +118,21 @@ The conventional indent is 4 spaces, but any consistent depth within a block is 
 
 The following identifiers are reserved and cannot be used as variable names, target names, or skill names:
 
-**Currently in use:** `default`, `needs`, `if`, `elif`, `else`, `foreach`, `in`, `not`, `unsafe`
+**Mutation statements:** `$set`, `$append`
+
+**Runtime-intrinsic op names:** `emit`, `ask`, `inline`, `execute_skill`, `shell`, `file_read`, `file_write` (the closed function-call list; see §2)
+
+**Control flow:** `default`, `needs`, `if`, `elif`, `else`, `foreach`, `in`, `not`, `unsafe`
 
 **Future-reserved** (no current semantics, reserved to keep v2 grammar additions non-breaking): `while`, `for`, `match`, `try`, `catch`, `return`
 
-Reserved-name use produces a parse error with a specific diagnostic:
+Reserved-name use produces a parse error with a specific diagnostic.
 
-```
-error: 'default' is a reserved keyword and cannot be used as a variable name
-  # Vars: default=foo
-          ^^^^^^^
-  rename the variable (e.g., default_value)
-```
-
-**Case sensitivity.** Reserved words are exact-match case-sensitive. `default` is reserved; `Default` is allowed. `If` is allowed as an identifier; `if` is the control-flow keyword.
+**Case sensitivity.** Reserved words are exact-match case-sensitive. `emit` is reserved; `Emit` is allowed. `If` is allowed as an identifier; `if` is the control-flow keyword.
 
 ### Enumerated value normalization
 
-For frontmatter keys with a closed set of accepted values (`# Status:`, `# Output:` kinds, trigger sources, etc.), values are accepted case-insensitively on input and stored as their canonical form. `# Status: draft`, `# Status: Draft`, and `# Status: DRAFT` all parse to the same canonical `Draft`. The principle is consistent across every enumerated frontmatter field.
+For frontmatter keys with a closed set of accepted values (`# Status:`, `# Output:` kinds, trigger sources, etc.), values are accepted case-insensitively on input and stored as their canonical form. `# Status: draft`, `# Status: Draft`, and `# Status: DRAFT` all parse to the same canonical `Draft`.
 
 This applies to value-space normalization only — keys remain case-sensitive (`# Status:` is the header; `# status:` is a parse error).
 
@@ -100,21 +142,21 @@ Skillscripts are stored via a configured `SkillStore` backend. The backend persi
 
 The language is storage-agnostic; the interpreter accepts a skillscript body as text regardless of source. Common SkillStore implementations:
 
-- **Memory-backed** — skill bodies live in a knowledge-substrate (e.g., a memory-governance system) as records with a distinguished payload type. Versioning and audit trail come from the substrate.
+- **Memory-backed** — skill bodies live in a knowledge-substrate as records with a distinguished payload type. Versioning and audit trail come from the substrate.
 - **File-backed** — skill bodies live on disk (e.g., for version-control workflows or distribution). Versioning and audit trail come from the filesystem and/or VCS.
 - **Hybrid** — skills authored in one backend and synced to another for distribution.
 
-The Connectors section documents the `SkillStore` interface and how to wire a custom backend.
+The Connectors section (§10) documents the `SkillStore` interface and how to wire a custom backend.
 
 ### File-backed convention
 
 Three-file pattern per skill on disk, mirroring the standard source/compiled split (`.ts`→`.js`, `.scss`→`.css`):
 
-- `<skill-name>.skill.md` — **source.** Authored by humans or agents. Dual-extension: `.md` outer makes any markdown-aware tool (editor, browser, vault) render headers + code blocks natively; `.skill` inner is the language-tooling discriminator. Committed to version control.
-- `<skill-name>.skill` — **compiled artifact.** The prompt text emitted by the compile API (or `skillfile compile` on disk). Agent-consumable. Typically gitignored (derived from source).
-- `<skill-name>.skill.provenance.json` — **provenance sidecar.** Records source content_hash, compiled version, timestamps, data-skill staleness markers. Emitted alongside the compiled artifact. Typically gitignored.
+- `<skill-name>.skill.md` — **source.** Authored by humans or agents. Dual-extension: `.md` outer makes any markdown-aware tool render headers + code blocks natively; `.skill` inner is the language-tooling discriminator. Committed to version control.
+- `<skill-name>.skill` — **compiled artifact.** The prompt text emitted by the compile API. Agent-consumable. Typically gitignored.
+- `<skill-name>.skill.provenance.json` — **provenance sidecar.** Records source content_hash, compiled version, timestamps, data-skill staleness markers. Typically gitignored.
 
-Default `.gitignore` for a file-backed skills repo: `*.skill` and `*.skill.provenance.json`. Sources stay committed; derived artifacts don't.
+Default `.gitignore` for a file-backed skills repo: `*.skill` and `*.skill.provenance.json`.
 
 ## Authoring discipline
 
@@ -122,19 +164,13 @@ Two principles for skill authors, learned by accumulated failure across many age
 
 ### Don't encode deterministic implementation details
 
-Skills are orchestration; deterministic operations are tools. When tempted to hardcode a CLI version string, a REST endpoint payload structure, or an authentication handshake, the discipline says: *the work belongs in an MCP tool, not in the skill body*. Reasons:
+Skills are orchestration; deterministic operations are tools. When tempted to hardcode a CLI version string, a REST endpoint payload structure, or an authentication handshake, the discipline says: *the work belongs in an MCP tool, not in the skill body*.
 
 - **Drift.** CLI versions change. Endpoints change. The skill that hardcodes them breaks on next update; the MCP tool that abstracts them survives.
-- **Substrate-portability.** A skill that knows "the API returns `{ user: {...} }`" is bound to one API shape. A skill that calls `$ user.fetch -> USER` and accesses `$(USER.id)` works against any connector that conforms to the user-shape contract.
+- **Substrate-portability.** A skill that knows "the API returns `{ user: {...} }`" is bound to one API shape. A skill that calls `$ user_fetch -> USER` and accesses `${USER.id}` works against any connector that conforms to the user-shape contract.
 - **Authority.** Auth handshakes inside skill bodies leak credentials through skill source. Auth lives in the connector's identity-merge layer, not in the call site.
 
 If the work feels deterministic and reproducible — a fixed parse, a fixed API call, a fixed shell pipeline — it's a tool. The skill body should invoke that tool via `$`, not re-implement it.
-
-Examples that almost certainly belong outside the skill body:
-- `get-jira-ticket` — wrap in an MCP server, dispatch via `$ jira.get_ticket`
-- `run-linter-before-commit` — git pre-commit hook, not a skill
-- `parse-csv-with-known-shape` — connector method, not skill orchestration
-- Anything described by "always do exactly these N steps with no branching" — that's a function, not a skill
 
 ### Describe when the skill should be invoked, not what it does
 
@@ -142,235 +178,334 @@ The `# Description:` header determines whether agents pick the right skill when 
 
 Write descriptions as *trigger conditions*: "if X happens, run this." Not as summaries. Authors who think of the description as the skill's elevator pitch produce skills that never get picked because the trigger condition isn't stated.
 
-This matters at scale. When a skill library grows past ~20 skills, the difference between "agents find the right skill" and "agents waste effort discovering the wrong one" is description-quality discipline. Lint advisories may flag generic descriptions (`description-too-generic`) in future versions.
+This matters at scale. When a skill library grows past ~20 skills, the difference between "agents find the right skill" and "agents waste effort discovering the wrong one" is description-quality discipline.
 
-## Ops reference — the eight typed operations
+## Ops reference — three op classes (mutation / runtime-intrinsic / external MCP dispatch) (v0.7.0)
 
-Each op character starts the body of a line, after leading indent. The language has nine typed operations, each with distinct semantics, grammar, and execution behavior.
+**v0.7.0.** Replaces prior `e52bc525-2637-4bc2-94fe-50e730393d6b` (v0.5.0) on doc anchor swap. Reflects shipped commit `7612571` (locked framework `c48fca7e`, approved `783a10a4`; `approved="..."` shape locked `1783828b`; spec answers `f8aff1b7`).
 
-## Shipped ops
+---
 
-### `$` — tool invocation (MCP dispatch)
+The op surface in v0.7.0 is three classes, each with its own grammar and resolution path. The symbol-per-op design (`~`, `>`, `@`, `!`, `??`, `&`) shipped through v0.5.0 is **deprecated** in v0.7.0 in favor of verb-word ops in function-call shape — training-corpus alignment + human-reviewability. Grace-period framing: legacy symbol-ops still compile in v0.7.0 (route to canonical dispatch under the hood); compile-warn ships v0.7.1 (`deprecated-symbol-op` tier-2); full removal slated for v0.8.x or v0.9. See the "Removed ops" section below for the migration map.
 
-Calls a tool through a configured `McpConnector`. Bare-name `$ <tool> kwarg=value` routes through the `primary` connector; dotted `$ <connector>.<tool>` routes through a named connector. Output binds to `$(target.output)` by default; `-> VAR` explicitly names the binding.
+## Three op classes at a glance
 
-```
-$ memorystore.write summary="..." detail="..." scope=private -> ACK
-$ personal.write_note title="..." body="$(SUMMARY)"
-```
+| Class | Shape | Resolution |
+|---|---|---|
+| **Mutation statements** | `$set VAR = value`, `$append VAR <value>` | Reserved keywords (parser dispatches directly). |
+| **Runtime-intrinsic function-calls** | `verb(kwarg=value, ...) [-> BINDING]` | Closed built-in list (below). Unknown verb → tier-1 `unknown-runtime-op`. |
+| **External MCP dispatch** | `$ <connector>[.<tool>] kwarg=value, ... [-> BINDING]` | `connectors.json` resolution at compile. Unknown connector → tier-1 `unknown-connector`. See §10 for flat vs dotted dispatch shape. |
 
-Tool args are unconstrained `key=value` pairs — the connector forwards them to the underlying MCP tool. If `$` returns `isError: true`, the executor throws via `makeOpError`, which routes through `else:` / `# OnError:` fallback machinery if declared. The inner tool's error text is preserved in `result.errors[]`.
+The `$` prefix is information-bearing: it marks **state-affecting ops** (mutation OR external dispatch). Function-call shape marks **language-intrinsic ops the runtime knows directly**. Parse-time discrimination is unambiguous — three grammars, three resolution paths, zero overlap.
 
-**Built-in tool: `execute_skill` (v0.2.8).** The runtime intercepts `$ execute_skill skill_name="..."` without requiring an MCP connector wired — composition primitive lives directly in the runtime. See Composition section.
+All call-sites are uniform all-kwargs. No positional arguments. No mixed shapes. One call form per class.
 
-### `~` — local-model call
+---
 
-Invokes a configured `LocalModel` connector. **Strict-keyword grammar**: only `prompt` (required), `model` (optional, defaults to `"default"` instance), and `maxTokens` (optional int) are accepted. Anything else is a parse error.
-
-```
-~ prompt="Classify: $(INPUT)" -> VERDICT
-~ prompt="Decompose into atoms: $(DOC)" model=long-context maxTokens=2000 -> ATOMS
-```
-
-Authors interpolate context via `$(...)` substitution inside the prompt string. Response binds to the named variable. Bundled LocalModel instances are deployment-specific; the Connectors section documents the registry shape and how to name instances by tier (e.g., a small batch-classification model vs. a longer-context interactive model).
-
-### `>` — typed retrieval
-
-Resolves through a configured `MemoryStore` connector. All-keyword grammar with `query`, `mode`, `limit` required. Additional keys forward to the connector as `QueryFilters` extra fields. Returns `PortableMemory[]` bound to the named variable.
-
-```
-> mode=fts query="$(TOPIC)" limit=5 -> RESULTS
-> mode=rerank query="auth flow" limit=3 connector=project -> CANDIDATES
-```
-
-### `@` — shell exec
-
-Runs a shell command and binds its stdout to the target output (or an explicit `-> VAR`). The op has two modes — the default safe sandbox, and an opt-in `unsafe` mode for irreducible shell-pipeline cases.
-
-#### Default mode: structured-spawn sandbox
-
-**Grammar bound is the safety.** One binary per `@` op. Args parsed structurally — no shell metacharacter interpretation (no `bash -c`, no `$VAR` expansion by the shell, no pipes, no redirects, no control flow keywords). The structural constraints ARE the security model; there is no PATH allowlist in v1 because the grammar prevents arbitrary command construction. Allowlist becomes per-deployment config if real operational risk surfaces.
-
-```
-@ curl -s "wttr.in/$(LOCATION|url)?format=j1" -> RAW
-@ git status -> STATUS
-```
-
-stdout binds to the variable. Non-zero exit → op-error routed through `else:` / `# OnError:` machinery; stderr preserved in `result.errors[]`. Per-op timeout via the unified abort path (SIGKILL on the child process group when timeout fires).
-
-For multi-step shell logic, decompose into multiple `@` ops with intermediate variable bindings, or push the work into an MCP tool dispatched via `$`. If genuinely unavoidable, see the unsafe mode below — but expect lint friction every time.
-
-In the agent-mediated path (compiled prompt + agent execution), the agent runs the command via its Bash tool. Same input/output semantics either path.
-
-#### Opt-in unsafe mode: `@ unsafe <command>`
-
-When `unsafe` is the literal first token of an `@` op, the op switches to **full-shell exec** — all metacharacters, pipes, redirects, and control flow available. The verbosity is deliberate: the word "unsafe" appears at every dangerous call site, surfaceable by reviewers via grep.
-
-```
-@ unsafe for i in $(seq 1 10); do echo $i; done
-@ unsafe curl -s example.com | jq '.field' > /tmp/out
-```
-
-**Three safety layers stack on top of the keyword:**
-1. **Lint flags every `@ unsafe` op as tier-2** (requires human review before storage).
-2. **Runtime refuses** with `UnsafeShellDisabledError` unless the deployment sets `runtime.enable_unsafe_shell = true` — default is `false`. Compile-time `unsafe-shell-disabled` tier-1 lint (v0.2.11) catches this at authoring time when the flag is explicitly false.
-3. **Audit-visible** at every fire — the audit trail records the op + the resolved command string.
-
-Output binding, error handling, and per-op timeout are the same as the default mode.
-
-##### Substitution syntax collision: `$(VAR)` vs `$$(bash-command)`
-
-Inside `@ unsafe`, the bash `$(command)` command-substitution syntax visually collides with skillscript's own `$(VAR)` variable substitution. The language disambiguates with an explicit escape:
-
-- `$(NAME)` — **skillscript variable**. Substituted before the op fires. `NAME` must resolve to a declared variable (or ambient ref, or target output binding). Unresolved `$(NAME)` triggers a lint warning by default. Documented ambient refs (`$(NOW)`, `$(EVENT.*)`, etc.) are recognized — no false-positive warning (v0.2.11 fix to `unsafe-shell-ambiguous-subst`).
-- `$$(command)` — **bash command-substitution**. The `$$` escape tells the skillscript parser "leave this `$` alone; emit it literally to bash." Bash then sees `$(command)` and substitutes normally.
-
-```
-@ unsafe cp $(SOURCE) /tmp/backup-$$(date +%s)
-                                    ^^^^^^^^^^^^
-                                    bash command-substitution
-        ^^^^^^^^^                                 (skillscript var)
-```
-
-**Lint rule `unsafe-shell-ambiguous-subst` (tier-2):** any `$(NAME)` inside an `@ unsafe` body where `NAME` doesn't resolve to a declared skillscript variable OR a documented ambient ref fires the rule. Diagnostic offers both candidates:
-
-```
-warning: unsafe-shell-ambiguous-subst (tier-2)
-  @ unsafe rm -f /tmp/cache-$(date +%s)
-                            ^^^^^^^^^^^
-'date' isn't a declared variable. Did you mean:
-  - bash command-substitution: $$(date +%s)
-  - skillscript variable:       $(<some declared var>)
-review intent at the call site before admission.
-```
-
-The escape is a one-character delta (`$$` vs `$`) but the diagnostic catches every accidental misuse. Authors who explicitly want bash command-substitution write `$$(...)` and the lint stays quiet. The lint's job is to surface intent ambiguity, not to second-guess deliberate intent.
-
-### `!` — tell user
-
-Emits a message to the agent's response surface. Substitutions resolved at runtime; no return value.
-
-```
-! Found settings at $(find_settings.output)
-```
-
-`!` ordering within a block: ops execute sequentially in source order. `!` can appear before or after `$`/`~`/`>` ops in the same target.
-
-### `??` — ask user
-
-Prompts the user for input; binds the response to a variable.
-
-```
-?? "Approve fix A+B?" -> APPROVED
-```
-
-**Autonomous mode** (cron/event-fired): `??` fails fast — routes to `else:` or `# OnError:` fallback.
-
-**Interactive mode**: response binds to the output variable. **Decline semantics:** when the user response is "no"/"n"/falsey, dependent targets are skipped (treated as soft op-error so `else:` fires). This is the resolution of Open Spec Question #2 — silent fall-through to subsequent gated targets was the security-bug pattern; bind-AND-short-circuit closes it cleanly.
+## Mutation statements
 
 ### `$set` — explicit variable binding
 
-Binds a literal value to a variable. Compiler-side outer-quote stripping. No `$(REF)` substitution on RHS — literals only.
+Binds a value to a variable. Bind-time interpolation of `${VAR}` substitutions in the RHS (shipped v0.5.0).
 
 ```
 $set RESULT = ""
 $set MODE = "production"
+$set GREETING = "Hello, ${NAME}!"          # resolves at bind time
 $set FOUND = []
 ```
 
-### `$append` — accumulator (v0.3.0)
+RHS forms accepted: string literal (with `${VAR}` substitution), number literal, boolean (`true` / `false`), `null`, empty list `[]`, JSON array literal, JSON object literal, or a single variable ref `${OTHER}`.
 
-Appends a single value to a list-typed variable. Mutates the binding in the outer scope (target body or `# Vars:` declaration), surviving across `foreach` iterations. The accumulator primitive the language lacked pre-v0.3.0.
+Missing-ref produces tier-1 runtime error.
+
+### `$append` — accumulator
+
+Mutates the target binding in the outer scope. Type-dispatched on the target binding (shipped v0.5.0).
+
+- **List target** → element append.
+- **String target** → concatenation.
+- **Number/object/null target** → tier-1 `append-to-non-list` lint error.
 
 ```
+# List-typed accumulator
 walk:
     $set SEEN = []
-    foreach C in $(CANDIDATES):
-        if $(C.id) not in $(SEEN):
-            $append SEEN $(C.id)
-            ! NEW: $(C.id) — $(C.summary)
-    ! Total novel items: $(SEEN|length)
+    foreach C in ${CANDIDATES}:
+        if ${C.id} not in ${SEEN}:
+            $append SEEN ${C.id}
+            emit(text="NEW: ${C.id} — ${C.summary}")
+    emit(text="Total novel items: ${SEEN|length}")
+
+# String-typed accumulator
+build:
+    $set DETAIL = ""
+    $append DETAIL "YouTrack issues for ${USER.login}:\n\n"
+    foreach ISSUE in ${ISSUES.issuesPage}:
+        $append DETAIL "- ${ISSUE.id}: ${ISSUE.summary}\n"
 ```
 
-**Initialization required.** `$append VAR <value>` where VAR isn't initialized in the enclosing scope (via `$set X = []` or `# Vars: X=[]`) fires tier-1 `uninitialized-append` lint with a teaching message:
+**Initialization required.** `$append VAR <value>` where VAR isn't initialized in the enclosing scope (via `$set X = []`, `$set X = ""`, or `# Vars: X=[]` / `# Vars: X=""`) fires tier-1 `uninitialized-append`.
+
+**Foreach scope rule.** When `$append VAR` is inside a `foreach`, VAR's init must live in an *enclosing* scope. Tier-1 `foreach-local-accumulator-target` catches this.
+
+**Single-value semantics (list mode).** `$append VAR <value>` appends one element. List concatenation is deferred to a future `$extend` op.
+
+**Parallel foreach.** `$append` inside a `parallel foreach` is a tier-1 error.
+
+---
+
+## Runtime-intrinsic function-calls
+
+Closed list of language-intrinsic ops the runtime knows directly. Each is a function-call with kwargs; binding via optional `-> VAR`. The complete v0.7.0 set:
+
+| Op | Shape | Binding | Notes |
+|---|---|---|---|
+| `emit` | `emit(text="...")` | none | Append to the skill's response surface (delivery channel: embedded prompt). |
+| `ask` | `ask(prompt="...") -> R` | required | Prompt user for input; binds response. Autonomous-mode fails fast (routes to `else:` / `# OnError:`). |
+| `inline` | `inline(skill="<data-skill-name>")` | none | Compile-time inline of an Approved `# Type: data` skill. Resolves at compile, records `content_hash` in provenance. |
+| `execute_skill` | `execute_skill(skill_name="...", inputs={...}) -> R` | optional | Composition primitive. Runtime-resolved. See §11. |
+| `shell` | `shell(command="...") -> R` / `shell(command="...", unsafe=true) -> R` | optional | Sandboxed shell exec (default) or full-shell exec (`unsafe=true`, gated by `runtime.enable_unsafe_shell`). stdout binds. |
+| `file_read` | `file_read(path="...") -> R` | required | Read a file at `path`; binds string contents. |
+| `file_write` | `file_write(path="...", content="...")` | none | Write `content` to `path`. `mkdir -p` semantics for parent directories. Mutation-classified (see Per-op gating below). |
+
+**Unknown op name** → tier-1 lint `unknown-runtime-op` with remediation pointing at MCP dispatch: "if this is an external tool, use `$ tool_name args -> R`."
+
+### `emit` — embedded-prompt delivery
 
 ```
-error: uninitialized-append (tier-1)
-  $append FOUND ...
-in target 'walk': FOUND is not initialized.
-Add `$set FOUND = []` before the `$append` (in the target body, not inside the foreach),
-or declare in `# Vars: FOUND=[]`. If you meant a different variable, check the spelling.
+emit(text="Triage for ${PROJECT}:")
+emit(text="${REPORT}")
 ```
 
-**Foreach scope rule.** When `$append VAR` is inside a `foreach`, VAR's init must live in an *enclosing* scope (target body, outer foreach, etc.) — never in the same foreach body, since loop-local `$set` would silently lose data each iteration. Tier-1 `foreach-local-accumulator-target` catches this.
+Substitutions resolved at runtime. Ordering within a block: ops execute sequentially in source order.
 
-**Type rule.** `$append` operates on lists. `$append VAR "string"` where VAR is initialized as a string fires tier-1 `append-to-non-list` lint (when statically determinable from `# Vars:` defaults or `$set X = ...`).
+The presentation-surface output kinds (`# Output: prompt-context:<agent>`, `# Output: slack:`, `# Output: card:`, `# Output: template:`) consume the joined emit stream. Programmatic surfaces (`# Output: text`, `# Output: file:`) follow the per-kind semantics described in §7.
 
-**Single-value semantics.** `$append VAR <value>` appends one element. `$append VAR []` is an element-append where the element happens to be an empty list (consistent with element-not-concat semantics): `[1,2] + [] = [1,2,[]]`. List concatenation is deferred to a future `$extend` op when the pattern surfaces.
+### `ask` — interactive prompt
 
-**Parallel foreach.** `$append` inside a `parallel foreach` is a tier-1 error in v0.3.0 — the decision (forbid permanently vs ship with thread-safe accumulation) is deferred to whenever parallel foreach lands.
-
-## Deprecated ops
-
-### `?` — agent reasoning step (DEPRECATED, compile-warn v1, compile-error v1.x)
-
-Asks an agent to reason about its current context and produce an output. The legacy form is bare `?` with the reasoning task implied by the surrounding block name, dependencies' outputs, and `# Use when:` metadata.
-
-**Why deprecated:** the bare `?` form synthesizes its task implicitly from surrounding context. This makes skill behavior dependent on context that's not visible in the skill source — a load-bearing design choice that the PRD's architectural commitments reject. Every skill using bare `?` is silently affected when the backing model changes, when surrounding block names are renamed, or when dependency outputs shift shape.
-
-**Deprecation timeline:**
-- **v1:** compile-warn on every `?` op. Skills compile and execute, but the warning surfaces at every authoring/admission step.
-- **v1.x:** compile-error. Bare `?` no longer admits to the library.
-
-**Compile-warn diagnostic** (v1):
 ```
-warning: ? is deprecated and will be a compile-error in v1.x
-  decide:
-      ? -> VERDICT
-      ^^^
-rewrite as: ~ prompt="<explicit reasoning task>" -> VERDICT
-the implicit-context form makes skill behavior depend on context that's
-not visible in the skill source. Replace with an explicit prompt that
-captures what the reasoning task is doing.
+ask(prompt="Approve fix A+B?") -> APPROVED
 ```
 
-The rewrite is `~` (LocalModel call) with an explicit prompt. The prompt captures what `?` was doing implicitly — "decide whether to escalate", "classify this input", "summarize the result". Any author or agent who hits the warning gets the exact rewrite shape in the diagnostic.
+**Autonomous mode** (cron/event-fired): `ask` fails fast — routes to `else:` or `# OnError:` fallback.
 
-## Pending ops
+**Interactive mode:** response binds to the output variable. **Decline semantics:** when the user response is "no" / "n" / falsey, dependent targets are skipped (treated as soft op-error so `else:` fires).
 
-### `&` — data-skill inline (compile-time)
+### `shell` — sandboxed or unsafe shell exec
 
-Inlines an *Approved* `# Type: data` skill into the host skill's compiled artifact at the call site. The data skill's body becomes part of the rendered prompt. Use for *static* knowledge or templated content (style guides, voice rules, runbooks).
+**Sandboxed default:**
+
+```
+shell(command="curl -s 'wttr.in/${LOCATION|url}?format=j1'") -> RAW
+shell(command="git status") -> STATUS
+```
+
+Structured-spawn sandbox: one binary per call, args parsed structurally, no shell metacharacter interpretation. The structural constraints ARE the security model. stdout binds; non-zero exit → op-error routed through `else:` / `# OnError:`.
+
+**Unsafe mode:**
+
+```
+shell(command="for i in $(seq 1 10); do echo $i; done", unsafe=true) -> R
+shell(command="curl -s example.com | jq '.field' > /tmp/out", unsafe=true)
+```
+
+- Lint flags every `unsafe=true` call as tier-2.
+- Runtime refuses with `UnsafeShellDisabledError` unless deployment sets `runtime.enable_unsafe_shell = true` (default `false`). Compile-time `unsafe-shell-disabled` tier-1 catches at authoring.
+- Audit-visible at every fire.
+
+**No substitution collision in v0.7.0.** Bash's `$(command)` and arithmetic `$((expr))` pass through to bash without escape because skillscript's substitution is braced (`${VAR}`). The v0.5.0 `$$(...)` escape syntax and `unsafe-shell-ambiguous-subst` lint are retired.
+
+### `file_read` / `file_write` — file I/O
+
+```
+file_read(path="/tmp/state.json") -> STATE
+file_write(path="/tmp/report.md", content="${REPORT}", approved="nightly sweep deliverable")
+```
+
+`file_read` is read-only (always allowed). `file_write` is mutation-classified — requires `# Autonomous: true` declaration on the skill OR per-call `approved="..."` kwarg. `mkdir -p` semantics for the parent directory.
+
+**v0.7.0 status:** `approved="..."` kwarg is *captured* on the AST but **not yet referenced by lint enforcement** (per-op gating broadens in v0.7.1; see below). Today the existing v0.4.2-era `unconfirmed-mutation` heuristic still governs mutation gating.
+
+### `inline` — data-skill compile-time inline
 
 ```
 brief:
-    ~ prompt="$(VOICE_RULES) Now write a one-line status:" model=qwen -> RESULT
-    & voice-rules
+    $ llm prompt="${VOICE_RULES} Now write a one-line status:" model=qwen -> RESULT
+    inline(skill="voice-rules")
 ```
 
-Resolved at `compile()` time — the data skill's `content_hash` is recorded in the host's provenance block. `skillfile audit` detects stale recompiles when a referenced data skill changes.
+Inlines an Approved `# Type: data` skill into the host skill's compiled artifact at the call site. Resolved at `compile()` time; the data skill's `content_hash` is recorded in the host's provenance. `skillfile audit` detects stale recompiles when a referenced data skill changes.
 
-See Composition section for the full distinction between `&` (compile-time inline), `& invoke` (runtime call), and `$ execute_skill` (in-skill execute with kwarg forwarding).
+See §11 for the distinction between `inline` (compile-time), `execute_skill` (in-skill runtime call with kwarg forwarding), and dispatched skills.
+
+### `execute_skill` — composition runtime call
+
+```
+classify:
+    execute_skill(skill_name="classifier", inputs={"text": "${INPUT}"}) -> VERDICT
+```
+
+Runtime-resolved against the SkillStore. Recursion-depth-guarded (default 10).
+
+---
+
+## External MCP dispatch
+
+Calls a tool through a configured connector. Connector name resolves against `connectors.json`. Output binds via optional `-> VAR`. See §10 for the connector contract and dispatch resolution details (flat-name vs dotted-prefix forms).
+
+```
+$ youtrack_search query="project:INFRA state:Open" limit=20 -> ISSUES
+$ llm prompt="Classify: ${INPUT}" -> VERDICT
+$ memory mode=fts query="${TOPIC}" limit=5 -> RESULTS
+$ memory_write content="${SUMMARY}" addressed_to="cc" approved="morning roundup, 2026-05-25" -> ACK
+$ youtrack.search query="project:INFRA" -> ISSUES                            # dotted-prefix form (explicit routing)
+```
+
+Tool args are unconstrained `key=value` pairs — the connector forwards them to the underlying MCP tool. If a dispatched call returns `isError: true`, the executor throws via `makeOpError`, which routes through `else:` / `# OnError:` machinery. The inner tool's error text is preserved in `result.errors[]`.
+
+**Substrate-neutrality.** Connector names like `$ llm`, `$ memory`, `$ ticketing_search` are NOT reserved or built-in — they're whatever the adopter declares in `connectors.json`. See §10.
+
+**Unknown connector** → tier-1 `unknown-connector` lint with the list of wired connector names.
+
+**Unquoted-substitution lint** (`unquoted-substitution-in-kwarg-value`, tier-2): fires when `$ tool key=${VAR}` has unquoted `${VAR}` AND the var's binding origin is "suspect" (`# Vars:` default with whitespace, `$set` with whitespace, op output, foreach iterator). Closes the silent-arg-truncation footgun where the MCP arg parser whitespace-splits substituted values. Remediation: wrap as `key="${VAR}"`.
+
+---
+
+## Per-op gating
+
+Mutation ops require an authorization signal. The signal is per-op, not a mode binary.
+
+**Mutation-classified ops:**
+- `file_write(...)` (runtime-intrinsic)
+- `$ memory_write ...` and any MCP connector entry declared `"mutating": true` in `connectors.json` (v0.7.1; today still uses v0.4.2 heuristic list)
+- `shell(command=..., unsafe=true)` (always mutation-classified)
+- `shell(command=...)` with destructive verb (rm, mv, dd, mkfs, etc. — heuristic list extends today's `unconfirmed-mutation` rule)
+
+**Read-only ops (always allowed, no authorization needed):**
+- `file_read`, `emit`, `ask`, `inline`, `execute_skill`
+- `shell(command=...)` with read-only verb
+- `$ <connector> ...` against tools declared `mutating: false` (or unspecified, default false for query-shaped tools)
+- `$set`, `$append`
+
+**Authorization signals (either suffices):**
+- `# Autonomous: true` in skill frontmatter — author-level: "this skill is authorized to mutate state during its run."
+- `approved="<reason>"` kwarg per-op — call-site-level: "this specific op is authorized." The string is required (forces author intent); value not parsed semantically — presence is what matters.
+
+### v0.7.0 vs v0.7.1 staging
+
+The framework above describes the **v0.7.1 target state**.
+
+**What v0.7.0 ships today:**
+- `approved="..."` kwarg is *captured* on the AST for function-call ops (`shell`, `file_write`, `emit`, `ask`, `inline`, `execute_skill`)
+- The existing v0.4.2-era `unconfirmed-mutation` lint still governs gating (covers destructive shell verbs, destructive verbs in `$` tool args, ambiguous shell substitutions from op outputs)
+- The v0.4.2-era `(approved: "...")` trailer syntax continues to work
+- Lint does NOT yet check `approved="..."` kwarg presence on function-call mutation ops, and does NOT yet cover `file_write` / `$ memory_write` specifically
+
+**What v0.7.1 broadens:**
+- `unconfirmed-mutation` extends to `file_write(...)` and `$ memory_write ...` (and other connectors declared `"mutating": true`)
+- `approved="..."` kwarg becomes the canonical v0.7.0+ per-op authorization marker; any non-empty string presence = author-confirmed (lint quiet)
+- v0.4.2 `(approved: "...")` trailer continues to work (back-compat); the kwarg form is canonical
+
+```
+# Authorized via skill-level flag
+# Skill: nightly-sweep
+# Autonomous: true
+# Triggers: cron:"0 8 * * *"
+
+deliver:
+    file_write(path="/tmp/sweep.md", content="${REPORT}")        # no approved= needed
+    $ memory_write content="${REPORT}" addressed_to="cc"          # no approved= needed
+```
+
+```
+# Authorized per-call (no # Autonomous: true)
+# Skill: ad-hoc-snapshot
+
+deliver:
+    file_write(path="/tmp/snap.json", content="${DATA}",
+               approved="manual snapshot requested by Scott 2026-05-25")
+```
+
+---
+
+## Removed ops (migration map)
+
+These symbols are deprecated in v0.7.0. They still compile during the grace period — legacy symbol-form `~`, `>`, `@`, `!`, `??`, `&` parse and route to the canonical dispatch path. Grace-period staging:
+
+- **v0.7.0** (now): legacy ops compile cleanly. Canonical equivalents are the recommended form going forward.
+- **v0.7.1**: tier-2 `deprecated-symbol-op` lint + tier-2 `deprecated-substitution-shape` (for `$(VAR)`) ship as visibility nudges. Skills still compile.
+- **v0.8.x or v0.9** (TBD): legacy symbols + `$(VAR)` removed; compile-error. Symbol re-use for new semantics opens after removal.
+
+The migration map below describes the canonical equivalents:
+
+| Deprecated | Canonical replacement | Notes |
+|---|---|---|
+| `~ prompt="..." [model=...] [maxTokens=...]` | `$ llm prompt="..." [model=...] [maxTokens=...]` | `llm` is an adopter-wired connector convention, not a language built-in. See §10. |
+| `> query=... mode=... limit=N` | `$ memory query=... mode=... limit=N` | `memory` is an adopter-wired connector. Mutation form: `$ memory_write`. |
+| `@ <binary> <args>...` | `shell(command="<binary> <args>...")` | Structural sandbox stays; call shape is now function-call. |
+| `@ unsafe <command>` | `shell(command="<command>", unsafe=true)` | `unsafe` is a kwarg, not a magic first-token. |
+| `! <text>` | `emit(text="<text>")` | |
+| `?? "<prompt>" -> R` | `ask(prompt="<prompt>") -> R` | |
+| `& <data-skill-name>` | `inline(skill="<data-skill-name>")` | |
+| `$ execute_skill skill_name="..."` | `execute_skill(skill_name="...")` | Now in runtime-intrinsic class; no `$` prefix. |
+
+**Adopter-facing migration:** the v0.7.0 codebase included a one-shot internal migration script (`scripts/migrate-v07.mjs`) that was used to migrate the bundled examples, then deleted post-run. There is no permanent migration CLI. Adopters with existing skills can either:
+- Re-derive the rewrites mechanically (the rules are documented in `CHANGELOG.md` under `## 0.7.0 — Migration`), or
+- Write new skills against the canonical surface from day one.
+
+Most adopters land in the second category because Skillscript is still pre-adoption.
 
 ## Op grammar summary
 
-| Op | Shape | Routes through | Output binding |
-|----|-------|----------------|----------------|
-| `$` | `$ [connector.]tool kwarg=value...` | `McpConnector.call()` (built-in `execute_skill`) | `-> VAR` or `$(target.output)` |
-| `~` | `~ prompt="..." [model=name] [maxTokens=N]` | `LocalModel.run()` | `-> VAR` (required) |
-| `>` | `> query=... mode=... limit=N [extra=...]` | `MemoryStore.query()` | `-> VAR` (required) |
-| `@` | `@ <binary> <args>...` | structured spawn sandbox | `-> VAR` or `$(target.output)` |
-| `@ unsafe` | `@ unsafe <shell command>` | full shell exec (gated by `runtime.enable_unsafe_shell`) | `-> VAR` or `$(target.output)` |
-| `!` | `! <text with $(SUBS)>` | response surface | none |
-| `??` | `?? "<prompt>"` | response surface (interactive) | `-> VAR` (required) |
-| `$set` | `$set NAME = value` | compile-time binding | `NAME` (no arrow) |
-| `$append` (v0.3.0) | `$append VAR <value>` | runtime mutation of outer-scope list | `VAR` (no arrow) |
-| `?` | DEPRECATED — rewrite as `~ prompt="..."` | — | — |
-| `&` | `& <data-skill-name>` (compile-time inline) | SkillStore name resolver | inlines into rendered prompt |
+| Class | Op | Shape | Binding |
+|---|---|---|---|
+| Mutation | `$set` | `$set NAME = value` (with `${VAR}` interpolation at bind) | NAME (no arrow) |
+| Mutation | `$append` | `$append VAR <value>` (type-dispatched: list element / string concat) | VAR (no arrow) |
+| Runtime-intrinsic | `emit` | `emit(text="...")` | none |
+| Runtime-intrinsic | `ask` | `ask(prompt="...") -> R` | required |
+| Runtime-intrinsic | `inline` | `inline(skill="<name>")` | none (compile-time) |
+| Runtime-intrinsic | `execute_skill` | `execute_skill(skill_name="...", inputs={...}) -> R` | optional |
+| Runtime-intrinsic | `shell` | `shell(command="...", [unsafe=true], [approved="..."]) -> R` | optional |
+| Runtime-intrinsic | `file_read` | `file_read(path="...") -> R` | required |
+| Runtime-intrinsic | `file_write` | `file_write(path="...", content="...", [approved="..."])` | none |
+| External MCP | `$ <connector>` | `$ <name>[.<tool>] kwarg=value, ... [-> R]` | optional |
+| Deprecated (grace) | `~`, `>`, `@`, `!`, `??`, `&` | compile + route to canonical; v0.7.1 deprecation lint | per legacy form |
 
-## Variable resolution — substitution, ambient refs, # Requires: cascade
+## Variable resolution — ${VAR} canonical, substitution + ambient refs + # Requires: cascade (v0.7.0)
 
-Skillscript supports four tiers of variables, each with distinct resolution timing and scope.
+**v0.7.0.** Replaces prior `719fd967-de5a-4857-86bb-ef325bdb7d72` (v0.5.0) on doc anchor swap. Reflects shipped commit `7612571` (locked framework `c48fca7e`, approved `783a10a4`; spec answers `f8aff1b7`).
+
+---
+
+Skillscript supports four tiers of variables, each with distinct resolution timing and scope. Substitution uses **`${VAR}` as the canonical form in v0.7.0**. The `$(VAR)` form (parentheses) from v0.5.0 continues to compile during the grace period, deprecation-tagged for visibility in v0.7.1 and slated for removal in v0.8.x or v0.9 (TBD). Adopters writing new skills should reach for `${VAR}` exclusively; legacy `$(VAR)` skills still work but will fire `deprecated-substitution-shape` (tier-2) once v0.7.1 ships.
+
+## Substitution syntax — `${VAR}` canonical
+
+```
+emit(text="Hello, ${USER.login}!")
+$ memory mode=fts query="${TOPIC}" limit=5 -> R
+$set REPORT = "Triage for ${PROJECT} (${ISSUES|length} open):\n"
+```
+
+Field access: `${VAR.field}`, `${VAR.nested.field}`. Filter chain: `${VAR|filter:"arg"|filter2}`. See §4 for the filter catalog.
+
+**Why the change.** v0.5.0 used `$(VAR)` (parens). v0.7.0 ships `${VAR}` (braces) as canonical — bash-trained agents recognize the braced form, and the brace removes the substitution-collision class inside `shell(command=..., unsafe=true)` where bash's `$(command)` would visually collide.
+
+**Grace-period reality for v0.7.0:**
+- `${VAR}` is the canonical form
+- `$(VAR)` continues to parse and substitute (back-compat)
+- v0.7.1 ships `deprecated-substitution-shape` tier-2 lint as visibility nudge
+- v0.8.x / v0.9 removes `$(VAR)` form entirely
+
+**Migration.** No permanent CLI migration tool ships with v0.7.0. The codebase included a one-shot internal migration script (`scripts/migrate-v07.mjs`) that was used to migrate the bundled examples, then deleted post-run. Adopters with existing skills can:
+- Re-derive the rewrites mechanically — `$(VAR)` → `${VAR}` is a literal substitution; comments and string content are preserved as-is. The rules are documented in `CHANGELOG.md` under `## 0.7.0 — Migration`.
+- Use editor find-and-replace with a simple regex.
+- Write new skills against `${VAR}` from day one.
+
+Most adopters land in the third category because Skillscript is pre-adoption.
+
+**Inside `shell(command="...", unsafe=true)`** there is no collision with bash command-substitution `$(command)` — skillscript's substitution is braced (`${VAR}`), bash's is unbraced (`$(cmd)`). The `$$(...)` escape syntax and `unsafe-shell-ambiguous-subst` lint from v0.5.0 are retired.
 
 ## Tier 1: Ambient
 
@@ -378,26 +513,26 @@ Injected automatically at runtime; never declared by the author.
 
 | Var | Value |
 |-----|-------|
-| `$(NOW)` | Current timestamp |
-| `$(USER)` | The configured user identity |
-| `$(SESSION_CONTEXT)` | Current session-scope context (project/entity/etc., substrate-defined) |
-| `$(TRIGGER_TYPE)` | What event fired this skill (v2) |
-| `$(TRIGGER_PAYLOAD)` | Event-specific data (v2) |
-| `$(EVENT.*)` | Event-payload fields populated by the trigger source (v2) |
-| `$(ERROR_CONTEXT)` | In `# OnError:` fallback skills: type + target where failure occurred |
+| `${NOW}` | ISO-8601 timestamp at op-dispatch time |
+| `${USER}` | The configured user identity |
+| `${SESSION_CONTEXT}` | Current session-scope context (project/entity/etc., substrate-defined) |
+| `${TRIGGER_TYPE}` | What event fired this skill |
+| `${TRIGGER_PAYLOAD}` | Event-specific data |
+| `${EVENT.*}` | Event-payload fields populated by the trigger source |
+| `${ERROR_CONTEXT}` | In `# OnError:` fallback skills: type + target where failure occurred |
 
-Iterator vars from `foreach` and output bindings from `>` / `~` also pass through ambient at compile time; the runtime substitutes them per iteration / per op completion.
+Iterator vars from `foreach` and output bindings from runtime-intrinsic / MCP-dispatch ops also pass through ambient at compile time; the runtime substitutes them per iteration / per op completion.
 
-For cron and session triggers, the scheduler injects time-offset ambient fields onto `$(EVENT.*)`:
-- `$(EVENT.fired_at)` — milliseconds since Unix epoch
-- `$(EVENT.fired_at_unix)` — seconds since Unix epoch
-- `$(EVENT.fired_at_plus_1h_unix)` — `fired_at_unix + 3600`
-- `$(EVENT.fired_at_plus_1d_unix)` — `fired_at_unix + 86400`
-- `$(EVENT.fired_at_plus_7d_unix)` — `fired_at_unix + 604800`
+For cron and session triggers, the scheduler injects time-offset ambient fields onto `${EVENT.*}`:
+- `${EVENT.fired_at}` — milliseconds since Unix epoch (raw number)
+- `${EVENT.fired_at_unix}` — seconds since Unix epoch (raw number)
+- `${EVENT.fired_at_plus_1h_unix}` — `fired_at_unix + 3600`
+- `${EVENT.fired_at_plus_1d_unix}` — `fired_at_unix + 86400`
+- `${EVENT.fired_at_plus_7d_unix}` — `fired_at_unix + 604800`
 
-These let skill bodies compute `expires_at` and similar bounded-lifetime values without needing arithmetic in op kwargs.
+These let skill bodies compute `expires_at` and similar bounded-lifetime values without arithmetic in op kwargs. For ISO-formatted rendering of any epoch value, see the `|isodate` filter (§4).
 
-Additional ambient refs may be injected by the runtime based on connector configuration (e.g., a vault-backed MemoryStore may expose `$(VAULT_ROOT)`; a sensor-enabled deployment may expose `$(SENSOR.*)`). The Connectors section documents which ambient refs each connector contributes.
+Additional ambient refs may be injected based on connector configuration (e.g., a vault-backed memory connector may expose `${VAULT_ROOT}`). §10 documents which ambient refs each connector contributes.
 
 ## Tier 2: Input
 
@@ -417,20 +552,22 @@ Optional input with fallback declared inline.
 
 Bracketed list literals supported (`# Vars: TAGS=[a, b, c]`).
 
-**Parser convention:** comma splitting in `# Vars:` respects bracket depth. Commas inside `[]`, `()`, and `{}` do not terminate values. `# Vars: TAGS=[a, b], MODE=fast` parses as two declarations (`TAGS=[a, b]` and `MODE=fast`); the inner comma is preserved as a list element separator.
+**Parser convention:** comma splitting in `# Vars:` respects bracket depth. Commas inside `[]`, `()`, `{}` do not terminate values. `# Vars: TAGS=[a, b], MODE=fast` parses as two declarations (`TAGS=[a, b]` and `MODE=fast`); the inner comma is preserved as a list element separator.
 
 ## Tier 4: Local
 
 Bound to a previous target's output mid-execution. Two forms:
-- `$(target.output)` — the bound output of a target
-- `$(VAR)` — an explicit `-> VAR` binding from any op
-- `$(target.output.field)` or `$(MEMORY.field)` — dotted field access into structured output
+- `${target.output}` — the bound output of a target
+- `${VAR}` — an explicit `-> VAR` binding from any op
+- `${target.output.field}` or `${MEMORY.field}` — dotted field access into structured output
 
-**Field access resolution tiers** for `$(MEMORY.field)`:
+**Field access resolution tiers** for `${MEMORY.field}`:
 1. Core `PortableMemory` fields (id, summary, detail, score)
 2. Curated substrate subset (thread_status, pinned, confidence, domain_tags, payload_type, knowledge_type, recipients, expires_at, created_at, agent_id, vault)
 3. `metadata.X` for everything else
-4. Ambient passthrough as literal `$(MEMORY.field)` if unresolved
+4. Ambient passthrough as literal `${MEMORY.field}` if unresolved
+
+**Missing-field opt-out:** `${MEMORY.field|fallback:"-"}` coalesces to the literal when the field doesn't resolve. See §4 for the full `|fallback:` semantics.
 
 ## Resolution order
 
@@ -438,10 +575,10 @@ In `compileSkill`, variables resolve in priority order:
 1. Caller inputs (passed in at compile time)
 2. `# Requires:` cascade
 3. `# Vars:` defaults
-4. Ambient passthrough (left as `$(NAME)` for runtime substitution)
+4. Ambient passthrough (left as `${NAME}` for runtime substitution)
 5. Missing → compile error
 
-## `# Requires:` cascade (shipped)
+## `# Requires:` cascade
 
 Pulls values from the configured data-source backend at compile time. One declaration per line. Both `→` (Unicode) and `->` (ASCII) accepted.
 
@@ -461,27 +598,29 @@ Lookups query data records in the calling agent's private scope, filtered by tag
 - `user-var:<key>` — dynamic per-key record, typically with expiration
 - `system-var:<key>` — agent/process state flags
 
-## `$set` — explicit variable binding
+## `$set` — bind-time interpolation (v0.5.0, retained)
 
-The `$set` op binds a literal value to a variable at runtime. Literal RHS only (no `$(REF)` substitution on RHS). Compiler-side outer-quote stripping (`"foo"` and `'foo'` both stripped; whitespace inside quotes preserved verbatim).
+The `$set` op binds a value to a variable at runtime. Compiler-side outer-quote stripping. `${REF}` substitutions in the RHS string resolve at bind time; the bound value is the resolved string. Mirrors bash double-quoted assignment.
 
 ```
 $set RESULT = ""
 $set MODE = "production"
+$set GREETING = "Hello, ${USER.login}!"     # interpolates at bind
+$set FOUND = []
 ```
 
-Useful inside `else:` blocks to provide a fallback value the rest of the skill can consume.
+Missing-ref in the RHS produces a tier-1 runtime error.
 
 ## Scoping rules
 
 - `# Vars:` declarations are skill-global (visible to all targets)
 - `-> VAR` bindings are skill-global (visible to all targets after the op runs)
 - `foreach IDENT in EXPR:` iterator vars are loop-local — `$set` bindings inside the loop don't persist after the loop ends
-- Target outputs (`$(target.output)`) are accessible after the target completes
+- Target outputs (`${target.output}`) are accessible after the target completes
 
-## Pipe filters — url, shell, json, trim (+ pending head/tail/lines/field/length/summary/pluck)
+## Pipe filters — url, shell, json, trim, fallback, isodate
 
-Pipe filters apply transforms to resolved variables before substitution. Syntax: `$(VAR|filter)`. Filters operate at compile time for static values; for runtime-bound variables, filters apply at substitution time.
+Pipe filters apply transforms to resolved variables before substitution. Syntax: `$(VAR|filter)` or `$(VAR|filter:"arg")` for parameterized filters. Filters operate at compile time for static values; for runtime-bound variables, filters apply at substitution time.
 
 ## Shipped filters
 
@@ -490,9 +629,10 @@ Pipe filters apply transforms to resolved variables before substitution. Syntax:
 | `url` | `encodeURIComponent(value)` | `$(location|url)` for "Asheville, NC" | `Asheville%2C%20NC` |
 | `shell` | POSIX single-quote escape with outer quotes | `$(arg|shell)` for `it's safe` | `'it'\''s safe'` |
 | `json` | `JSON.stringify(value)` | `$(payload|json)` for `{k:"v"}` | `"{\"k\":\"v\"}"` |
-| `json_parse` (v0.3.2) | `JSON.parse(value)` | `$(RAW|json_parse)` for `{"x":1}` string | parsed object/array/scalar |
 | `trim` | Whitespace trim | `$(VERDICT|trim)` for `"urgent\n"` | `urgent` |
 | `length` (v0.2.5) | Count of items (array) or characters (string) | `$(ITEMS|length)` for `["a","b","c"]` | `3` |
+| `fallback:"X"` (v0.5.0) | Coalesce on missing/undefined ref | `$(VAR.missing|fallback:"-")` | `-` |
+| `isodate` (v0.5.0) | Epoch seconds → ISO-8601 timestamp | `$(EPOCH|isodate)` for `1779660000` | `2026-05-24T22:00:00.000Z` |
 
 ### `length` semantics
 
@@ -512,31 +652,33 @@ if $(ITEMS|length) > 5:
 
 The output of `|length` is a string-form number ("3", "5", etc.) at substitution time, consistent with how other filters produce strings. Numeric comparison coerces back to number for the comparison; equality (`==`) does byte-for-byte string comparison.
 
-### `json_parse` semantics (v0.3.2)
+### `fallback:"X"` semantics (v0.5.0)
 
-Sibling to `|json` (stringify). Takes a string value containing JSON, returns the parsed structure available for downstream field access via `$(VAR.field)` and `$(VAR.0)` indexing.
+Coalesce-on-missing. Emits the literal string `X` when the ref resolves to missing/null/undefined. Strict-by-default semantics preserved everywhere else; `|fallback:` is the explicit opt-out at the call site.
 
 ```
-fetch:
-    @ curl -s https://api.example.com/status -> RAW
-    $set STATUS = $(RAW|json_parse)
-
-report: fetch
-    ! Title: $(STATUS.title)
-    ! Item count: $(STATUS.items|length)
-    if $(STATUS.healthy) == "true":
-        ! All systems green.
+emit:
+    ! present: $(PRESENT|fallback:"missing")         → "hello"  (PRESENT is bound)
+    ! missing: $(NOT_DECLARED|fallback:"-")          → "-"      (NOT_DECLARED isn't)
+    ! nested:  $(ISSUE.customFields.Assignee|fallback:"unassigned")
 ```
 
-**Round-trip:** `$(X|json|json_parse)` is identity-preserving for valid JSON (nondeterministic for floats).
+**Why filter-shape, not ref-level `(fallback:)`.** Op-level `(fallback: ...)` exists on `~`/`>`/`$` for **error recovery** (dispatch happened, failed). Ref-level `|fallback:` is **coalesce** (lookup found nothing). They rhyme but are adjacent concepts. The filter-chain attachment keeps composition clean (`$(VAR|json_parse|fallback:"-")` works as a chain step) and the vocabulary alignment with op-level `(fallback:)` lets cold authors learn "fallback" as the universal concept while the syntax disambiguates the attachment site.
 
-**Composition:** `|json_parse|length` works on parsed arrays. Chains where the post-parse type doesn't match the downstream filter (e.g., `|json_parse|trim`) produce runtime errors fast — no static `filter-type-mismatch` lint in v0.3.2 (deferred until pattern of confusion surfaces).
+**Closes the missing-field strict-error trap** identified in R3 minion 5: `$(ISSUE.customFields.Assignee)` against an object without that key threw `UnresolvedVariableError` and aborted whole-render. Pre-v0.5.0 the only mitigation was wrapping each nullable ref in an `if` block. v0.5.0+: the filter is the per-ref opt-out.
 
-**Empty input:** `$(EMPTY_VAR|json_parse)` errors (consistent with parse-failure path) — does NOT treat empty as `null`.
+### `isodate` semantics (v0.5.0)
 
-**Static parse-failure detection:** tier-2 `malformed-json` lint fires when the input is a literal value that fails to parse at compile time. Dynamic parse failures produce runtime `JsonParseError extends OpError` with the offending string + parse position — flows through `# OnError:` fallback chain.
+Converts a Unix epoch-seconds value to an ISO-8601 timestamp string. Pairs with `$(NOW)` (now ISO-8601 by default in v0.5.0; pre-v0.5.0 was raw epoch milliseconds — docs/runtime alignment finding from R3 minion 2) and `$(EVENT.fired_at_unix)` (raw epoch seconds, per its name).
 
-**Implementation status:** v0.3.2 ship in flight as of 2026-05-23. Pre-shipping spec — kept in sync with the v0.3.2 design thread `d01c9ab9-4372-44ce-ab67-b7b1a6430b05`.
+```
+show:
+    ! Now (already ISO):     $(NOW)                       → 2026-05-24T23:34:15.859Z
+    ! Trigger fire (ISO):    $(EVENT.fired_at_unix|isodate) → 2026-05-24T23:34:15.000Z
+    ! Static epoch:          $(SOME_EPOCH|isodate)         → 2026-05-24T22:00:00.000Z
+```
+
+Input is interpreted as Unix epoch seconds. Non-numeric input produces runtime error. For millisecond inputs, divide first or use a wrapping op (no `|isodate_ms` filter in v0.5.0; file if real demand surfaces).
 
 ## Filter chaining
 
@@ -555,7 +697,11 @@ Filters may appear on the LHS of conditional expressions. Useful for whitespace-
 ```
 if $(VERDICT|trim) == "urgent":
     ...
+if $(VAR.maybe|fallback:"-") == "-":
+    ! nothing there
 ```
+
+Filter chains in conditions (v0.2.5+) and the v0.5.0 `|fallback:` filter all work in conditional context.
 
 ## Filter use in `in` / `not in` set membership
 
@@ -579,9 +725,30 @@ elif $(BODY|length) > 1000:
 
 ## Error handling
 
-Unknown filter on a resolved variable produces a compile-time error. Filter chains that fail at runtime (e.g., `|json` on a non-serializable value, `|length` on a number, `|json_parse` on a non-JSON string) produce op errors that route through `else:` / `# OnError:` machinery.
+Unknown filter on a resolved variable produces a tier-1 `unknown-filter` compile error. v0.5.0+ catches both bare (`|unknown`) and colon-positional (`|unknown:"arg"`) shapes. Filter chains that fail at runtime (e.g., `|json` on a non-serializable value, `|length` on a number, `|isodate` on a non-numeric value) produce op errors that route through `else:` / `# OnError:` machinery.
 
 Bare `$(NAME)` without a filter is unchanged.
+
+## Removed: `|json_parse` filter (was v0.3.2, yanked v0.3.3)
+
+`|json_parse` shipped briefly in v0.3.2 as a filter, then was yanked in v0.3.3 in favor of the `$ json_parse` op. The reason: filters are string-in/string-out by design; parsed structures couldn't propagate as bindings through the pipe chain. Field access on parsed JSON (`$(VAR|json_parse).field`) was structurally impossible inside the filter signature.
+
+The `$ json_parse $(VAR) -> OUT` op (see Ops reference §2) is the v0.3.3+ canonical way to parse JSON and bind a structured value. `$(OUT.field)` works for descent + `foreach OUT.items in ...` works for iteration.
+
+```
+# v0.3.3+ pattern (correct)
+$ json_parse $(RAW) -> STATUS
+! Title: $(STATUS.title)
+if $(STATUS.healthy) == "true":
+    ! All systems green
+foreach ITEM in $(STATUS.items):
+    ! - $(ITEM.id)
+
+# v0.3.2 pattern (NO LONGER SUPPORTED — fires unknown-filter tier-1)
+# $(RAW|json_parse).title
+```
+
+Authors with v0.3.2 skills migrate by replacing `$(X|json_parse).field` shapes with `$ json_parse $(X) -> P` + `$(P.field)`.
 
 ## Pending filters (v2/v3)
 
@@ -595,14 +762,18 @@ Several filters are planned but not yet shipped:
 | `field:N` | Nth whitespace-separated field | Awk-like extraction |
 | `summary` | One-line abbreviation | Compress for human-facing emissions |
 | `pluck:<field>` | Project array of objects to array of field values | Paired with `in`/`not in` for dedup-by-id workflows |
+| `join:"<sep>"` | List → string with separator | Filter-shape alternative to string `$append`; reconsider if filter-chain demand surfaces |
+| `isodate_ms` | Epoch ms → ISO-8601 | Companion to `|isodate`; defer until demand |
 
 `pluck` is the highest-priority remaining filter — it closes the structural-dedup gap for skills that iterate retrieval results and want to exclude already-seen items by ID without manual comparison loops.
+
+`join:"<sep>"` is parked: v0.5.0 ships string-typed `$append` + bind-time `$set` interpolation (bash-shaped pair) as the primitive way to compose lists into strings. `|join:` is the filter-shape alternative; reconsider if real filter-chain demand surfaces (e.g., a use case where the list comes from a chain and inline accumulation isn't viable).
 
 ## Composition philosophy
 
 Filters are pure functions (input → output, no side effects). Stay small and orthogonal — each filter does one thing. Composition emerges from chaining, not from elaborate per-filter parameter spaces. The shipped set covers ~85% of real-world string-shaping needs; the pending set extends to slicing and array projection.
 
-`length` was added in v0.2.5 alongside numeric comparison operators — both items in the orchestration carve-out where the language gains expressiveness for control-flow shapes without admitting computation. `json_parse` (v0.3.2) closes the structured-data extraction gap: pre-v0.3.2, authors round-tripped through `~` LocalModel calls just to decompose a JSON return into per-field values; with `|json_parse` the decomposition is language-native. The "authored skill demonstrates the gap is load-bearing" trigger applies for both: cold-author harnesses reached for these patterns naturally before the filters shipped.
+`length` (v0.2.5), `fallback:` (v0.5.0), and `isodate` (v0.5.0) were all added in response to cold-author harness signal — authored skills demonstrated the gap was load-bearing before each filter shipped. The v0.5.0 additions specifically: `|fallback:` came from R3 minion 5 hitting the missing-field strict-error trap; `|isodate` came from R3 minion 2 hitting the `$(NOW)` raw-epoch-ms surprise (paired with the runtime fix to make `$(NOW)` ISO by default).
 
 ## Conditionals & iteration — if/elif/else, foreach, supported operators
 
@@ -1197,33 +1368,88 @@ Authors composing complex skills use these in combination — op-level for trans
 
 Per-op error contract is what makes cascading fallbacks work. When `$` returns `isError: true`, the executor throws via `makeOpError` rather than binding the error text to the output var. The throw routes through `else:` / `# OnError:` machinery and surfaces in `result.errors[]` for the scheduler to log. Without this discipline, op-level failures wouldn't propagate to the fallback layers and silent-fail would be the default.
 
-## Connectors — MemoryStore / LocalModel / McpConnector interfaces, three-layer resolution
+## Connectors — McpConnector / AgentConnector / SkillStore; substrate-neutral framing (v0.7.0)
 
-The substrate-routing ops (`$`, `>`, `~`) and substrate-routing Output kinds (`prompt-context:`, `template:`) don't call any specific backend directly. They route through thin connector interfaces. Skill source persistence follows the same pattern via a dedicated contract. This is the programmable surface through which authors compose information topology per skill and per moment. Skills are portable across substrates because the language doesn't bake substrate identity into the source.
+**v0.7.0.** Replaces prior `50332e7e-1fd4-4e68-8817-dfc2663a13a2` (v0.5.0) on doc anchor swap. Reflects shipped commit `7612571` (locked framework `c48fca7e`, approved `783a10a4`; spec answers `f8aff1b7`).
 
-## Five connector types
+---
 
-### MemoryStore
+The substrate-routing ops route through thin connector interfaces. The language is portable across substrates because skill source doesn't bake substrate identity in.
 
-Routes `>` retrieval ops. Interface: `MemoryStore.query(filters) → PortableMemory[]`.
+**v0.7.0 substrate-neutrality.** `MemoryStore` and `LocalModel` are no longer language-level connector contracts. The `~` and `>` symbols are deprecated under the grace-period framing (§2). What was previously "the LocalModel contract" is now an *adopter convention*: declare a connector (e.g., named `llm` if that's a useful name for your wiring) in `connectors.json` that conforms to a prompt-in/text-out shape. Same for memory query and memory write. The language doesn't know or care whether the adopter wires Ollama, OpenAI, Anthropic Claude, Pinecone, AMP, Weaviate, or anything else.
 
-Implementations vary by deployment — a knowledge-substrate-backed store, a SQLite-backed store, a vector-DB-backed store, an in-memory test store. All conform to the `MemoryStore.query` contract and return `PortableMemory[]`.
+This is the load-bearing v0.7.0 change. Adopters who want a memory + LLM substrate wire whatever they like; the language stops privileging any particular backend.
 
-### LocalModel
+## Three language-relevant connector contracts
 
-Routes `~` local-model ops. Interface: `LocalModel.run(prompt, opts) → string`.
+| Contract | Routes | Stays language-relevant because |
+|---|---|---|
+| **McpConnector** | All `$ <connector>` external dispatch | Universal substrate-bridging surface; the language's main "call out to the world" primitive |
+| **AgentConnector** | `# Output: prompt-context:`, `# Output: template:` | Agent-bound delivery channels need a structured contract for `deliver` + `wake` semantics |
+| **SkillStore** | Skill source persistence + `inline(skill=...)` + `execute_skill(skill_name=...)` | The language needs to find skills by name |
 
-Default impl wraps a local-model HTTP service (e.g., Ollama). Constructor takes `{ model: string }` (required) — no class-level implicit default. Multiple instances by name in the registry; each backed by a distinct model tag.
+`file_read` and `file_write` are runtime-intrinsic ops with direct OS-level dispatch — no connector contract for general filesystem I/O. If an adopter needs exotic file backends (S3, virtual FS, encrypted-at-rest, etc.), they wire a custom MCP connector and dispatch via `$ <name>` instead of `file_write`.
 
 ### McpConnector
 
-Routes `$` MCP-tool ops. Interface: `McpConnector.call(toolName, args, ctxOverrides?) → unknown`.
+Routes every `$ <connector>` op. Interface: `McpConnector.call(args, ctxOverrides?) → unknown`.
 
-Implementations include adapters wrapping in-process tool dispatch (when the runtime is embedded in a host that already has MCP tools) and HTTP-based MCP clients (when calling out to remote MCP servers). All conform to the `McpConnector.call` contract.
+Each entry in `connectors.json` is a connector — flat namespace, name → instance. The name is what skill source references (`$ youtrack_search ...`); the entry declares the wire protocol, underlying tool/endpoint, identity, and per-connector metadata.
+
+```jsonc
+{
+  "mcpConnectors": {
+    "llm":             { "type": "OllamaMcpConnector", "model": "qwen2.5:7b" },
+    "memory":          { "type": "AmpMcpConnector", "tool": "amp_query_memories" },
+    "memory_write":    { "type": "AmpMcpConnector", "tool": "amp_write_memory", "mutating": true },
+    "youtrack_search": { "type": "RemoteMcpConnector", "endpoint": "...", "tool": "search_issues" },
+    "youtrack":        { "type": "RemoteMcpConnector", "endpoint": "..." },
+    "agent_notify":    { "type": "WebhookMcpConnector", "endpoint": "..." }
+  }
+}
+```
+
+#### Two dispatch forms — flat and dotted
+
+Both forms are first-class. Neither is canonical; choose by what makes the call site clearer.
+
+**Flat-name dispatch** is the common case. The tool name resolves against the wired connector (most often the `primary` connector's tool list, or a dedicated entry per tool):
+
+```
+$ youtrack_search query="project:INFRA" -> R
+$ llm prompt="${INPUT}" -> V
+$ memory mode=fts query="..." limit=5 -> M
+```
+
+**Dotted-prefix dispatch** is the explicit-routing escape hatch — useful when multiple connectors expose tools with overlapping names, or when an adopter wants the connector identity visible at the call site for audit clarity:
+
+```
+$ youtrack.search query="project:INFRA" -> R
+$ personal_mcp.write_note title="..." body="${SUMMARY}"
+$ amp.query_memories query="..." -> M
+```
+
+Parser rule: `^([a-z_][a-z0-9_-]*)\.(?=[A-Za-z_])([\s\S]*)$` matches the dotted prefix. The text before the dot is the connector name (must match an entry in `connectors.json`); the rest is the tool + args.
+
+**Tradita's `connectors.json`** mostly uses flat names because our wired tools have unique names. Adopters with overlapping tool names across connectors should prefer the dotted form at those call sites.
+
+**`mutating` classification.** Each connector entry declares `"mutating": true | false` (default `false`). Mutating connectors are subject to the §2 per-op gating rule (v0.7.1+ enforcement).
+
+**`allowed_tools` constraint** (carried from v0.4.1): per-connector entry may declare `"allowed_tools": [...]` to constrain dispatch surface for minion-safe defaults. Dispatch outside the allowlist → tier-1 `disallowed-tool` lint.
+
+**Identity merge** (carried from v0.5.0): a connector entry may declare `identity: { agentId: "...", isAdmin: false }`. Merge order at dispatch (top wins):
+
+1. Registry-configured per-connector identity
+2. Per-call `ctxOverrides` from the runtime
+3. (no intrinsic identity) — adapter forwards whatever the merge produces
+
+Configured identity is a *partial merge* — unmentioned keys flow through from the per-call ctx. Default connectors should configure no intrinsic identity, so `ctxOverrides` always wins.
+
+**Unknown connector at compile time** → tier-1 `unknown-connector` lint listing every wired connector name.
 
 ### AgentConnector
 
-Routes agent-bound `# Output:` kinds — `prompt-context:` (Augmenting) and `template:` (Template) per the skill-kind taxonomy in Section 1. Interface:
+Routes agent-bound `# Output:` kinds — `prompt-context:` and `template:`. Interface unchanged from v0.5.0:
 
 ```typescript
 interface AgentConnector {
@@ -1239,29 +1465,20 @@ type DeliveryPayload =
 
 type TriggerProvenance = {
   source: "cron" | "session" | "event" | "agent-event" | "file-watch" | "sensor" | "manual";
-  name: string;            // e.g. "0 8 * * *", "session:start", "manual"
-  fired_at_ms: number;     // unix ms timestamp
+  name: string;
+  fired_at_ms: number;
 };
 
 type DeliveryReceipt = { delivered_at: number; delivery_id?: string };
-
-type WakeOpts = {
-  context?: string;
-  when?: "immediate" | number;
-};
-
+type WakeOpts = { context?: string; when?: "immediate" | number };
 type WakeReceipt = { woken_at: number; session_id?: string };
-
-type AgentDescriptor = {
-  agent_id: string;
-  agent_name?: string;
-  capabilities?: ("deliver" | "wake" | "augment" | "template")[];
-};
-
+type AgentDescriptor = { agent_id: string; agent_name?: string; capabilities?: ("deliver" | "wake" | "augment" | "template")[]; };
 type AgentStatus = "active" | "idle" | "asleep" | "unknown";
 ```
 
-Two primary verbs (`deliver` + `wake`), one mandatory discovery method (`list_agents`), one optional status method. The contract is substrate-neutral; adopters wire any delivery mechanism behind it:
+Two primary verbs (`deliver` + `wake`), one mandatory discovery method (`list_agents`), one optional status method.
+
+The contract is substrate-neutral; adopters wire any delivery mechanism behind it:
 
 | Substrate | `deliver` impl | `wake` impl |
 |---|---|---|
@@ -1270,39 +1487,21 @@ Two primary verbs (`deliver` + `wake`), one mandatory discovery method (`list_ag
 | memory store | write a memory record with delivery tag | write addressed memory + push notification |
 | file-watch | write to `<path>/augment-<id>.txt` | write to `<path>/wake-<id>.txt` |
 | chat thread | post to monitored thread | post + @mention |
-| IPC named pipe | write to delivery pipe | write to wake pipe |
 
-Default impl `NoOpAgentConnector` logs warnings and resolves; lets the runtime ship without an agent-delivery substrate wired. Adopter impls run the bundled `AgentConnectorConformance` suite to verify their substrate wiring.
+Default impl `NoOpAgentConnector` logs warnings and resolves; lets the runtime ship without an agent-delivery substrate wired.
 
-#### DeliveryPayload provenance fields (v0.2.6)
+**DeliveryPayload provenance fields:** every `deliver` carries optional `source_skill`, `triggered_by`, `delivery_context`, `templates` — see v0.5.0 docs for the full semantics; carried unchanged.
 
-Every `deliver` call carries optional provenance the receiving agent uses to disambiguate the source and context of the delivery:
+**`agent_id` resolution chain** (4-level, first match wins):
 
-- `source_skill?: string` — name of the skill that produced this delivery. Lets the receiver attribute the content to a specific authored skill, distinguishing "this is from the stock-monitor skill" from "this is from the news-brief skill."
-- `triggered_by?: TriggerProvenance` — why the skill fired. Receiver disambiguates cron tick (autonomous), session-start (lifecycle), event-driven (external signal), manual (user-requested), etc. Carries the trigger source + name + unix-ms timestamp.
-- `delivery_context?: string` — prose explanation of why the agent is being notified and what to do with the content. Populated from the `# Delivery-context:` header (see Section 7).
-- `templates?: string[]` — list of Template-kind skill names the receiver can fetch as follow-on actions. Populated from the `# Templates:` header (see Section 7).
-
-The runtime threads these from `ExecuteContext.triggerCtx` (set at dispatch) and `ParsedSkill.deliveryContext` / `ParsedSkill.templates` (set at parse) through to the `deliver` call site.
-
-#### `agent_id` resolution chain
-
-When `# Output: prompt-context:` or `# Output: template:` fires, the runtime resolves the target agent_id via a 4-level chain (first match wins):
-
-1. **Explicit name in `# Output:` line** — `# Output: prompt-context: perry` dispatches to agent_id `perry`. Highest precedence.
-2. **Invocation context** — if the skill was invoked from an agent-event trigger or via the runtime API with an `agent_id` context, that becomes the default target. (v0.3.0 — currently parses but auto-inheritance is pending.)
-3. **Input var override** — `# Output: prompt-context: $(TARGET_AGENT)` lets the caller pass agent_id via input vars; standard var-resolution rules apply.
-4. **Runtime config default** — `default_agent_id` in the runtime config. Used when nothing else resolves.
-
-Same shape as the `# Timeout:` 4-level resolution chain (ERD §6) — one resolution model, applied everywhere.
-
-#### Output-kind classification in the runtime
-
-The runtime's `TEXT_COERCED_OUTPUT_KINDS` set classifies output kinds by payload shape (text vs structured), not by semantic destination. Membership controls payload coercion; it doesn't bake destination identity into the runtime. v1.x: this lifts to a connector-registered metadata pattern via the EmissionConnector design, so adopters can register new text-shaped destinations without runtime code changes.
+1. **Explicit name in `# Output:` line** — `# Output: prompt-context: perry`
+2. **Invocation context** — agent-event trigger or runtime API `agent_id` context
+3. **Input var override** — `# Output: prompt-context: ${TARGET_AGENT}`
+4. **Runtime config default** — `default_agent_id`
 
 ### SkillStore
 
-Routes skill source persistence. Interface:
+Routes skill source persistence + composition lookups (`inline(skill=...)`, `execute_skill(skill_name=...)`). Interface unchanged from v0.5.0:
 
 ```typescript
 interface SkillStore {
@@ -1313,137 +1512,113 @@ interface SkillStore {
 }
 ```
 
-Bundled impls: `FilesystemSkillStore` reads and writes `.skill.md` source plus `.skill` compiled output and `.skill.provenance.json` sidecar in a configured directory; the standard for file-backed deployments. Substrate-specific impls live in adopter packages (memory-backed stores live in the substrate's adapter repo).
+Bundled `FilesystemSkillStore` reads and writes `.skill.md` source plus `.skill` compiled output and `.skill.provenance.json` sidecar in a configured directory; the standard for file-backed deployments.
 
 Skill records are infrastructure, not knowledge atoms — adopter impls should treat skills as first-class long-lived records, not as candidates for substrate-level garbage collection.
 
-## Capabilities discovery
+## Connector names are convention, not reservation
 
-All connector types expose `capabilities()` for runtime discovery. Three consumers:
-1. Static `# Requires:` matching (future — pending header enforcement)
-2. Dynamic queries via `listMemoryStores()` / `listLocalModels()` / `listMcpConnectors()` / `listAgentConnectors()` to pick a connector for the moment
-3. Authoring tools that surface the registered set
+Names like `llm`, `memory`, `memory_write`, `agent_notify`, `youtrack_search` are **adopter-chosen identifiers**, not language-reserved keywords. The parser does not special-case any of them; they're just entries in `connectors.json`. The `unknown-connector` tier-1 lint is the safety net — typos against wired connector names fire at compile time with the list of valid names.
 
-## Multi-instance by design
+Tradita's deployment uses `llm` and `memory` because they're descriptive for what they point at. An OpenAI shop might wire `openai_chat` and `openai_embeddings`. A Pinecone-and-Claude shop might wire `pinecone` and `claude`. Skill source written against one adopter's names is portable to another adopter's wiring only insofar as the names match — or via mechanical rewrite at adoption time.
 
-Multiple instances of the same connector type are the *normal case*, not the exception.
+The implication for skill authors: pick descriptive names that match what the connector does, not what backend it currently points at. `llm` is more portable than `ollama_qwen`; `memory` is more portable than `amp_query`. But neither is enforced.
 
-```
-{
-  primary: MemoryStoreImplA,
-  project: SqliteProjectStore,
-  scratch: InMemoryStore
-}
-```
+## Removed: MemoryStore and LocalModel as language contracts
 
-```
-{
-  default: OllamaLocalModel({model: "gemma2:9b"}),
-  gemma2:  OllamaLocalModel({model: "gemma2:9b"}),
-  qwen:    OllamaLocalModel({model: "qwen2.5:7b"})
-}
-```
+Previously the language declared:
+- `MemoryStore` interface (`query(filters) → PortableMemory[]`) for `>` dispatch
+- `LocalModel` interface (`run(prompt, opts) → string`) for `~` dispatch
 
-```
-{
-  primary: PrimaryMcpConnector,
-  personal: HttpMcpConnector,
-  project: HttpMcpConnector
-}
-```
-
-Per-skill resolution against named connectors is first-class; an unnamed lookup returns the configured default. Multiple keys pointing at the same underlying instance configuration are allowed and useful — see the `default`/`gemma2` alias below.
-
-## Model selection — choosing among LocalModel instances
-
-The LocalModel registry holds multiple instances by design. Skill authors choose which to dispatch to via `~ model="<name>"`. Two layers of indirection are involved, and the distinction matters for both authoring and adopter configuration:
-
-1. **Skillscript name → registered instance.** `~ model="qwen"` references the instance keyed `qwen` in the registry. The registry resolves to the configured connector implementation.
-2. **Registered instance → underlying model.** Each `OllamaLocalModel` is constructed with the actual model tag (e.g. `qwen2.5:7b`). The skill never sees the tag directly.
-
-### Example instance names
-
-| Name | Underlying model | Notes |
-| --- | --- | --- |
-| `default` | `gemma2:9b` | Resolved when `model=` is omitted; alias of `gemma2` |
-| `gemma2` | `gemma2:9b` | Explicit name; matches the convention below |
-| `qwen` | `qwen2.5:7b` | Interactive, latency-sensitive |
-
-`default` and `gemma2` can point at the same `OllamaLocalModel` configuration. The alias exists so skill syntax can match a tier convention ("use gemma2 for batch") rather than the back-compat name (`default`). Existing skills that wrote `model="default"` continue to work unchanged; new skills should prefer the explicit name.
-
-### Convention: model tier by use case
-
-- **Small classification-class model** (e.g., `gemma2`) for *batch and scan work* — atomization, large-batch classification, anything async or background-scheduled.
-- **Longer-context dispatch-class model** (e.g., `qwen`) for *interactive verdicts in skills* — single-shot decisions inside an active dispatch where latency matters and queue contention with batch work would block forward progress.
-
-When in doubt: small model if the call is asynchronous from a user/agent's perspective, larger model if a downstream op depends on the response.
-
-### Contention property
-
-Any skill that calls `~` shares the underlying local-model service with every other process on the deployment that dispatches to the same model. Most local-model services serialize per-model dispatch. A skill that fires asynchronous batch work via `$` (e.g. invoking a batch-classification tool that dispatches N calls to model X) and then immediately calls `~ model="X"` will race itself — the synchronous call queues behind the dispatched batch.
-
-The runtime does not promise concurrency-safe model dispatch. Skill authors and operators own model-tier allocation. The canonical mitigation: use distinct models for the synchronous and asynchronous paths (a smaller model for interactive verdicts, a larger model for batch).
-
-### Adopter deployments
-
-Adopters override the bundled set via `connectors.json`:
+Both are removed as language-special in v0.7.0. The `~` and `>` symbols continue to compile during the grace period (§2) and route through the canonical `$ llm` / `$ memory` dispatch path. Adopters who want memory or LLM connectivity wire them as ordinary MCP connectors:
 
 ```jsonc
 {
-  "localModels": {
-    "default": { "type": "OllamaLocalModel", "model": "llama3.2:3b" },
-    "fast":    { "type": "OllamaLocalModel", "model": "phi3:mini" }
+  "mcpConnectors": {
+    "memory":       { "type": "AmpMcpConnector", "tool": "amp_query_memories" },
+    "memory_write": { "type": "AmpMcpConnector", "tool": "amp_write_memory", "mutating": true },
+    "llm":          { "type": "OllamaMcpConnector", "model": "qwen2.5:7b" }
   }
 }
 ```
 
-Adopters with no local models register no LocalModel instances. Skills with `~` ops fail at dispatch with `LocalModel '<name>' not registered`. Phase 5 `# Requires:` capability declarations promote this to a compile-time fail-fast — a skill that requires LocalModel won't compile if none is configured. Substrate-blind skills (no `~` ops) work unchanged.
+Skill source calls `$ memory mode=fts query="${TOPIC}" -> R` and `$ llm prompt="${P}" -> V` — same behavior as `>` and `~` provided in v0.5.0, routed through the universal MCP dispatch surface.
+
+**Why remove them.** Two contracts that bundled wire-protocol + canonical-shape (PortableMemory, prompt-in/text-out) became an amp-substrate privilege in practice: the language assumed memory looked like AMP memories and LLM calls looked like Ollama. Adopters wiring OpenAI or Pinecone had to write awkward shape-translator shims because the language insisted on its own canonical shapes. v0.7.0 lets adopters declare whatever shapes their MCP tools natively return; skills access fields via the same `${VAR.field}` dotted-access semantics as any other tool dispatch.
+
+**Migration.** The v0.7.0 codebase included a one-shot internal migration script (`scripts/migrate-v07.mjs`) used to migrate the bundled examples, then deleted post-run. There is no permanent migration CLI. Adopters with existing skills can:
+- Re-derive the rewrites mechanically — the rules are documented in `CHANGELOG.md` under `## 0.7.0 — Migration`. Tradita's Tradita-config mapping (`~` → `$ llm`, `>` → `$ memory`) is one valid mapping; other adopters substitute their own connector names.
+- Use editor find-and-replace.
+- Write new skills against the canonical surface from day one.
+
+Most adopters land in the third category because Skillscript is pre-adoption.
+
+## Multi-instance by design
+
+Multiple connector entries for the same underlying substrate are the normal case. The flat-namespace shape encourages this:
+
+```jsonc
+{
+  "mcpConnectors": {
+    "llm_fast":   { "type": "OllamaMcpConnector", "model": "phi3:mini" },
+    "llm":        { "type": "OllamaMcpConnector", "model": "qwen2.5:7b" },
+    "llm_batch":  { "type": "OllamaMcpConnector", "model": "gemma2:9b" }
+  }
+}
+```
+
+Skill source picks the connector by name: `$ llm_fast prompt="..."` for quick classifiers, `$ llm prompt="..."` for default, `$ llm_batch prompt="..."` for async heavy work.
+
+The convention from v0.5.0 still applies — small batch-class model for asynchronous / background work, larger dispatch-class model for interactive verdicts. Skill authors and operators own model-tier allocation; the runtime makes no concurrency-safety promises.
+
+## Model contention property
+
+Carried unchanged from v0.5.0. Any skill that dispatches to an LLM connector shares the underlying local-model service with every other process on the deployment. Most local-model services serialize per-model dispatch. A skill that fires asynchronous batch work and then immediately dispatches to the same model will race itself — the synchronous call queues behind the batch.
+
+Canonical mitigation: use distinct connectors (and underlying models) for the synchronous and asynchronous paths.
 
 ## Per-skill connector selection
 
-Skills declare which connector they use, by name, when they care:
+Skills declare which connectors they use, by name, when they care:
 
 ```
-# Connectors: memorystore=project, localmodel=qwen, mcp=[primary, personal]
+# Connectors: mcp=[llm, memory, youtrack_search]
 ```
 
-Meaning: *"this skill requires the named connectors, or compatible alternatives declared via Phase 5 `# Requires:` capabilities."* Discipline about declared intent. A skill that depends on a project-scoped store or a personal MCP says so; a substrate-blind skill omits the header.
+Discipline about declared intent. A skill that depends on a specific connector says so; a substrate-blind skill omits the header.
 
-Runtime fails fast if a named connector is unavailable. The `mcp=[...]` header is enforcement-pending (Phase 3 of the connector-routed `$` work, deferred until 2-3 skills cite non-primary connectors and authoring discipline benefits).
+Runtime fails fast if a named connector is unavailable. (Phase 3 enforcement still pending; declarative for now.)
 
 ## Connector resolution chain
 
-Connectors are runtime-resolved — the compiler stays pure read+transform. Compiled artifacts are generic; any runtime can dispatch them through whatever connectors it has configured. Resolution chain for *which connectors are wired up* (first match wins):
+Connectors are runtime-resolved — the compiler stays pure read+transform. Compiled artifacts are generic; any runtime can dispatch them through whatever connectors it has configured. Resolution chain (first match wins):
 
-1. **Env var** — `SKILLFILE_MEMORY_STORE`, `SKILLFILE_LOCAL_MODEL`, or `SKILLFILE_CONNECTORS_CONFIG` for multi-store. Ad-hoc / test override.
-2. **Working-dir / agent-scoped `connectors.json`** — persistent per-agent override, supports multiple named connectors per type.
+1. **Env var** — `SKILLFILE_CONNECTORS_CONFIG` for multi-store config override. Ad-hoc / test override.
+2. **Working-dir / agent-scoped `connectors.json`** — persistent per-agent override.
 3. **Server default** — bundled with the compiler. Common-case fallback.
 
 Per-deployment naming lives in config, not the contract. A given deployment registers concrete instances under whatever names make sense locally; skill authors reference those names.
 
-## Per-call identity overrides (McpConnector)
+The `connectors.json` loader (shipped v0.4.0+) handles literal + `${ENV_VAR}` credential resolution, file-discovery via `$SKILLSCRIPT_HOME`, and a closed-set class registry. The `allowed_tools` field per-connector entry constrains dispatch surface for minion-safe defaults.
 
-A skill running under one identity can dispatch against a personal MCP server under a different identity without needing connector-internal state. The merge order at dispatch (top wins):
+## Capabilities discovery
 
-1. **Registry-configured per-connector identity** — set in `connectors.json` (`identity: { agentId: "<id>", isAdmin: false }`) at connector instantiation. Locks an identity to a connector.
-2. **Per-call `ctxOverrides`** — threaded by the runtime per the security boundary contract. A skill running as agent X passes `{ agentId: "X", isAdmin: false }` into every `$` op.
-3. **(no intrinsic identity)** — adapter forwards whatever the merge produces.
+All connector types expose `capabilities()` for runtime discovery. Three consumers:
+1. Static `# Requires:` matching
+2. Dynamic queries via `listMcpConnectors()` / `listAgentConnectors()` to pick a connector for the moment
+3. Authoring tools that surface the registered set
 
-Configured identity is a *partial merge* — unmentioned keys (e.g., `isAdmin`) flow through from the per-call ctx. Lets a connector lock `agentId` without clobbering the runtime's admin-drop discipline. Default connectors should configure no intrinsic identity, so `ctxOverrides` always wins — preserving the runtime's authority-flow guarantees intact.
+## Portable shape conventions (adopter-level, not language-level)
 
-## Portable shapes
+For adopters who want their memory connectors to be interchangeable across deployments, the v0.5.0 `PortableMemory` shape is a recommended convention — not a language-enforced contract:
 
 ```typescript
 interface PortableMemory {
-  // Core fields — mandatory on every connector return.
   id: string;
   summary: string;
   detail?: string;
   score?: number;
 
-  // Curated substrate subset — concept-portable, value-substrate-specific.
-  // Top-level access via $(MEMORY.field). Connectors populate when the
-  // concept applies. MUST NOT also be duplicated into metadata.
   thread_status?: string;
   pinned?: boolean;
   confidence?: number;
@@ -1456,36 +1631,19 @@ interface PortableMemory {
   agent_id?: string;
   vault?: string;
 
-  // Substrate-specific bag. Accessed via $(MEMORY.metadata.X).
   metadata?: Record<string, unknown>;
-}
-
-interface QueryFilters {
-  query: string;
-  limit: number;
-  mode: "fts" | "semantic" | "rerank" | string;
-  [key: string]: unknown;
-}
-
-interface McpDispatchCtx {
-  agentId?: string;
-  isAdmin?: boolean;
 }
 ```
 
-## Field access semantics
+Adopters who follow the convention get cross-substrate skill portability (a skill that accesses `${R.summary}` works against any memory connector that returns this shape). Adopters who don't follow it write skills that access whatever fields their substrate natively exposes — also valid.
 
-`$(MEMORY.field)` resolves in tiers:
-1. Core fields (id, summary, detail, score)
-2. Curated substrate subset (thread_status, pinned, etc.)
-3. `metadata.X` for everything else
-4. Ambient passthrough as literal `$(MEMORY.field)` if unresolved
-
-**Connector duplication is a contract violation.** If a field is in the curated subset, the connector populates it at top-level only — `metadata.<same_name>` MUST be absent. Otherwise `$(M.thread_status)` and `$(M.metadata.thread_status)` can return different values (silent data divergence). Connectors enforce.
+The language doesn't validate the shape; it just provides the `${VAR.field}` dotted access. Conformance is a deployment-level discipline.
 
 ## Why connector abstraction matters
 
-Hard-coupling skills to specific substrates would make information-flow decisions infrastructural rather than skill-authored, defeating the point of skills as the agent's programming language. The connector layer is what lets the same skill body run against substrate A today and run against substrate B tomorrow without rewriting.
+Hard-coupling skills to specific substrates would make information-flow decisions infrastructural rather than skill-authored, defeating the point of skills as the agent's programming language. The connector layer is what lets the same skill body run against substrate A today and substrate B tomorrow without rewriting.
+
+v0.7.0's substrate-neutrality move (removing MemoryStore + LocalModel as privileged language contracts) is the cleanest expression of this principle: the language describes the *pipeline* (trigger → process → deliver), and adopters describe the *substrate* (which connectors handle which roles). Two concerns, two layers, no leak between them.
 
 ## Composition — skills calling skills (v0.2.8)
 
@@ -2082,5 +2240,5 @@ All six are locked. T5 implements parser + lint + dispatcher per these dispositi
 
 ---
 
-*Rendered from `skillscript/skillscript-language-reference` — 2026-05-23 15:39 EDT*  
+*Rendered from `skillscript/skillscript-language-reference` — 2026-05-25 13:16 EDT*  
 *Source of truth: AMP (`amp_render_document("skillscript/skillscript-language-reference")`)*

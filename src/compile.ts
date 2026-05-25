@@ -513,9 +513,13 @@ function substitute(body: string, resolved: Map<string, string>): string {
   // include `|fallback:"X"` parse here too. Compile-time substitution only
   // applies the first filter (chain support stayed runtime-only); refs
   // with chained filters pass through verbatim for runtime to handle.
+  // v0.7.0: accepts both `$(REF)` (legacy) and `${REF}` (canonical).
+  // Capture groups: 1+2 = paren form, 3+4 = brace form.
   return body.replace(
-    /\$\(([^|)\s]+)\s*(?:\|\s*([A-Za-z_]\w*)(?:\s*:\s*"[^"]*")?)?\s*\)/g,
-    (match: string, name: string, filter: string | undefined) => {
+    /\$(?:\(([^|)\s]+)\s*(?:\|\s*([A-Za-z_]\w*)(?:\s*:\s*"[^"]*")?)?\s*\)|\{([^|}\s]+)\s*(?:\|\s*([A-Za-z_]\w*)(?:\s*:\s*"[^"]*")?)?\s*\})/g,
+    (match: string, name1: string | undefined, filter1: string | undefined, name2: string | undefined, filter2: string | undefined) => {
+      const name = (name1 ?? name2)!;
+      const filter = filter1 ?? filter2;
       if (!resolved.has(name)) return match;
       const raw = resolved.get(name)!;
       if (!filter || filter === "fallback") return raw;
@@ -589,6 +593,17 @@ function renderOpPrompt(op: SkillOp, targetName: string, resolved: Map<string, s
         }
       }
       return lines;
+    }
+    case "file_read": {
+      const p = op.fileParams!;
+      const pathSub = substitute(p.path, resolved);
+      return [`${prefix}- Read file: ${pathSub} — bind contents to $(${op.outputVar ?? `${targetName}.output`})`];
+    }
+    case "file_write": {
+      const p = op.fileParams!;
+      const pathSub = substitute(p.path, resolved);
+      const contentPreview = (p.content ?? "").length > 40 ? (p.content ?? "").slice(0, 40) + "..." : (p.content ?? "");
+      return [`${prefix}- Write file: ${pathSub} (${(p.content ?? "").length} chars) — content: ${contentPreview}`];
     }
   }
 }
@@ -683,6 +698,18 @@ function renderOpProse(op: SkillOp, resolved: Map<string, string>): string[] {
         parts.push(`Otherwise, runs: ${inner.join(" ")}`);
       }
       return [parts.join(" ")];
+    }
+    case "file_read": {
+      const p = op.fileParams!;
+      const pathSub = substitute(p.path, resolved);
+      const bindTail = op.outputVar !== undefined ? `; binds to $(${op.outputVar})` : "";
+      return [`Reads file ${pathSub}${bindTail}.`];
+    }
+    case "file_write": {
+      const p = op.fileParams!;
+      const pathSub = substitute(p.path, resolved);
+      const len = (p.content ?? "").length;
+      return [`Writes file ${pathSub} (${len} chars).`];
     }
   }
 }

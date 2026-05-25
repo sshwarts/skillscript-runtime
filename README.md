@@ -3,7 +3,7 @@
 *A language for agents to write themselves in.*
 
 [![npm version](https://img.shields.io/npm/v/skillscript-runtime.svg)](https://www.npmjs.com/package/skillscript-runtime)
-[![tests](https://img.shields.io/badge/tests-646%2F646-green)](#)
+[![tests](https://img.shields.io/badge/tests-896%2F896-green)](#)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![status](https://img.shields.io/badge/status-pre--1.0-orange)](#status)
 
@@ -59,13 +59,13 @@ A skillscript skill is a declarative recipe, a small program with a dependency D
 # Vars: WHO=world
 
 greet:
-    ! Hello, $(WHO)!
-    ! Welcome to Skillscript.
+    emit(text="Hello, ${WHO}!")
+    emit(text="Welcome to Skillscript.")
 
 default: greet
 ```
 
-That's a complete, runnable skill. Five lines, no dependencies, no boilerplate. The same shape scales to multi-stage DAGs that classify inputs, dispatch to local models, write to memory, branch on conditions, and orchestrate sub-agents, all in the same declarative grammar.
+That's a complete, runnable skill. Five lines, no dependencies, no boilerplate. The same shape scales to multi-stage DAGs that classify inputs, dispatch to LLMs, query memory stores, branch on conditions, and orchestrate sub-agents, all in the same declarative grammar.
 
 ## Why a new language
 
@@ -128,23 +128,23 @@ This is what makes *"Headless monitor → wake agent with context"* a real compo
 
 ### Local models as tools for the frontier
 
-Most agent systems treat local models as *substitutes* for frontier inference. Call them instead of the frontier when latency or cost matters. Skillscript treats them as something different: *delegation targets the frontier orchestrates*. The frontier composes the workflow; each `~` op is the frontier dispatching a bounded sub-task (classify a message, extract a field, judge whether two strings refer to the same thing, summarize a chunk, format a response) to a local model and consuming the result.
+Most agent systems treat local models as *substitutes* for frontier inference. Call them instead of the frontier when latency or cost matters. Skillscript treats them as something different: *delegation targets the frontier orchestrates*. The frontier composes the workflow; each LLM dispatch is the frontier handing off a bounded sub-task (classify a message, extract a field, judge whether two strings refer to the same thing, summarize a chunk, format a response) to a local or smaller model and consuming the result.
 
-In skillscript, this isn't a separate "local-model interplay" pattern adopters bolt on — it's a *first-class language operation*. `~ prompt="..." model="qwen" -> RESULT` lives next to `$ tool.call args="..." -> RESULT` in the skill body, with the same op-level discipline, the same trace surface, the same lint coverage. Local models become tools the frontier model can wield through skills, on the same footing as MCP tools and memory reads.
+In skillscript, this isn't a separate "local-model interplay" pattern adopters bolt on — it's just **MCP dispatch through a connector named whatever your substrate calls it**. `$ llm prompt="..." -> RESULT` (Tradita's `llm` connector points at amp's local model; an OpenAI-shop wires `openai_chat`, a Pinecone-shop wires `claude_messages`) lives next to any other `$ tool args -> RESULT` in the skill body, with the same op-level discipline, the same trace surface, the same lint coverage. The language has no built-in LLM keyword — adopters wire their substrate.
 
-The cost shape that follows: routine work runs at local-model cost (free at scale, fast, private to the host); the frontier model intervenes only at orchestration boundaries and ambiguous cases. Customer data flowing through `~` ops never reaches an external API. The local-model layer becomes the privacy boundary, not a separate add-on.
+The cost shape that follows: routine work runs at local-model cost (free at scale, fast, private to the host); the frontier model intervenes only at orchestration boundaries and ambiguous cases. Customer data flowing through bounded sub-tasks never reaches an external API when the wired connector is local. The local-model layer becomes the privacy boundary, not a separate add-on.
 
 ### Composition: skills calling skills
 
-A skill can invoke another skill via the `$ execute_skill` op:
+A skill can invoke another skill via `execute_skill(...)`:
 
 ```
 parent:
-    $ execute_skill skill_name="extract-json-number" JSON_BLOB=$(RAW) FIELD_PATH=total_count -> RESULT
-    ! Extracted: $(RESULT.final_vars.VALUE|trim)
+    execute_skill(skill_name="extract-json-number", JSON_BLOB="${RAW}", FIELD_PATH="total_count") -> RESULT
+    emit(text="Extracted: ${RESULT.final_vars.VALUE|trim}")
 ```
 
-The child skill runs to completion against the runtime's wired connectors, returns its full execution record (final vars, transcript, outputs), and binds to the parent's named variable. Field access on the bound result (`$(RESULT.final_vars.X)`) lets the parent reach into whatever the child produced.
+The child skill runs to completion against the runtime's wired connectors, returns its full execution record (final vars, transcript, outputs), and binds to the parent's named variable. Field access on the bound result (`${RESULT.final_vars.X}`) lets the parent reach into whatever the child produced.
 
 Composition is what makes skill libraries accumulate. Utility skills (`extract-json-number`, `summarize-thread`, `classify-urgency`) get authored once and orchestrated forever. The composition primitive is symmetric across the MCP surface — `execute_skill({skill_name, inputs?, mechanical?})` works the same way at the runtime entry point as it does inside a skill body. `mechanical: true` previews the dispatch graph without firing real ops, propagating through nested composition calls. TestFlight your multi-skill chains before commitment.
 
@@ -152,7 +152,7 @@ Composition is what makes skill libraries accumulate. Utility skills (`extract-j
 
 Skills have an execution model orthogonal to their kind. A **dynamic skill** requires the Skillscript runtime to execute — the runtime walks the DAG, fires dispatches against wired connectors, threads outputs. A **static skill** compiles to a portable artifact that any agent capable of reading prose can execute without the runtime.
 
-The static case matters for shareable artifacts. A skill whose body has only emission ops (no dispatching `$` / `~` / `@` / `>` ops) compiles to a self-contained recipe. Email it, post it, hand it to a frontier agent in a different environment — they read the compiled output and execute the steps using their own tools. The skill becomes the deliverable.
+The static case matters for shareable artifacts. A skill whose body has only `emit(...)` ops (no `$ tool` MCP dispatches, no `shell(...)`, no `file_read`/`file_write`) compiles to a self-contained recipe. Email it, post it, hand it to a frontier agent in a different environment — they read the compiled output and execute the steps using their own tools. The skill becomes the deliverable.
 
 Template-kind skills are the canonical static shape; their compiled artifact is the prompt the receiving agent acts on. Headless and Augmenting skills are usually dynamic. The axes are independent — author the combination the work calls for.
 
@@ -163,9 +163,9 @@ Template-kind skills are the canonical static shape; their compiled artifact is 
 # Vars: TICKETS_JSON=[...]
 
 walk:
-    ! For each ticket in the input, classify urgency as critical/normal/low.
-    ! For critical tickets, suggest immediate owner from the runbook.
-    ! Input: $(TICKETS_JSON)
+    emit(text="For each ticket in the input, classify urgency as critical/normal/low.")
+    emit(text="For critical tickets, suggest immediate owner from the runbook.")
+    emit(text="Input: ${TICKETS_JSON}")
 
 default: walk
 ```
@@ -207,7 +207,7 @@ mkdir -p ./skills && cat > ./skills/hello.skill.md <<'EOF'
 # Vars: WHO=world
 
 greet:
-    ! Hello, $(WHO)!
+    emit(text="Hello, ${WHO}!")
 
 default: greet
 EOF
@@ -232,15 +232,15 @@ docker run -p 7878:7878 -v $(pwd)/skills:/skills \
 
 ## Connector model
 
-Skills don't know what they're talking to. Five contracts decouple language from substrate:
+Skills don't know what they're talking to. The language ships with two intrinsic contracts; everything else is MCP dispatch through adopter-wired connectors.
 
 | Contract | Purpose | Routes |
 |---|---|---|
 | `SkillStore` | Skill source persistence | `.skill.md` files (filesystem default) |
-| `MemoryStore` | Retrieval over an external knowledge store | `>` ops |
-| `LocalModel` | Local LLM dispatch (Ollama default) | `~` ops |
-| `McpConnector` | MCP tool invocation | `$` ops |
+| `McpConnector` | MCP tool invocation — all external dispatch | `$ <connector> args` ops |
 | `AgentConnector` | Delivery to a frontier agent | `prompt-context:` and `template:` outputs |
+
+**v0.7.0 substrate framing:** the language no longer treats LLM calls or memory queries as language-special operations. They're MCP dispatch through whatever connector names you wire. Tradita uses `llm` (pointing at amp's local model) and `memory` (pointing at amp's memory store); an OpenAI shop might wire `openai_chat`, a Pinecone shop `pinecone_query`. Skill source is portable — only `connectors.json` changes per adopter.
 
 Wire your own by implementing the interface and registering in `connectors.json`. See [`docs/language-reference.md`](docs/language-reference.md) §10 for full contracts.
 
@@ -309,17 +309,17 @@ This is the "agent reaches MCP" path — an external agent (Claude, GPT, anythin
 
 ## Examples
 
-Seven curated example skills in [`examples/`](examples/), covering:
+Nine curated example skills in [`examples/`](examples/), migrated to canonical v0.7.0 syntax, covering:
 
 - Multi-target DAG with `needs:` dependencies
 - Cron triggers with `# OnError:` fallback
 - Session-start `prompt-context:` delivery
-- `??` interactive ask-user pattern
+- `ask(prompt=...)` interactive pattern
 - `# Requires:` cascade for compile-time data
-- `&` skill composition
-- `$ execute_skill` skill-to-skill composition
+- `inline(skill=...)` skill composition
+- `execute_skill(...)` skill-to-skill composition
 
-Each example is annotated with the language pattern it demonstrates. Authored from spec by cold-context sub-agents — they double as conformance fixtures. The full regression-fixture set in `tests/fixtures/harness/` covers 60+ cold-author skills spanning one-shots, cron monitors, compositions, augmenting deliveries, and intentional edge-case probes — that's the broader cold-author corpus the language is hardened against.
+Each example is annotated with the language pattern it demonstrates. The pre-v0.7.0 cold-author harness corpus (R1/R2/R3 from v0.2.9 production) was retired in the v0.7.0 syntax revamp — pre-adoption means no external users depend on backwards-compat regression coverage. The R4 harness round will produce fresh canonical-form fixtures.
 
 ## Architecture and deep documentation
 
@@ -328,15 +328,19 @@ Each example is annotated with the language pattern it demonstrates. Authored fr
 
 ## Status
 
-**v0.2.10** — pre-1.0, breaking changes expected. The language is stable enough to author production skills; the surrounding tooling (CLI, dashboard, MCP server contract) may evolve before v1.0.
+**v0.7.0** — pre-1.0, breaking changes still expected through the v0.7→v1.0 arc. The language is stable enough to author production skills; v0.7.0 locks the canonical surface (`${VAR}` substitution, function-call op grammar, substrate-portable connectors) ahead of external adoption.
 
-Test coverage: 646/646 passing. Narrow-core LOC under the 5100/20-file ceiling per ERD.
+Test coverage: 896/896 passing (10 skipped, 1 env-gated YouTrack). Narrow-core LOC under the 7150/20-file ceiling per ERD.
 
-What's coming next:
-- AgentConnector reference adapters — bundled implementations for tmux pane / TTY-injection / file-watch / webhook substrates so adopters can plug `prompt-context:` / `template:` deliveries into real receivers without writing their own connector first
-- **Dispatch discovery surface** — shell-binary inventory (what's on PATH) + MCP tool catalog aggregation (what each wired connector exposes), so cold authors can discover the full primitive surface before writing
-- **Parallel dispatch primitive** — explicit concurrency for independent sub-skill invocations (the largest unanimous request from the cold-author harness)
-- T8 — private AMP adapters consuming the now-complete public connector contracts
+What's coming next (per the locked v0.7→v1.0 roadmap):
+- **v0.7.x** — tier-2 `deprecated-symbol-op` + `deprecated-substitution-shape` lints (visibility nudges during grace period); `unconfirmed-mutation` broadened to use the captured `approved="..."` kwarg + cover `file_write` / `$ memory_write`
+- **v0.8** — tool-schema introspection: `runtime_capabilities({schemas: true})` exposes per-tool JSON-Schema from MCP `tools/list`; compile-time `mcp-arg-out-of-range` + `mcp-unknown-kwarg` lints
+- **v0.9** — pagination / `while` loop primitive
+- **v0.10** — `foreach parallel` dispatch
+- **v0.11** — Phase 2 trigger sources (event + agent-event)
+- **v0.12** — output routers (slack + card)
+- **v0.13** — emit-as-binding + op-level `(fallback:)` uniformity
+- **v1.0** — API stability commitment, gates on real-user adoption (not just harness rounds)
 
 ## Contributing
 

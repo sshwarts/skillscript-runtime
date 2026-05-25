@@ -9,9 +9,9 @@ fetch_issues: fetch_me
     $ youtrack.search_issues query="for: me" limit=5 -> RAW
 
 report: fetch_issues
-    ! Morning sweep for $(ME.login):
-    ! Open issues assigned: $(RAW.issuesPage|length)
-    foreach I in $(RAW.issuesPage):
-        ! - $(I.id): $(I.summary)
+    emit(text="Morning sweep for ${ME.login}:")
+    emit(text="Open issues assigned: ${RAW.issuesPage|length}")
+    foreach I in ${RAW.issuesPage}:
+        emit(text="- ${I.id}: ${I.summary}")
 
 default: report

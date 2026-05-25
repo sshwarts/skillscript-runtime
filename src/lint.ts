@@ -773,7 +773,7 @@ const UNPARSED_JSON_FIELD_ACCESS: LintRule = {
   remediation: "Replace with `$ json_parse $(VAR) -> P` then access `$(P.field)`. The op binds the parsed structure so dotted descent works in conditions + emit. See help({topic: \"ops\"}).",
   check: (ctx) => {
     const findings: LintFinding[] = [];
-    const BAD = /\$\([^)]*\|\s*json_parse\s*\)\.([A-Za-z_]\w*)/;
+    const BAD = /\$(?:\([^)]*\|\s*json_parse\s*\)|\{[^}]*\|\s*json_parse\s*\})\.([A-Za-z_]\w*)/;
     const reportIfMatches = (text: string, targetName: string): void => {
       const m = BAD.exec(text);
       if (m === null) return;
@@ -1544,7 +1544,7 @@ const APPEND_TO_NON_LIST: LintRule = {
     const findings: LintFinding[] = [];
     for (const [targetName, target] of ctx.parsed.targets) {
       walkOps(target.ops, (op) => {
-        if (op.kind === "$set" && op.setName !== undefined && op.setValue !== undefined && !/\$\(/.test(op.setValue)) {
+        if (op.kind === "$set" && op.setName !== undefined && op.setValue !== undefined && !/\$[(\{]/.test(op.setValue)) {
           staticInits.set(op.setName, op.setValue);
         }
       });
@@ -1614,7 +1614,7 @@ function buildBindingOrigins(parsed: ParsedSkill): Map<string, BindingOrigin> {
         // v0.5.0 item 3: $set RHS interpolates $(REF) at bind time. If the
         // RHS is a static literal (no $(REF)), record its value for the
         // whitespace check. If it contains $(REF), treat as suspect.
-        if (/\$\(/.test(op.setValue)) {
+        if (/\$[(\{]/.test(op.setValue)) {
           origins.set(op.setName, { kind: "set-ref" });
         } else {
           origins.set(op.setName, { kind: "set-literal", value: op.setValue });
@@ -1815,13 +1815,16 @@ function extractVarRefs(op: SkillOp): string[] {
   // suppressed from undeclared-var. The author has explicitly opted into
   // "may not resolve at runtime" semantics — making this a lint error
   // would defeat the purpose.
-  const re = /\$\(([^|)\s]+)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)/g;
+  // v0.7.0: alternation matches both `$(REF|chain)` and `${REF|chain}`.
+  // Capture groups: 1+2 = paren form, 3+4 = brace form.
+  const re = /\$(?:\(([^|)\s]+)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)|\{([^|}\s]+)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\})/g;
   const refs: string[] = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    const chain = m[2] ?? "";
+    const name = m[1] ?? m[3];
+    const chain = (m[2] ?? m[4]) ?? "";
     if (/\|\s*fallback(?:\s*:|[\s|)])/.test(chain)) continue;
-    refs.push(m[1]!);
+    refs.push(name!);
   }
   return refs;
 }
@@ -1832,12 +1835,14 @@ function extractVarRefsWithFilter(op: SkillOp): Array<{ name: string; filter?: s
   // Multiple filters in a chain produce one entry per filter (preserves
   // the per-filter unknown-filter check that pre-existed for single-filter
   // refs).
-  const re = /\$\(([^|)\s]+)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)/g;
+  // v0.7.0: alternation matches both `$(REF|chain)` and `${REF|chain}`.
+  // Capture groups: 1+2 = paren form, 3+4 = brace form.
+  const re = /\$(?:\(([^|)\s]+)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)|\{([^|}\s]+)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\})/g;
   const out: Array<{ name: string; filter?: string }> = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    const name = m[1]!;
-    const chain = m[2]!;
+    const name = (m[1] ?? m[3])!;
+    const chain = (m[2] ?? m[4]) ?? "";
     if (!chain) {
       out.push({ name });
       continue;

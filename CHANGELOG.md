@@ -1,5 +1,126 @@
 # Changelog
 
+## 0.7.0 — 2026-05-25
+
+**Syntax revamp + pre-adoption clean break.** Two grammar additions
+(canonical `${VAR}` substitution + function-call op shape), two new
+runtime-intrinsic ops (file_read, file_write), one throwaway script
+that mechanically rewrites every prior-version skill to the new
+surface. Legacy forms (`$(VAR)`, `~`, `>`, `@`, `!`, `??`, `&`) continue
+to compile + run during the grace period; tier-1 lint promotion lands
+in v0.8/v0.9. Per Perry's kickoff `50a83a88` + final consolidated framework
+`c48fca7e` + approval `783a10a4`.
+
+### Added (canonical surface)
+
+- **`${VAR}` substitution canonical form.** Replaces `$(VAR)` (legacy,
+  still works during grace period). Field access `${VAR.field}` +
+  filter chain `${VAR|filter:"arg"|filter2}` work identically. Closes
+  the bash-command-substitution collision (`$(date)` runs `date` in
+  bash; `${VAR}` is bash variable-interpolation — same intuition path,
+  no semantic ambiguity). The `$$(VAR)` shell-escape gains a parallel
+  `$${VAR}` form.
+
+- **Function-call op grammar.** `verb(kwarg=value, ...) [-> BINDING]`.
+  Closed runtime-intrinsic set: `emit`, `ask`, `inline`, `execute_skill`,
+  `shell`, `file_read`, `file_write`. Paren-balanced parsing (nested
+  parens in kwarg values handled), comma-separated kwargs, quote-aware.
+  Unknown function-call names produce a parse error with remediation:
+  "if this is an MCP tool, use `$ tool args -> R` shape instead."
+
+- **`file_read(path=) -> CONTENT` runtime op.** Reads file contents
+  via Node `fs.readFile`. Substitutes `${VAR}` in the path. Optional
+  `(fallback: "...")` trailer for missing-file handling. New
+  runtime-intrinsic op for skills that pull data from local files for
+  prompt-context injection or processing.
+
+- **`file_write(path=, content=, approved="...")` runtime op.** Writes
+  contents via Node `fs.writeFile`. Auto-creates parent directories
+  (`mkdir -p` semantics). Substitutes `${VAR}` in both path and content.
+  The `approved=` kwarg is the v0.7.0 author-intent marker for mutation
+  ops outside `# Autonomous: true` skills; lint enforcement broadens
+  in v0.7.1.
+
+- **`approved="reason"` inline kwarg shape.** Captured on every
+  function-call AST node; uniform with the all-kwargs discipline.
+  Required string value forces author intent (presence matters; value
+  not parsed semantically). Replaces the `(approved: "...")` trailer
+  syntax for function-call ops (legacy trailer still works on symbol-
+  form ops).
+
+### Changed (substrate framing)
+
+- **`local_model` and `memory_query` removed as language keywords.**
+  Pre-v0.7.0: `~` and `>` ops dispatched to amp's `amp_invoke_local_model`
+  and `amp_query_memories` MCP tools via hardcoded paths — amp-specific
+  privilege baked into the language. v0.7.0: they become regular
+  `$ <connector>` MCP dispatch resolved against `connectors.json`.
+  Tradita wires `llm` + `memory` as connector names pointing at amp;
+  external adopters wire whatever substrate they use. Language stops
+  assuming amp is the substrate.
+
+### Architectural framework
+
+Per the design conversation captured in thread `50a83a88 → c48fca7e`:
+
+- **Skillscript is a compose-time prompt-construction language.** Its
+  job is to build the prompt-context the agent receives, with optional
+  pre-dispatch optimizations baked in. Not a general execution
+  environment.
+- **Two layers:** compose (skillscript) + execute (agent at higher
+  level with native Read/Write/Bash/MCP tools).
+- **Three delivery channels** — embedded prompt (`emit`), memory
+  handoff (`$ memory_write`), file handoff (`file_write`). All
+  first-class.
+- **Three op classes** — mutation statements (`$set`/`$append`),
+  runtime-intrinsic function-calls, external MCP dispatch.
+
+### Migration + harness cleanup
+
+One-shot Node script (`scripts/migrate-v07.mjs`, removed after use)
+rewrote `examples/` from legacy to canonical (9 files, 138 rewrites:
+92 substitution-shape + 25 emit + 8 tilde + 7 shell + 5 memory + 1
+ask). Markdown-aware, idempotent. No permanent CLI surface.
+
+**Pre-adoption harness cleanup.** The wild-and-crazy harness corpus
+(R1/R2/R3 cold-author fixtures from v0.2.9 production) — `tests/skills/`,
+`tests/fixtures/harness/`, `tests/harness-corpus.test.ts`,
+`tests/skills-battery.test.ts` — removed in this release. Pre-adoption
+means no external users depend on backwards-compat regression coverage;
+R4 will rebuild fresh fixtures against canonical v0.7.0 syntax. Test
+count drops ~187 (harness-corpus 66 + skills-battery 121) but the
+remaining 896 tests cover the parser/runtime/lint paths comprehensively,
+and v0.7.0-brace-substitution + v0.7.0-function-call ship 30 new tests
+specific to the canonical surface. Git history preserves the discarded
+fixtures if any are ever wanted as legacy snapshots.
+
+### Deprecation grace period
+
+Legacy syntax (`$(VAR)`, `~`, `>`, `@`, `!`, `??`, `&`) continues to
+compile + execute in v0.7.x — both forms work identically during the
+grace window. Tier-2 `deprecated-symbol-op` lint (visibility nudge)
+ships in a v0.7.x point release; tier-1 promotion (refuse-to-compile)
+lands in v0.8 or v0.9 once adopter ecosystem confirms migration.
+
+### LOC ceiling
+
+Narrow-core ceiling nudged 6800 → 7150 (current: 7078). ~280 LOC
+across parser.ts (function-call grammar + REF_PATTERN const + paren-
+balanced helpers) + runtime.ts (file_read/file_write + loose-bracket
+condition regexes + `$${` escape) + compile.ts (alternation substitute
++ new op renderers) + lint.ts (4-capture extractVarRefs). Per the
+v0.5.0 lesson `loc-vs-clarity`: ceiling is a signal, not a budget.
+
+### Tests
+
+30 new tests across 2 files (`v0.7.0-brace-substitution.test.ts`,
+`v0.7.0-function-call.test.ts`). All 7 runtime-intrinsic function-call
+ops covered + ${VAR} substitution in all positions (substitution body,
+conditions, $set RHS, kwarg values) + file_read/file_write round-trip
++ mkdir-p + fallback + mixed legacy-and-new in same skill. Net suite
+(after harness cleanup): 896 passing, 10 skipped, 1 env-gated
+(YouTrack token).
+
 ## 0.5.0 — 2026-05-24
 
 **R3 harness-driven cold-author UX wins.** Eight items closing the

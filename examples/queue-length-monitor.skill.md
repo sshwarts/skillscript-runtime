@@ -10,13 +10,13 @@
 # needed for the count — the filter is deterministic + free.
 
 fetch:
-    @ cat $(QUEUE_PATH) -> ITEMS (fallback: "[]")
+    shell(command="cat ${QUEUE_PATH}") -> ITEMS (fallback: "[]")
 
 evaluate:
     needs: fetch
-    if $(ITEMS|length) > $(THRESHOLD):
-        ! Queue backlog: $(ITEMS|length) items pending (threshold $(THRESHOLD)). Action required.
+    if ${ITEMS|length} > ${THRESHOLD}:
+        emit(text="Queue backlog: ${ITEMS|length} items pending (threshold ${THRESHOLD}). Action required.")
     else:
-        ! Queue healthy: $(ITEMS|length) items pending (under $(THRESHOLD)).
+        emit(text="Queue healthy: ${ITEMS|length} items pending (under ${THRESHOLD}).")
 
 default: evaluate

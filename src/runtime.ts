@@ -5,6 +5,8 @@ import { applyFilter, parseFilterChain } from "./filters.js";
 import { dispatchExecuteSkillIntercept } from "./composition.js";
 import type { Registry } from "./connectors/registry.js";
 import { spawn } from "node:child_process";
+import { readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir } from "node:fs/promises";
+import { dirname as pathDirname } from "node:path";
 import {
   OpError,
   ConnectorNotFoundError,
@@ -583,6 +585,60 @@ async function execOpInner(
       // No store wired = can't resolve. Surface as MissingSkillReferenceError
       // for consistency (same shape as runtime resolve-and-miss path).
       throw new MissingSkillReferenceError(skillName, "&", "&", targetName);
+    }
+    case "file_read": {
+      // v0.7.0 — runtime-intrinsic file read. Substitutes `${VAR}` /
+      // `$(VAR)` in the path before resolving.
+      const rawPath = op.fileParams?.path ?? "";
+      const path = substituteRuntime(rawPath, vars);
+      const flatKey = `${targetName}.output`;
+      if (ctx.mechanical === true) {
+        const placeholder = `[mechanical: would read ${path}]`;
+        emissions.push(`Would read file: ${path} (mechanical: true preview).`);
+        vars.set(flatKey, placeholder);
+        if (op.outputVar !== undefined) vars.set(op.outputVar, placeholder);
+        return { lastBoundVar: op.outputVar ?? flatKey, lastValue: placeholder };
+      }
+      let content: string;
+      try {
+        content = await fsReadFile(path, "utf8");
+      } catch (err) {
+        if (op.fallback !== undefined) {
+          const fallbackValue = op.fallback;
+          vars.set(flatKey, fallbackValue);
+          if (op.outputVar !== undefined) vars.set(op.outputVar, fallbackValue);
+          return { lastBoundVar: op.outputVar ?? flatKey, lastValue: fallbackValue };
+        }
+        throw makeOpError(
+          "file_read",
+          `\`file_read(path="${path}")\` in target '${targetName}' failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      vars.set(flatKey, content);
+      if (op.outputVar !== undefined) vars.set(op.outputVar, content);
+      return { lastBoundVar: op.outputVar ?? flatKey, lastValue: content };
+    }
+    case "file_write": {
+      // v0.7.0 — runtime-intrinsic file write. Substitutes `${VAR}` /
+      // `$(VAR)` in both path and content before writing.
+      const rawPath = op.fileParams?.path ?? "";
+      const rawContent = op.fileParams?.content ?? "";
+      const path = substituteRuntime(rawPath, vars);
+      const content = substituteRuntime(rawContent, vars);
+      if (ctx.mechanical === true) {
+        emissions.push(`Would write file: ${path} (${content.length} chars; mechanical: true preview).`);
+        return { lastBoundVar: null, lastValue: undefined };
+      }
+      try {
+        await fsMkdir(pathDirname(path), { recursive: true });
+        await fsWriteFile(path, content, "utf8");
+      } catch (err) {
+        throw makeOpError(
+          "file_write",
+          `\`file_write(path="${path}")\` in target '${targetName}' failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return { lastBoundVar: null, lastValue: undefined };
     }
     case "$": {
       const body = substituteRuntime(op.body, vars);
@@ -1250,13 +1306,17 @@ function coerceLiteralValue(raw: string): unknown {
  * remains a skillscript variable substitution.
  */
 export function substituteRuntimeUnsafe(text: string, vars: Map<string, unknown>): string {
-  // Step 1: pull `$$(` escapes out so step 2's regex doesn't see the inner $.
-  const ESCAPE = " DOLLAR_DOLLAR_PAREN ";
-  const escaped = text.replace(/\$\$\(/g, ESCAPE);
+  // Step 1: pull `$$(` and `$${` escapes out so step 2's regex doesn't see the inner $.
+  // v0.7.0: `${VAR}` form added alongside `$(VAR)`; matching `$${` escape.
+  const ESCAPE_PAREN = "DOLLAR_PAREN";
+  const ESCAPE_BRACE = "DOLLAR_BRACE";
+  const escaped = text.replace(/\$\$\(/g, ESCAPE_PAREN).replace(/\$\$\{/g, ESCAPE_BRACE);
   // Step 2: normal skillscript substitution against the de-escaped text.
   const substituted = substituteRuntime(escaped, vars);
-  // Step 3: restore the escape as literal `$(` for bash.
-  return substituted.replace(new RegExp(ESCAPE, "g"), "$(");
+  // Step 3: restore the escapes as literal `$(` / `${` for bash.
+  return substituted
+    .replace(new RegExp(ESCAPE_PAREN, "g"), "$(")
+    .replace(new RegExp(ESCAPE_BRACE, "g"), "${");
 }
 
 /**
@@ -1274,8 +1334,12 @@ export function substituteRuntime(text: string, vars: Map<string, unknown>): str
   // an undefined upstream ref by substituting X. Positional — comes into
   // effect at the position it appears in the chain.
   return text.replace(
-    /\$\(([^|)\s]+)\s*((?:\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?\s*)*)\)/g,
-    (_match: string, ref: string, filterChain: string) => {
+    // v0.7.0: alternation accepts both `$(REF|chain)` (legacy) and `${REF|chain}`
+    // (canonical). Capture groups 1+2 = paren form, 3+4 = brace form.
+    /\$(?:\(([^|)\s]+)\s*((?:\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?\s*)*)\)|\{([^|}\s]+)\s*((?:\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?\s*)*)\})/g,
+    (_match: string, ref1: string | undefined, fc1: string | undefined, ref2: string | undefined, fc2: string | undefined) => {
+      const ref = (ref1 ?? ref2)!;
+      const filterChain = fc1 ?? fc2 ?? "";
       let value: unknown = resolveRef(ref, vars);
       const specs = parseFilterChain(filterChain);
 
@@ -1365,16 +1429,17 @@ export function stringifyValue(v: unknown): string {
 }
 
 // v0.3.4 — filter chain support in conditions. Each `(REF)(|filter)?`
-// becomes `(REF)(|filter)*` matching substituteRuntime's chain pattern
-// (line ~1158). The captured chain string is delegated to
-// `applyFilterChain` below for split + per-filter application.
-const TRUTHY = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*$/;
-const EQ = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*(==|!=)\s*"([^"]*)"\s*$/;
+// becomes `(REF)(|filter)*` matching substituteRuntime's chain pattern.
+// v0.7.0 — loose-bracket form `\$[({]...[)}]` accepts both `$(REF)` and
+// `${REF}`. Mixed brackets (e.g. `$(REF}`) can't reach runtime — parser
+// validates with strict alternation per REF_PATTERN.
+const TRUTHY = /^\s*\$[({]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)[)}]\s*$/;
+const EQ = /^\s*\$[({]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)[)}]\s*(==|!=)\s*"([^"]*)"\s*$/;
 /** Ref-vs-ref equality (per language reference §5 + 2026-05-21 grammar extension). Filter chain + dotted-field-access permitted on either side. */
-const EQ_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*(==|!=)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*$/;
-const CMP = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*(<=|>=|<|>)\s*"([^"]*)"\s*$/;
-const CMP_REF = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*(<=|>=|<|>)\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s*$/;
-const IN = /^\s*\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)\)\s+(not\s+)?in\s+\$\(([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\)\s*$/;
+const EQ_REF = /^\s*\$[({]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)[)}]\s*(==|!=)\s*\$[({]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)[)}]\s*$/;
+const CMP = /^\s*\$[({]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)[)}]\s*(<=|>=|<|>)\s*"([^"]*)"\s*$/;
+const CMP_REF = /^\s*\$[({]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)[)}]\s*(<=|>=|<|>)\s*\$[({]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)[)}]\s*$/;
+const IN = /^\s*\$[({]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)((?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*)[)}]\s+(not\s+)?in\s+\$[({]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)[)}]\s*$/;
 
 /**
  * Apply a chain of pipe filters to a value. The chain string is the

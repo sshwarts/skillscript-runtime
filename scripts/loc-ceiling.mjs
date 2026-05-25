@@ -90,6 +90,21 @@
 //            runtime.ts (chain parser + condition-context applier +
 //            ConnectorNotFoundError fold) + filters.ts (parseFilterChain
 //            + isodate). 50+ new tests across 5 v0.5.0 test files.
+//   v0.7.0:  nudged narrow ceiling 6800 → 7150 for the syntax-revamp arc
+//            (Perry kickoff `50a83a88`, final framework `c48fca7e`).
+//            ${VAR} canonical substitution (alongside $(VAR) for grace
+//            period) + function-call grammar `verb(kwarg=value, ...)` for
+//            7-op closed runtime-intrinsic set (emit, ask, inline,
+//            execute_skill, shell, file_read, file_write) + file_read /
+//            file_write op implementations (Node fs read/write/mkdir) +
+//            (approved:) inline kwarg captured on mutation-class ops.
+//            ~280 LOC across parser.ts (REF_PATTERN const, paren-balanced
+//            helpers, function-call dispatch) + runtime.ts (file_read /
+//            file_write cases, $${...} escape, loose-bracket condition
+//            regexes) + compile.ts (alternation substitute, file_read/
+//            write renderers) + lint.ts (4-capture extractVarRefs + 2-form
+//            detectors). Ceiling will tighten again when v0.8 promotes
+//            deprecated-symbol-op to tier-1 and old paths can be removed.
 //
 // Run: `pnpm run loc-check`. CI fails the build if the narrow ceiling is
 // breached. The broad count is reported but does NOT fail the build.
@@ -112,7 +127,7 @@ const CORE_PATHS = [
   "connectors/",
 ];
 
-const NARROW_MAX_LOC = 6800;
+const NARROW_MAX_LOC = 7150;
 const NARROW_MAX_FILES = 20;
 const BROAD_INFO_LOC = 9500;
 const BROAD_INFO_FILES = 28;

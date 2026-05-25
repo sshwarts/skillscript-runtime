@@ -2,7 +2,25 @@
 // no resolution against external state. Semantic analysis (variable resolution,
 // data-skill inlining, topo-sort) lives in compile.ts.
 
-export type OpKind = "$" | "$set" | "$append" | "?" | "@" | "!" | "??" | "foreach" | "if" | ">" | "~" | "&";
+export type OpKind = "$" | "$set" | "$append" | "?" | "@" | "!" | "??" | "foreach" | "if" | ">" | "~" | "&" | "file_read" | "file_write";
+
+/**
+ * v0.7.0 — runtime-intrinsic function-call names. Closed set of ops the
+ * language implements directly (no MCP dispatch). Function-call grammar:
+ * `verb(kwarg=value, ...) [-> BINDING]`.
+ *
+ * Anything else with function-call shape is rejected by parser with a
+ * remediation pointing at `$ tool args -> R` for MCP dispatch.
+ */
+export const RUNTIME_INTRINSIC_FN_NAMES = [
+  "emit",          // → ! (output to skill consumer)
+  "ask",           // → ?? (prompt user)
+  "inline",        // → & (compile-time skill composition)
+  "execute_skill", // → $ execute_skill (runtime skill invocation)
+  "shell",         // → @ (local subprocess)
+  "file_read",     // new — read file contents at runtime
+  "file_write",    // new — write file contents at runtime
+] as const;
 
 export interface SkillOp {
   kind: OpKind;
@@ -76,6 +94,19 @@ export interface SkillOp {
   foreachBody?: SkillOp[];
   ifBranches?: Array<{ cond: string; body: SkillOp[] }>;
   ifElseBody?: SkillOp[];
+  /**
+   * v0.7.0 — file_read / file_write op params. `path` is the filesystem path
+   * (may contain `${VAR}` substitutions resolved at runtime). `content` is
+   * the body to write (file_write only).
+   */
+  fileParams?: { path: string; content?: string };
+  /**
+   * v0.7.0 — inline `approved="reason"` kwarg captured on mutation-class
+   * function-call ops. Author intent marker; lint's `unconfirmed-mutation`
+   * rule accepts presence (any non-empty string) as per-op authorization
+   * when `# Autonomous: true` is not declared.
+   */
+  approved?: string;
 }
 
 export interface SkillTarget {
@@ -236,20 +267,21 @@ const MCP_CONNECTOR_PREFIX = /^([a-z_][a-z0-9_-]*)\.(?=[A-Za-z_])([\s\S]*)$/;
 
 // Narrow v1 condition grammar.
 // v0.3.4: filter chain support — each `(REF)(|filter)?` became `(REF)(|filter)*`
-// to match `substituteRuntime`'s chain capture (runtime.ts:1158). Closes the
-// recurring "filter chain works in substitution but not conditions" gap named
-// in dev-log §14. Runtime regex set mirrors this; both update together.
-const COND_TRUTHY = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*$/;
+// to match `substituteRuntime`'s chain capture. Closes the recurring "filter
+// chain works in substitution but not conditions" gap named in dev-log §14.
+// v0.7.0: REF_PATTERN accepts both `$(REF)` (legacy) and `${REF}` (canonical).
+// Both forms have identical semantics; migration tool rewrites old → new.
+const REF_PATTERN = "\\$(?:\\([A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)*(?:\\s*\\|\\s*[A-Za-z_]\\w*(?:\\s*:\\s*\"[^\"]*\")?)*\\)|\\{[A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)*(?:\\s*\\|\\s*[A-Za-z_]\\w*(?:\\s*:\\s*\"[^\"]*\")?)*\\})";
+const REF_PATTERN_NO_FILTER = "\\$(?:\\([A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)*\\)|\\{[A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)*\\})";
+const COND_TRUTHY = new RegExp(`^\\s*${REF_PATTERN}\\s*$`);
 /** `$(REF) ==/!= "literal"` — ref-vs-string equality. Filter chain on the ref side. */
-const COND_EQ = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*(?:==|!=)\s*"[^"]*"\s*$/;
+const COND_EQ = new RegExp(`^\\s*${REF_PATTERN}\\s*(?:==|!=)\\s*"[^"]*"\\s*$`);
 /**
  * `$(REF) ==/!= $(REF)` — ref-vs-ref equality. Extended 2026-05-21 per
- * language reference §5; surfaced by the cold-agent skills battery (a
- * sub-agent reached for `$(FP|trim) == $(LAST_FP|trim)` unprompted as
- * the natural change-detection pattern). Filter chain + dotted field
- * access permitted on either side.
+ * language reference §5. Filter chain + dotted field access permitted on
+ * either side.
  */
-const COND_EQ_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*(?:==|!=)\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*$/;
+const COND_EQ_REF = new RegExp(`^\\s*${REF_PATTERN}\\s*(?:==|!=)\\s*${REF_PATTERN}\\s*$`);
 /**
  * `$(REF) </>/<=/>= "literal"` and `$(REF) </>/<=/>= $(REF)` — numeric
  * comparison. v0.2.5 addition per the orchestration carve-out: comparison
@@ -258,9 +290,9 @@ const COND_EQ_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]
  * chain + dotted field access permitted on either side, matching
  * EQ/EQ_REF shape.
  */
-const COND_CMP = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*(?:<=|>=|<|>)\s*"[^"]*"\s*$/;
-const COND_CMP_REF = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*(?:<=|>=|<|>)\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s*$/;
-const COND_IN = /^\s*\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?:\s*\|\s*[A-Za-z_]\w*(?:\s*:\s*"[^"]*")?)*\)\s+(?:not\s+)?in\s+\$\([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\)\s*$/;
+const COND_CMP = new RegExp(`^\\s*${REF_PATTERN}\\s*(?:<=|>=|<|>)\\s*"[^"]*"\\s*$`);
+const COND_CMP_REF = new RegExp(`^\\s*${REF_PATTERN}\\s*(?:<=|>=|<|>)\\s*${REF_PATTERN}\\s*$`);
+const COND_IN = new RegExp(`^\\s*${REF_PATTERN}\\s+(?:not\\s+)?in\\s+${REF_PATTERN_NO_FILTER}\\s*$`);
 
 function validateCondition(cond: string): boolean {
   return validateCompoundCondition(cond.trim());
@@ -323,20 +355,20 @@ function stripOuterCondParens(cond: string): string {
   return trimmed.slice(1, -1).trim();
 }
 
-/** Detects `$(REF) = "literal"` — a single `=` in condition position. */
-const SINGLE_EQ_IN_COND = /\$\([^)]+\)\s*=(?!=)\s*"[^"]*"/;
+/** Detects `$(REF) = "literal"` or `${REF} = "literal"` — single `=` in condition position. */
+const SINGLE_EQ_IN_COND = /\$(?:\([^)]+\)|\{[^}]+\})\s*=(?!=)\s*"[^"]*"/;
 
 /**
- * If the condition contains `$(REF) = "..."` (single `=`), emit a specific
- * diagnostic suggesting `==`. Returns the diagnostic string when matched,
- * `null` otherwise. The grammar rejects single-`=` in condition position;
- * this surfaces the JS-shaped-bug pattern as a specific error rather than
- * the generic "unsupported condition" fallback.
+ * If the condition contains `$(REF) = "..."` or `${REF} = "..."` (single `=`),
+ * emit a specific diagnostic suggesting `==`. Returns the diagnostic string
+ * when matched, `null` otherwise.
  */
 function detectSingleEqualsInCondition(cond: string): string | null {
   const m = SINGLE_EQ_IN_COND.exec(cond);
   if (m === null) return null;
-  const fixed = cond.replace(/\$\(([^)]+)\)\s*=(?!=)\s*"([^"]*)"/, '$($1) == "$2"');
+  const fixed = cond
+    .replace(/\$\(([^)]+)\)\s*=(?!=)\s*"([^"]*)"/, '$($1) == "$2"')
+    .replace(/\$\{([^}]+)\}\s*=(?!=)\s*"([^"]*)"/, '${$1} == "$2"');
   return `\`=\` is not valid in a condition; use \`==\` for equality. rewrite as: \`${fixed}\``;
 }
 
@@ -564,6 +596,67 @@ export function tokenizeKeywordArgs(input: string): string[] {
   return tokens;
 }
 
+/**
+ * v0.7.0 — paren-balanced extraction. Given text and the index of an opening
+ * `(`, return the substring between matched parens plus the index of the
+ * closing `)`. Quote-aware (skips parens inside `"..."`/`'...'`). Returns
+ * null on unbalanced parens.
+ */
+function extractParenBody(text: string, openIdx: number): { body: string; endIdx: number } | null {
+  if (text[openIdx] !== "(") return null;
+  let depth = 1;
+  let inQuote: '"' | "'" | null = null;
+  for (let i = openIdx + 1; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inQuote !== null) {
+      if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inQuote = ch; continue; }
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return { body: text.slice(openIdx + 1, i), endIdx: i };
+    }
+  }
+  return null;
+}
+
+/**
+ * v0.7.0 — split a function-call argument list on top-level commas.
+ * Respects matched single/double quotes and `[...]`/`{...}`/`(...)` nesting.
+ */
+function splitTopLevelCommas(text: string): string[] {
+  const parts: string[] = [];
+  let cur = "";
+  let depth = 0;
+  let inQuote: '"' | "'" | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inQuote !== null) {
+      cur += ch;
+      if (ch === inQuote) inQuote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { cur += ch; inQuote = ch; continue; }
+    if (ch === "(" || ch === "[" || ch === "{") { depth++; cur += ch; continue; }
+    if (ch === ")" || ch === "]" || ch === "}") { depth = Math.max(0, depth - 1); cur += ch; continue; }
+    if (ch === "," && depth === 0) {
+      const t = cur.trim();
+      if (t !== "") parts.push(t);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  const t = cur.trim();
+  if (t !== "") parts.push(t);
+  return parts;
+}
+
+/** v0.7.0 — prefix probe for function-call shape: `name(`. */
+const FN_CALL_PREFIX = /^([a-z_][\w]*)\s*\(/;
+
 function splitMcpConnectorPrefix(body: string): { connector: string | undefined; rest: string } {
   const m = MCP_CONNECTOR_PREFIX.exec(body);
   if (m === null) return { connector: undefined, rest: body };
@@ -597,7 +690,7 @@ function parseRetrievalArgs(
   // validate at parse time.
   let limit: number | string = 0;
   const rawLimit = map["limit"] ?? "";
-  if (/\$\(/.test(rawLimit)) {
+  if (/\$[(\{]/.test(rawLimit)) {
     limit = rawLimit;
   } else {
     const n = parseInt(rawLimit, 10);
@@ -654,7 +747,7 @@ function parseLocalModelArgs(
   function deferInt(key: string): number | string | undefined {
     if (!(key in map)) return undefined;
     const raw = map[key]!;
-    if (/\$\(/.test(raw)) return raw;
+    if (/\$[(\{]/.test(raw)) return raw;
     const n = parseInt(raw, 10);
     if (!Number.isFinite(n) || n <= 0) {
       errors.push(`\`~\` op in target '${targetName}': '${key}' must be a positive integer or a \`$(VAR)\` ref (got '${raw}')`);
@@ -820,7 +913,7 @@ export function parse(source: string): ParsedSkill {
       } else if (key === "timeout") {
         // Per lesson ab6c19db: defer integer validation when value contains
         // `$(VAR)` ref. Runtime resolves via resolveIntParam at op dispatch.
-        if (/\$\(/.test(value)) {
+        if (/\$[(\{]/.test(value)) {
           result.timeout = value;
         } else {
           const n = parseInt(value, 10);
@@ -1283,6 +1376,146 @@ export function parse(source: string): ParsedSkill {
         depth: lineIndent + INDENT_STEP,
       });
       continue;
+    }
+    // v0.7.0 — function-call op grammar: `verb(kwarg=value, ...) [-> VAR] [(fallback: "...")]`
+    // Closed runtime-intrinsic op set in RUNTIME_INTRINSIC_FN_NAMES. Unknown
+    // function-call names are parse-errors with remediation pointing at `$`.
+    {
+      const fnPrefix = FN_CALL_PREFIX.exec(stripped0);
+      if (fnPrefix !== null) {
+        const fnName = fnPrefix[1]!;
+        const parenOpenIdx = fnPrefix[0].length - 1;
+        const parsed = extractParenBody(stripped0, parenOpenIdx);
+        if (parsed === null) {
+          result.parseErrors.push(
+            `Malformed function-call op '${fnName}(...)' in target '${currentTarget.name}' — unbalanced parens.`,
+          );
+          continue;
+        }
+        // Parse comma-separated kwargs.
+        const kwArgs: Record<string, string> = {};
+        let argErr = false;
+        for (const arg of splitTopLevelCommas(parsed.body)) {
+          const eq = arg.indexOf("=");
+          if (eq === -1) {
+            result.parseErrors.push(
+              `Malformed function-call arg '${arg}' in '${fnName}(...)' (target '${currentTarget.name}') — expected name=value.`,
+            );
+            argErr = true;
+            continue;
+          }
+          const k = arg.slice(0, eq).trim();
+          const v = arg.slice(eq + 1).trim();
+          kwArgs[k] = processSetValue(v);
+        }
+        if (argErr) continue;
+        // Trailing `-> VAR` and optional `(fallback: "...")`.
+        const tail = stripped0.slice(parsed.endIdx + 1).trim();
+        let outputVar: string | undefined;
+        let fallback: string | undefined;
+        if (tail !== "") {
+          const tailMatch = /^(?:->\s*([A-Za-z_]\w*))?(?:\s*\(fallback\s*:\s*(.+?)\))?\s*$/.exec(tail);
+          if (tailMatch !== null) {
+            if (tailMatch[1] !== undefined) outputVar = tailMatch[1];
+            if (tailMatch[2] !== undefined) fallback = processSetValue(tailMatch[2]);
+          } else {
+            result.parseErrors.push(
+              `Malformed function-call op '${fnName}(...)' trailer in target '${currentTarget.name}': '${tail}' — expected '-> VAR' and/or '(fallback: "value")'.`,
+            );
+            continue;
+          }
+        }
+        const approved = kwArgs["approved"];
+        // Per-op dispatch — map function-call form to canonical AST shapes.
+        if (fnName === "emit") {
+          const text = kwArgs["text"] ?? "";
+          opBucket.push({
+            kind: "!",
+            body: text,
+            ...(outputVar !== undefined ? { outputVar } : {}),
+            ...(approved !== undefined ? { approved } : {}),
+          });
+          continue;
+        }
+        if (fnName === "ask") {
+          const prompt = kwArgs["prompt"] ?? "";
+          opBucket.push({
+            kind: "??",
+            body: prompt,
+            ...(outputVar !== undefined ? { outputVar } : {}),
+            ...(approved !== undefined ? { approved } : {}),
+          });
+          continue;
+        }
+        if (fnName === "inline") {
+          const skill = kwArgs["skill"] ?? "";
+          opBucket.push({
+            kind: "&",
+            body: stripped0,
+            ampParams: { skillName: skill, args: {} },
+            ...(outputVar !== undefined ? { outputVar } : {}),
+            ...(fallback !== undefined ? { fallback } : {}),
+            ...(approved !== undefined ? { approved } : {}),
+          });
+          continue;
+        }
+        if (fnName === "execute_skill") {
+          const skillName = kwArgs["skill_name"] ?? "";
+          const rest = Object.entries(kwArgs).filter(([k]) => k !== "skill_name" && k !== "approved");
+          const inner = rest.map(([k, v]) => /\s/.test(v) || v.startsWith("{") || v.startsWith("[") ? `${k}=${v}` : `${k}="${v}"`).join(" ");
+          opBucket.push({
+            kind: "$",
+            body: `execute_skill skill_name="${skillName}"${inner ? " " + inner : ""}`,
+            ...(outputVar !== undefined ? { outputVar } : {}),
+            ...(fallback !== undefined ? { fallback } : {}),
+            ...(approved !== undefined ? { approved } : {}),
+          });
+          continue;
+        }
+        if (fnName === "shell") {
+          const command = kwArgs["command"] ?? "";
+          const unsafe = kwArgs["unsafe"] === "true";
+          opBucket.push({
+            kind: "@",
+            body: command,
+            ...(unsafe ? { policy: "unsafe" as const } : {}),
+            ...(outputVar !== undefined ? { outputVar } : {}),
+            ...(fallback !== undefined ? { fallback } : {}),
+            ...(approved !== undefined ? { approved } : {}),
+          });
+          continue;
+        }
+        if (fnName === "file_read") {
+          const path = kwArgs["path"] ?? "";
+          opBucket.push({
+            kind: "file_read",
+            body: stripped0,
+            fileParams: { path },
+            ...(outputVar !== undefined ? { outputVar } : {}),
+            ...(fallback !== undefined ? { fallback } : {}),
+          });
+          continue;
+        }
+        if (fnName === "file_write") {
+          const path = kwArgs["path"] ?? "";
+          const content = kwArgs["content"] ?? "";
+          opBucket.push({
+            kind: "file_write",
+            body: stripped0,
+            fileParams: { path, content },
+            ...(outputVar !== undefined ? { outputVar } : {}),
+            ...(approved !== undefined ? { approved } : {}),
+          });
+          continue;
+        }
+        // Unknown function-call name — runtime-intrinsic set is closed.
+        result.parseErrors.push(
+          `Unknown function-call op '${fnName}(...)' in target '${currentTarget.name}'. ` +
+          `Runtime-intrinsic ops are: ${RUNTIME_INTRINSIC_FN_NAMES.join(", ")}. ` +
+          `If this is an MCP tool, use \`$ ${fnName} args -> R\` shape instead.`,
+        );
+        continue;
+      }
     }
     const stripped = line.replace(/^\s+/, "");
     let kind: OpKind | null = null;

@@ -6,13 +6,13 @@
 # Output: none
 
 probe:
-    foreach SVC in $(SERVICES):
-        @ curl -s -o /dev/null -w "%{http_code} %{time_total}" https://status.internal/$(SVC|url) -> RAW
-        ~ prompt="From the line '$(RAW|trim)' (http_code time_seconds), and budget $(LATENCY_BUDGET_MS) ms, answer ok or degraded only." -> STATUS
-        if $(STATUS|trim) == "degraded":
-            $ memorystore.write summary="service degradation: $(SVC)" detail="probe at $(NOW): $(RAW|trim)" domain_tags=[ops, service-health, degraded:$(SVC)] vault=private knowledge_type=common expires_at=$(EVENT.fired_at_plus_1d_unix) -> ACK
-            ! $(SVC) degraded — wrote signal
+    foreach SVC in ${SERVICES}:
+        shell(command="curl -s -o /dev/null -w \"%{http_code} %{time_total}\" https://status.internal/${SVC|url}") -> RAW
+        $ llm prompt="From the line '${RAW|trim}' (http_code time_seconds), and budget ${LATENCY_BUDGET_MS} ms, answer ok or degraded only." -> STATUS
+        if ${STATUS|trim} == "degraded":
+            $ memorystore.write summary="service degradation: ${SVC}" detail="probe at ${NOW}: ${RAW|trim}" domain_tags=[ops, service-health, degraded:${SVC}] vault=private knowledge_type=common expires_at=${EVENT.fired_at_plus_1d_unix} -> ACK
+            emit(text="${SVC} degraded — wrote signal")
         else:
-            ! $(SVC) ok
+            emit(text="${SVC} ok")
 
 default: probe
