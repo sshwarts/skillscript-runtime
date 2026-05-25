@@ -1400,8 +1400,8 @@ Each entry in `connectors.json` is a connector — flat namespace, name → inst
 {
   "mcpConnectors": {
     "llm":             { "type": "OllamaMcpConnector", "model": "qwen2.5:7b" },
-    "memory":          { "type": "AmpMcpConnector", "tool": "amp_query_memories" },
-    "memory_write":    { "type": "AmpMcpConnector", "tool": "amp_write_memory", "mutating": true },
+    "memory":          { "type": "RemoteMcpConnector", "tool": "your_memory_tool" },
+    "memory_write":    { "type": "RemoteMcpConnector", "tool": "amp_write_memory", "mutating": true },
     "youtrack_search": { "type": "RemoteMcpConnector", "endpoint": "...", "tool": "search_issues" },
     "youtrack":        { "type": "RemoteMcpConnector", "endpoint": "..." },
     "agent_notify":    { "type": "WebhookMcpConnector", "endpoint": "..." }
@@ -1431,7 +1431,7 @@ $ amp.query_memories query="..." -> M
 
 Parser rule: `^([a-z_][a-z0-9_-]*)\.(?=[A-Za-z_])([\s\S]*)$` matches the dotted prefix. The text before the dot is the connector name (must match an entry in `connectors.json`); the rest is the tool + args.
 
-**Tradita's `connectors.json`** mostly uses flat names because our wired tools have unique names. Adopters with overlapping tool names across connectors should prefer the dotted form at those call sites.
+A typical `connectors.json` mostly uses flat names because our wired tools have unique names. Adopters with overlapping tool names across connectors should prefer the dotted form at those call sites.
 
 **`mutating` classification.** Each connector entry declares `"mutating": true | false` (default `false`). Mutating connectors are subject to the §2 per-op gating rule (v0.7.1+ enforcement).
 
@@ -1520,7 +1520,7 @@ Skill records are infrastructure, not knowledge atoms — adopter impls should t
 
 Names like `llm`, `memory`, `memory_write`, `agent_notify`, `youtrack_search` are **adopter-chosen identifiers**, not language-reserved keywords. The parser does not special-case any of them; they're just entries in `connectors.json`. The `unknown-connector` tier-1 lint is the safety net — typos against wired connector names fire at compile time with the list of valid names.
 
-Tradita's deployment uses `llm` and `memory` because they're descriptive for what they point at. An OpenAI shop might wire `openai_chat` and `openai_embeddings`. A Pinecone-and-Claude shop might wire `pinecone` and `claude`. Skill source written against one adopter's names is portable to another adopter's wiring only insofar as the names match — or via mechanical rewrite at adoption time.
+Pick the connector names that read well at your call sites. `llm` and `memory` are descriptive for substrates that play those roles. An OpenAI shop might wire `openai_chat` and `openai_embeddings`. A Pinecone-and-Claude shop might wire `pinecone` and `claude`. Skill source written against one adopter's names is portable to another adopter's wiring only insofar as the names match — or via mechanical rewrite at adoption time.
 
 The implication for skill authors: pick descriptive names that match what the connector does, not what backend it currently points at. `llm` is more portable than `ollama_qwen`; `memory` is more portable than `amp_query`. But neither is enforced.
 
@@ -1535,8 +1535,8 @@ Both are removed as language-special in v0.7.0. The `~` and `>` symbols continue
 ```jsonc
 {
   "mcpConnectors": {
-    "memory":       { "type": "AmpMcpConnector", "tool": "amp_query_memories" },
-    "memory_write": { "type": "AmpMcpConnector", "tool": "amp_write_memory", "mutating": true },
+    "memory":       { "type": "RemoteMcpConnector", "tool": "your_memory_tool" },
+    "memory_write": { "type": "RemoteMcpConnector", "tool": "amp_write_memory", "mutating": true },
     "llm":          { "type": "OllamaMcpConnector", "model": "qwen2.5:7b" }
   }
 }
@@ -1547,7 +1547,7 @@ Skill source calls `$ memory mode=fts query="${TOPIC}" -> R` and `$ llm prompt="
 **Why remove them.** Two contracts that bundled wire-protocol + canonical-shape (PortableMemory, prompt-in/text-out) became an amp-substrate privilege in practice: the language assumed memory looked like AMP memories and LLM calls looked like Ollama. Adopters wiring OpenAI or Pinecone had to write awkward shape-translator shims because the language insisted on its own canonical shapes. v0.7.0 lets adopters declare whatever shapes their MCP tools natively return; skills access fields via the same `${VAR.field}` dotted-access semantics as any other tool dispatch.
 
 **Migration.** The v0.7.0 codebase included a one-shot internal migration script (`scripts/migrate-v07.mjs`) used to migrate the bundled examples, then deleted post-run. There is no permanent migration CLI. Adopters with existing skills can:
-- Re-derive the rewrites mechanically — the rules are documented in `CHANGELOG.md` under `## 0.7.0 — Migration`. Tradita's Tradita-config mapping (`~` → `$ llm`, `>` → `$ memory`) is one valid mapping; other adopters substitute their own connector names.
+- Re-derive the rewrites mechanically — the rules are documented in `CHANGELOG.md` under `## 0.7.0 — Migration`. The reference mapping (`~` → `$ llm`, `>` → `$ memory`) is one valid set of names; adopters substitute whatever connector names they wire.
 - Use editor find-and-replace.
 - Write new skills against the canonical surface from day one.
 

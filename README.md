@@ -130,7 +130,7 @@ This is what makes *"Headless monitor → wake agent with context"* a real compo
 
 Most agent systems treat local models as *substitutes* for frontier inference. Call them instead of the frontier when latency or cost matters. Skillscript treats them as something different: *delegation targets the frontier orchestrates*. The frontier composes the workflow; each LLM dispatch is the frontier handing off a bounded sub-task (classify a message, extract a field, judge whether two strings refer to the same thing, summarize a chunk, format a response) to a local or smaller model and consuming the result.
 
-In skillscript, this isn't a separate "local-model interplay" pattern adopters bolt on — it's just **MCP dispatch through a connector named whatever your substrate calls it**. `$ llm prompt="..." -> RESULT` (Tradita's `llm` connector points at amp's local model; an OpenAI-shop wires `openai_chat`, a Pinecone-shop wires `claude_messages`) lives next to any other `$ tool args -> RESULT` in the skill body, with the same op-level discipline, the same trace surface, the same lint coverage. The language has no built-in LLM keyword — adopters wire their substrate.
+In skillscript, this isn't a separate "local-model interplay" pattern adopters bolt on — it's just **MCP dispatch through a connector named whatever your substrate calls it**. `$ llm prompt="..." -> RESULT` (one shop wires `llm` pointing at Ollama; another wires `openai_chat` against the OpenAI API; another wires `claude_messages` against Anthropic) lives next to any other `$ tool args -> RESULT` in the skill body, with the same op-level discipline, the same trace surface, the same lint coverage. The language has no built-in LLM keyword — adopters wire their substrate.
 
 The cost shape that follows: routine work runs at local-model cost (free at scale, fast, private to the host); the frontier model intervenes only at orchestration boundaries and ambiguous cases. Customer data flowing through bounded sub-tasks never reaches an external API when the wired connector is local. The local-model layer becomes the privacy boundary, not a separate add-on.
 
@@ -232,15 +232,25 @@ docker run -p 7878:7878 -v $(pwd)/skills:/skills \
 
 ## Connector model
 
-Skills don't know what they're talking to. The language ships with two intrinsic contracts; everything else is MCP dispatch through adopter-wired connectors.
+Skills don't know what they're talking to. Five contracts decouple language from substrate:
 
 | Contract | Purpose | Routes |
 |---|---|---|
 | `SkillStore` | Skill source persistence | `.skill.md` files (filesystem default) |
-| `McpConnector` | MCP tool invocation — all external dispatch | `$ <connector> args` ops |
+| `LocalModel` | Local LLM dispatch — Ollama backed by default | `~ prompt=...` legacy op + future `$ llm` MCP bridge |
+| `MemoryStore` | Retrieval over a knowledge store — SQLite-backed by default | `>` legacy op + future `$ memory` MCP bridge |
+| `McpConnector` | MCP tool invocation — external dispatch (any wired connector) | `$ <connector> args` ops |
 | `AgentConnector` | Delivery to a frontier agent | `prompt-context:` and `template:` outputs |
 
-**v0.7.0 substrate framing:** the language no longer treats LLM calls or memory queries as language-special operations. They're MCP dispatch through whatever connector names you wire. Tradita uses `llm` (pointing at amp's local model) and `memory` (pointing at amp's memory store); an OpenAI shop might wire `openai_chat`, a Pinecone shop `pinecone_query`. Skill source is portable — only `connectors.json` changes per adopter.
+**v0.7.0 substrate framing.** The canonical syntax routes everything substrate-specific through MCP dispatch — `$ llm prompt="..."` rather than the legacy `~`, `$ memory mode=fts query="..."` rather than the legacy `>`. This keeps skill source portable across adopters who wire different substrates. Pick the connector names that read well at your call sites: `llm`, `memory`, `openai_chat`, `pinecone_query` — whatever matches the substrate.
+
+**Today's reality.** The `LocalModel` and `MemoryStore` contracts back the *legacy* `~` and `>` ops which continue to work during the grace period — Ollama via `LocalModel` (default endpoint `http://localhost:11434`) and SQLite via `MemoryStore`. The canonical `$ llm` / `$ memory` MCP-dispatch paths require an adopter-wired MCP bridge. v0.7.1 will ship generic bridge classes (`LocalModelMcpConnector` + `MemoryStoreMcpConnector`) that wrap the existing contracts as MCP connectors, so any `LocalModel`/`MemoryStore` implementation gets a canonical `$ <name>` dispatch surface. Until then:
+
+- **Use `~ prompt="..." model="qwen" -> R`** to call Ollama today (legacy syntax, fully functional)
+- **Use `> mode=fts query="..." limit=10 -> R`** to query the SQLite memory store today
+- **Use `$ llm prompt="..."`** only if you've wired an `llm` MCP connector in `connectors.json` (e.g., via `RemoteMcpConnector` pointing at an ollama-mcp server)
+
+The migration tool that ran on `examples/` rewrote everything to canonical form on the assumption that v0.7.1's bridge connectors will land; until then, examples that use `$ llm` / `$ memory` need adopter-wired connectors to execute.
 
 Wire your own by implementing the interface and registering in `connectors.json`. See [`docs/language-reference.md`](docs/language-reference.md) §10 for full contracts.
 
