@@ -4,6 +4,7 @@ import { tokenizeKeywordArgs, processSetValue } from "./parser.js";
 import { applyFilter, parseFilterChain } from "./filters.js";
 import { dispatchExecuteSkillIntercept } from "./composition.js";
 import type { Registry } from "./connectors/registry.js";
+import { validateQualifiedDispatch } from "./dispatch-validate.js";
 import { spawn } from "node:child_process";
 import { readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir } from "node:fs/promises";
 import { dirname as pathDirname } from "node:path";
@@ -789,12 +790,21 @@ async function execOpInner(
       // an explicit connector name is set (op.mcpConnector !== undefined)
       // — the implicit "primary" path is for embedder-wired connectors
       // that don't go through connectors.json.
+      //
+      // v0.9.1 — extended to call the shared `validateQualifiedDispatch`
+      // helper so runtime and lint use the SAME source of truth. Catches
+      // unknown-tool-on-connector at runtime when lint was skipped.
       if (op.mcpConnector !== undefined && ctx.registry.hasMcpConnector(connectorName)) {
-        const allowed = ctx.registry.getMcpConnectorAllowedTools(connectorName);
-        if (allowed !== undefined && !allowed.includes(toolName)) {
+        const diagnostics = validateQualifiedDispatch({
+          toolName,
+          qualifiedConnector: connectorName,
+          registry: ctx.registry,
+        });
+        const blocking = diagnostics.find((d) => d.severity === "error");
+        if (blocking !== undefined) {
           throw makeOpError(
             "$",
-            `\`$ ${connectorName}.${toolName}\` is not in the allowlist for connector '${connectorName}'. ${allowed.length === 0 ? "Allowlist is empty (no tools permitted)." : `Allowed: ${allowed.join(", ")}.`} (Defense-in-depth: lint should have caught this earlier.)`,
+            `${blocking.message} (Defense-in-depth: lint should have caught this earlier.)`,
           );
         }
       }

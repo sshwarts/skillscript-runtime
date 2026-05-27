@@ -219,6 +219,18 @@ foreach S in ${SKILLS.items}:
 
 This works *only* when the memory substrate is Case-1 wired (typed-contract via bridge). Under Case-2 wiring, you'd need substrate-specific tool calls (`$ amp.search query=... payload_type=skill`) which are non-portable.
 
+## Contributing — dispatch-shape discipline (v0.9.1)
+
+The multi-layer-promise pattern (lint passes; runtime fails, or vice versa) recurred three times across v0.7.2 / v0.7.3 / v0.9.0 before the v0.9.1 `validateQualifiedDispatch` extraction made lint + runtime call the same validator. To prevent recurrence #4, every PR that introduces a new dispatch shape (a new way of writing `$ ...` ops, a new connector class entry point, a new lifecycle hook on `# Output:`) must land with:
+
+1. **Lint test** — fixture that exercises the shape with lint only (`lint(source, {registry})`)
+2. **Runtime test** — same shape executed end-to-end (`executeSkillByName` or `executeSkillFromSource`)
+3. **E2E test** — the full user path (write skill → store → execute via MCP, or trigger fire → dispatch)
+
+PR description must call out which dispatch shape is exercised. If you can't write all three for a shape, that's a signal the shape is incompletely specified — file a thread before merging.
+
+Connector class authors implementing new `McpConnectorClass`-shaped contracts should also implement `staticTools(): string[] | null` whenever the tool surface is closed and knowable at compile time. Lift `unknown-tool-on-connector` from "advisory you fix at runtime" to "tier-1 error caught at compile time" for every adopter who wires your class.
+
 ## Resources
 
 - **Onboarding scaffold** — `examples/onboarding-scaffold/` — complete adopter deployment with file-backed memory + OpenAI + tmux

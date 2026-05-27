@@ -95,6 +95,16 @@ export class Registry {
     return allowed.includes(toolName);
   }
 
+  /**
+   * v0.9.1 — return the class constructor for a wired MCP connector, or
+   * undefined when not wired. Used by `validateQualifiedDispatch` to read
+   * the class-level `staticTools()` surface and validate qualified
+   * dispatch shapes against the connector's declared tool set.
+   */
+  getMcpConnectorCtor(name: string): McpConnectorClass | undefined {
+    return this.mcpConnectors.get(name)?.ctor;
+  }
+
   registerAgentConnector(name: string, instance: AgentConnector): void {
     this.agentConnectors.set(name, { instance, ctor: ctorOf(instance) as AgentConnectorClass });
   }

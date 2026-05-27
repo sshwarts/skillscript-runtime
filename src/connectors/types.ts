@@ -260,6 +260,18 @@ export interface McpConnector {
 export interface McpConnectorClass {
   new (...args: never[]): McpConnector;
   staticCapabilities(): StaticCapabilities;
+  /**
+   * v0.9.1 — closed-set tool surface for static dispatch validation.
+   * Returns the canonical tool names the connector class supports when the
+   * surface is known at compile time. Returns `null` when the surface
+   * varies at runtime (e.g., RemoteMcpConnector wrapping an arbitrary
+   * upstream MCP server). Used by `validateDispatch` to catch
+   * `$ ref.unknown_tool` at lint time. When `null`, lint emits a tier-3
+   * advisory rather than green-lighting.
+   *
+   * Optional — connectors without this method behave as `null`.
+   */
+  staticTools?(): string[] | null;
 }
 
 // ─── Curated memory fields ────────────────────────────────────────────────

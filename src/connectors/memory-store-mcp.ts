@@ -60,6 +60,18 @@ export class MemoryStoreMcpConnector implements McpConnector {
     };
   }
 
+  /**
+   * v0.9.1 — declared tool surface. The bridge dispatches two canonical
+   * tools: `query` (read) and `memory_write` (write). Bare-form `$ memory`
+   * name-matches and uses dispatchQuery; bare `$ memory_write` uses
+   * dispatchWrite (same bridge instance registered under both names).
+   * Qualified `$ memory.query` / `$ memory.memory_write` validate
+   * against this list; other tool names fail lint with `unknown-tool-on-connector`.
+   */
+  static staticTools(): string[] {
+    return ["query", "memory_write"];
+  }
+
   constructor(private readonly memoryStore: MemoryStore) {}
 
   async call(

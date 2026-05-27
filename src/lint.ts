@@ -122,6 +122,14 @@ interface LintContext {
   connectorConfigErrors: string[];
   mcpConnectorAllowedTools: Map<string, string[]>;
   agentConnectorNames: string[] | undefined;
+  /**
+   * v0.9.1 — per-connector declared tool surface from `McpConnectorClass.staticTools()`.
+   * Map entry: connector name → tool array (declared surface) OR null (class doesn't
+   * expose static surface, e.g., RemoteMcpConnector). Missing entry means
+   * connector isn't wired. Used by `validateQualifiedDispatch` to catch
+   * `$ ref.unknown_tool` at lint time (P0.1 fix).
+   */
+  mcpConnectorStaticTools: Map<string, string[] | null>;
 }
 
 export interface LintRule {
@@ -147,6 +155,7 @@ export async function lint(source: string, options?: LintOptions): Promise<LintR
     connectorConfigErrors: options?.connectorConfigErrors ?? [],
     mcpConnectorAllowedTools: options?.mcpConnectorAllowedTools ?? collectMcpConnectorAllowedToolsFromRegistry(options?.registry),
     agentConnectorNames: options?.agentConnectorNames ?? collectAgentConnectorNamesFromRegistry(options?.registry),
+    mcpConnectorStaticTools: collectMcpConnectorStaticToolsFromRegistry(options?.registry),
   };
   const findings: LintFinding[] = [];
   for (const rule of RULES) {
@@ -187,6 +196,7 @@ export function lintSync(source: string, options?: LintOptions): LintResult {
     connectorConfigErrors: options?.connectorConfigErrors ?? [],
     mcpConnectorAllowedTools: options?.mcpConnectorAllowedTools ?? collectMcpConnectorAllowedToolsFromRegistry(options?.registry),
     agentConnectorNames: options?.agentConnectorNames ?? collectAgentConnectorNamesFromRegistry(options?.registry),
+    mcpConnectorStaticTools: collectMcpConnectorStaticToolsFromRegistry(options?.registry),
   };
   const findings: LintFinding[] = [];
   for (const rule of RULES) {
@@ -649,6 +659,107 @@ const DISALLOWED_TOOL: LintRule = {
           message: `\`$ ${ref}.${toolName}\` in target '${targetName}' is not in the allowlist for connector '${ref}'. ${allowed.length === 0 ? "Allowlist is empty (connector configured but no tools permitted)." : `Allowed: ${allowed.join(", ")}.`} Either rewrite or grant access in connectors.json.`,
           block: targetName,
           extras: { connector: ref, tool: toolName, allowed },
+        });
+      });
+    }
+    return findings;
+  },
+};
+
+// v0.9.1 — `$ ref.tool` where `ref` is wired AND `allowed_tools` doesn't
+// exclude `tool` AND the connector class declares its static tool surface
+// AND `tool` is NOT in that declared surface. Tier-1 error.
+//
+// Closes the v0.9.0 multi-layer-promise recurrence (third in the
+// v0.7.2→v0.7.3→v0.9.0 series). Before v0.9.1, `disallowed-tool` only
+// fired when an explicit allow-list was configured; connectors with
+// `allowed_tools: undefined` (allow-all) green-lit any qualified tool
+// name. Runtime then failed downstream with misleading kwarg errors.
+//
+// The fix: connectors that ship with a closed static tool surface
+// (LocalModelMcpConnector → ["prompt"], MemoryStoreMcpConnector →
+// ["query", "memory_write"]) declare it via `staticTools()`; lint
+// validates qualified dispatches against that surface.
+//
+// Connectors WITHOUT a declared static surface (RemoteMcpConnector,
+// adopter classes) emit the tier-3 `unverified-qualified-tool`
+// advisory instead — see UNVERIFIED_QUALIFIED_TOOL below.
+const UNKNOWN_TOOL_ON_CONNECTOR: LintRule = {
+  id: "unknown-tool-on-connector",
+  severity: "error",
+  description: "A qualified `$ ref.tool` op references a tool not declared on the connector class's static surface.",
+  remediation: "Use a tool from the connector's declared list (see `runtime_capabilities()` for the wired connector and its class). If the tool genuinely exists on the connector but isn't in the static list, that's a connector-class bug — file as such; for now use bare-form `$ tool ...` if the name-match dispatch reaches the right connector.",
+  check: (ctx) => {
+    if (ctx.mcpConnectorStaticTools.size === 0) return [];
+    const findings: LintFinding[] = [];
+    const reported = new Set<string>();
+    for (const [targetName, target] of ctx.parsed.targets) {
+      walkOps(target.ops, (op) => {
+        if (op.kind !== "$" || op.mcpConnector === undefined) return;
+        const ref = op.mcpConnector;
+        const declared = ctx.mcpConnectorStaticTools.get(ref);
+        if (declared === undefined || declared === null) return; // no info; UNVERIFIED rule handles
+        const m = /^([A-Za-z_][\w:-]*)/.exec(op.body);
+        if (m === null) return;
+        const toolName = m[1]!;
+        if (declared.includes(toolName)) return;
+        // If an `allowed_tools` allowlist excludes the tool, `disallowed-tool`
+        // already fires — avoid double-reporting.
+        const allowed = ctx.mcpConnectorAllowedTools.get(ref);
+        if (allowed !== undefined && !allowed.includes(toolName)) return;
+        const key = `${targetName}:${ref}:${toolName}`;
+        if (reported.has(key)) return;
+        reported.add(key);
+        findings.push({
+          rule: "unknown-tool-on-connector",
+          severity: "error",
+          message: `\`$ ${ref}.${toolName}\` in target '${targetName}' — tool '${toolName}' is not declared on connector '${ref}'. Declared tools: ${declared.length === 0 ? "(none)" : declared.join(", ")}. Use a declared tool, or wire a different connector that supports '${toolName}'.`,
+          block: targetName,
+          extras: { connector: ref, tool: toolName, declared_tools: declared },
+        });
+      });
+    }
+    return findings;
+  },
+};
+
+// v0.9.1 — tier-3 advisory for qualified dispatches against connectors
+// whose class doesn't declare a static tool surface. RemoteMcpConnector
+// is the canonical case: it wraps an arbitrary upstream MCP server, so
+// the tool list is only knowable at runtime via `tools/list`. Adopter
+// classes that don't implement `staticTools()` land here too.
+//
+// Surfaces as `info` (advisory) — author sees the hint, can proceed if
+// they know the tool exists. Pairs with the structural validateDispatch
+// extraction; the runtime still dispatches, and if the tool is missing
+// the connector-specific error surfaces at execute time.
+const UNVERIFIED_QUALIFIED_TOOL: LintRule = {
+  id: "unverified-qualified-tool",
+  severity: "info",
+  description: "A qualified `$ ref.tool` op against a connector class without a static tool surface — can't validate at compile time.",
+  remediation: "Verify the tool exists on the connector before relying on this. RemoteMcpConnector adopters can use `runtime_capabilities()` to inspect the upstream `tools/list`; class authors can implement `staticTools()` to lift this validation into lint.",
+  check: (ctx) => {
+    if (ctx.mcpConnectorStaticTools.size === 0) return [];
+    const findings: LintFinding[] = [];
+    const reported = new Set<string>();
+    for (const [targetName, target] of ctx.parsed.targets) {
+      walkOps(target.ops, (op) => {
+        if (op.kind !== "$" || op.mcpConnector === undefined) return;
+        const ref = op.mcpConnector;
+        // null = wired but class doesn't expose; undefined = not wired (different rule)
+        if (ctx.mcpConnectorStaticTools.get(ref) !== null) return;
+        const m = /^([A-Za-z_][\w:-]*)/.exec(op.body);
+        if (m === null) return;
+        const toolName = m[1]!;
+        const key = `${targetName}:${ref}:${toolName}`;
+        if (reported.has(key)) return;
+        reported.add(key);
+        findings.push({
+          rule: "unverified-qualified-tool",
+          severity: "info",
+          message: `\`$ ${ref}.${toolName}\` in target '${targetName}' — connector '${ref}' doesn't declare its tool surface statically; can't validate at compile time. Verify the tool exists on the connector; runtime will fail with a connector-specific error if it doesn't.`,
+          block: targetName,
+          extras: { connector: ref, tool: toolName },
         });
       });
     }
@@ -2029,6 +2140,8 @@ const RULES: LintRule[] = [
   UNKNOWN_CONNECTOR_CLASS,
   UNWIRED_PRIMARY_CONNECTOR,
   DISALLOWED_TOOL,
+  UNKNOWN_TOOL_ON_CONNECTOR,
+  UNVERIFIED_QUALIFIED_TOOL,
   UNINITIALIZED_APPEND,
   FOREACH_LOCAL_ACCUMULATOR_TARGET,
   APPEND_TO_NON_LIST,
@@ -2226,6 +2339,20 @@ function collectMcpConnectorAllowedToolsFromRegistry(registry: Registry | undefi
   if (registry === undefined) return out;
   for (const e of registry.listMcpConnectors()) {
     if (e.allowedTools !== undefined) out.set(e.name, e.allowedTools);
+  }
+  return out;
+}
+
+function collectMcpConnectorStaticToolsFromRegistry(registry: Registry | undefined): Map<string, string[] | null> {
+  const out = new Map<string, string[] | null>();
+  if (registry === undefined) return out;
+  for (const e of registry.listMcpConnectors()) {
+    const ctor = e.ctor as { staticTools?: () => string[] | null };
+    if (ctor.staticTools !== undefined) {
+      out.set(e.name, ctor.staticTools());
+    } else {
+      out.set(e.name, null);
+    }
   }
   return out;
 }

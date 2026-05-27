@@ -46,6 +46,17 @@ export class LocalModelMcpConnector implements McpConnector {
     };
   }
 
+  /**
+   * v0.9.1 — declared tool surface. The bridge dispatches a single
+   * canonical entry point: the `prompt` tool, taking a `prompt` kwarg.
+   * Bare-form `$ llm prompt=...` name-matches and bypasses this surface;
+   * qualified `$ llm.prompt prompt=...` validates against this list.
+   * Qualified `$ llm.tweet_post ...` etc. fails lint with `unknown-tool-on-connector`.
+   */
+  static staticTools(): string[] {
+    return ["prompt"];
+  }
+
   constructor(private readonly localModel: LocalModel) {}
 
   async call(
