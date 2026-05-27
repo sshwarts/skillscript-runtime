@@ -1440,20 +1440,79 @@ const REFERENCE_TO_DISABLED_SKILL: LintRule = {
 // ─── Tier-3 rules (info) ────────────────────────────────────────────────────
 
 const NO_DEFAULT_TARGET: LintRule = {
-  id: "no-default-target",
-  severity: "info",
-  description: "Multi-target skill resolves entry via fallback (last target) instead of an explicit `default:` declaration. Authors lose intent visibility.",
-  remediation: "Add `default: <target-name>` to make the entry point explicit.",
+  id: "missing-default-target",
+  severity: "error",
+  description: "Skill has no explicit `default:` declaration. The parser falls back to the last declared target as the entry point, but the implicit shape is a footgun — the entry point is invisible without reading the bottom of the source.",
+  remediation: "Add `default: <target-name>` at the bottom of the skill to make the entry point explicit. The fallback is preserved for back-compat but the implicit form is no longer supported.",
   check: (ctx) => {
-    if (ctx.parsed.targets.size <= 1) return [];
-    // The parser sets entryTarget to the last declared target when no `default:`
-    // line was present. Re-derive that condition from the source.
-    // Simpler: ParsedSkill doesn't distinguish explicit vs fallback. The
-    // parser's behavior is `entryTarget === null` only when no targets at
-    // all; with targets it picks the last. So we can't distinguish at
-    // this layer without a parser change. For v1.0-dev, skip the check
-    // (parser change deferred to v1.x).
-    return [];
+    // v0.9.2 — P0.9 lift to tier-1. Per qwen single-shot Test A: missing
+    // `default:` silently accepts; runtime picks the last target. Cold
+    // authors lose intent visibility. The parser's `entryTargetExplicit`
+    // field distinguishes explicit-vs-implicit.
+    if (ctx.parsed.targets.size === 0) return []; // no targets → nothing to enter
+    if (ctx.parsed.entryTargetExplicit) return [];
+    return [{
+      rule: "missing-default-target",
+      severity: "error",
+      message: "Skill has no explicit `default:` declaration. Entry point resolves via fallback (last declared target). Add `default: <target-name>` to make the entry point explicit.",
+    }];
+  },
+};
+
+// v0.9.2 — P0.6 colon-style kwarg syntax (`limit:20`) silently parses as
+// part of an adjacent token, then either gets dropped or passed as a
+// malformed kwarg the connector won't understand. Per qwen Test A
+// finding (a3a20593). Canonical kwarg form is `key=value` (equals sign).
+//
+// Detect: pattern `\w+:\w+` (or `\w+:"..."` or `\w+:[...]`) appearing in
+// op-body kwarg position. Exclude legitimate uses: quoted strings, the
+// `(fallback:...)` clause, ratio/time expressions inside string values.
+const COLON_KWARG_SYNTAX: LintRule = {
+  id: "colon-kwarg-syntax",
+  severity: "error",
+  description: "Op body uses `key:value` colon syntax for a kwarg. The canonical kwarg form is `key=value`.",
+  remediation: "Rewrite as `key=value` (equals sign). Colon-style is reserved for `(fallback: ...)` trailers and frontmatter keys; it's not valid in kwarg position.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    const reported = new Set<string>();
+    for (const [targetName, target] of ctx.parsed.targets) {
+      walkOps(target.ops, (op) => {
+        // Only check `$` ops — function-call ops are tokenized by the parser
+        // already, so colon-style would either fail tokenization or be silently
+        // absorbed.
+        if (op.kind !== "$") return;
+        // Strip quoted strings + bracket/brace literals before scanning so
+        // quotation contents (`"3:30 PM"`), array literals
+        // (`[a, foo:bar, b]`), and JSON object values don't trip the rule.
+        // The lint is targeting colon-in-kwarg-position only.
+        const stripped = op.body
+          .replace(/"[^"]*"/g, '""')
+          .replace(/'[^']*'/g, "''")
+          .replace(/\[[^\]]*\]/g, "[]")
+          .replace(/\{[^}]*\}/g, "{}");
+        // Pattern: identifier followed by `:` followed by a non-space non-colon
+        // char — that's kwarg-position colon. Skip `(fallback: ...)` which
+        // already gets parsed out of the body by the time we see it, but
+        // belt-and-suspenders skip explicit `fallback:` matches too.
+        const re = /(?:^|\s)([A-Za-z_]\w*)\s*:\s*[^\s:][^\s]*/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(stripped)) !== null) {
+          const key = m[1]!;
+          if (key === "fallback") continue;
+          const findingKey = `${targetName}:${op.body}:${key}`;
+          if (reported.has(findingKey)) continue;
+          reported.add(findingKey);
+          findings.push({
+            rule: "colon-kwarg-syntax",
+            severity: "error",
+            message: `\`${op.body.slice(0, 40)}${op.body.length > 40 ? "..." : ""}\` in target '${targetName}' — kwarg \`${key}:\` uses colon syntax. Rewrite as \`${key}=...\` (the canonical kwarg form is \`key=value\`).`,
+            block: targetName,
+            extras: { kwarg: key },
+          });
+        }
+      });
+    }
+    return findings;
   },
 };
 
@@ -2166,8 +2225,10 @@ const RULES: LintRule[] = [
   UNUSED_AUGMENTING_HEADER,
   OUTPUT_AGENT_TARGET_NO_EMIT,
   OUTPUT_AGENT_TARGET_NO_CONNECTOR,
-  // Tier-3 (info)
+  // v0.9.2 — promoted from tier-3 info to tier-1 error (P0.9 in c9c667d2)
   NO_DEFAULT_TARGET,
+  COLON_KWARG_SYNTAX,
+  // Tier-3 (info)
   DUPLICATE_SKILL_NAME,
   PLUGIN_COLLISION,
   UNPARSED_JSON_FIELD_ACCESS,

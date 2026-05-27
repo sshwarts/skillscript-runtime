@@ -226,6 +226,13 @@ export interface ParsedSkill {
   triggers: TriggerDecl[];
   outputs: OutputDecl[];
   /**
+   * v0.9.2 — true iff the source contained an explicit `default: <target>`
+   * declaration. False when the parser's last-target fallback fired
+   * (legacy behavior preserved for back-compat; lint surfaces the
+   * absence as `missing-default-target` tier-1 per P0.9).
+   */
+  entryTargetExplicit: boolean;
+  /**
    * `# Delivery-context:` value — human-readable explanation routed to
    * the receiving agent alongside an augment/template delivery so the
    * agent knows *why* it was notified. Augmenting/Template skills only;
@@ -282,6 +289,9 @@ const ELIF_OP_REGEX = /^elif\s+(.+?):\s*$/;
 // matched. Word-shape leading token plus optional args, ending in `:`.
 // Excludes target headers (those are matched at depth-0 elsewhere).
 const UNKNOWN_BLOCK_INTRODUCER_RE = /^[A-Za-z_][\w-]*(?:\s+.*)?:\s*$/;
+// v0.9.2 — P0.5 detect missing-space dispatch: `$<word> args` where `<word>`
+// isn't `set`/`append` (the only legitimate no-space `$`-prefix verbs).
+const NO_SPACE_DISPATCH_RE = /^\$(?!set\b|append\b)\w+\s/;
 /**
  * `>` and `~` ops accept optional trailing `(fallback: <value>)` per
  * language reference §9 (Error Handling, Layer 3). Fires when the op
@@ -975,6 +985,7 @@ export function parse(source: string): ParsedSkill {
     useWhen: null,
     targets: new Map(),
     entryTarget: null,
+    entryTargetExplicit: false,
     onError: null,
     triggers: [],
     outputs: [],
@@ -1250,6 +1261,7 @@ export function parse(source: string): ParsedSkill {
       const deps = depsStr === "" ? [] : depsStr.split(/[\s,]+/).filter((s) => s !== "");
       if (name === "default") {
         result.entryTarget = deps[0] ?? null;
+        result.entryTargetExplicit = true;
         currentTarget = null;
         scopeStack = [];
         continue;
@@ -1578,11 +1590,23 @@ export function parse(source: string): ParsedSkill {
         const approved = kwArgs["approved"];
         // Per-op dispatch — map function-call form to canonical AST shapes.
         if (fnName === "emit") {
+          // v0.9.2 — P0.7 emit() doesn't return a value to bind. Pre-v0.9.2
+          // the parser accepted `emit(text="hi") -> VAR` silently and the
+          // runtime ignored the binding — qwen Test A surfaced this as a
+          // silent-drop class issue. Reject explicitly with the canonical
+          // fix in the message.
+          if (outputVar !== undefined) {
+            result.parseErrors.push(
+              `\`emit(...)\` in target '${currentTarget.name}' cannot bind a result with \`-> ${outputVar}\`. ` +
+              `\`emit\` writes to the skill's emission stream; it has no return value. ` +
+              `Drop the \`-> ${outputVar}\` binding, or use a binding-shaped op like \`ask(...) -> R\` / \`$ tool ... -> R\` if you intended to capture a value.`,
+            );
+            continue;
+          }
           const text = kwArgs["text"] ?? "";
           opBucket.push({
             kind: "!",
             body: text,
-            ...(outputVar !== undefined ? { outputVar } : {}),
             ...(approved !== undefined ? { approved } : {}),
             sourceForm: "function-call",
           });
@@ -1749,6 +1773,20 @@ export function parse(source: string): ParsedSkill {
       const match = APPEND_OP_REGEX.exec(stripped);
       if (match) {
         const [, setName, rawValue] = match;
+        // v0.9.2 — P0.8 detect `$append VAR = "value"` shape. The regex
+        // matches because `= "value"` is a valid `[\s\S]+` token, but the
+        // `=` was almost certainly meant as a `$set`-style assignment.
+        // The canonical mutation form is `$append VAR <value>`. Surface
+        // explicitly rather than letting `= "value"` become a literal
+        // value the runtime would render verbatim.
+        if (/^=\s/.test(rawValue!)) {
+          result.parseErrors.push(
+            `\`$append\` op in target '${currentTarget.name}' has \`= ...\` value shape. ` +
+            `Did you mean \`$set ${setName} = ...\` (replace) or \`$append ${setName} <...>\` (append)? ` +
+            `The canonical append syntax is \`$append VAR <value>\`.`,
+          );
+          continue;
+        }
         opBucket.push({
           kind: "$append",
           body: stripped,
@@ -1842,6 +1880,19 @@ export function parse(source: string): ParsedSkill {
         opsBucket: [],
         depth: lineIndent + INDENT_STEP,
       });
+    } else if (NO_SPACE_DISPATCH_RE.test(stripped0)) {
+      // v0.9.2 — P0.5 detect `$<word> args` (no space between `$` and tool
+      // name). The canonical external-dispatch shape is `$ <tool> args`;
+      // the no-space form historically silent-dropped because no op-prefix
+      // branch matched it. Now: parse error with the canonical fix. Per
+      // qwen single-shot finding `a3a20593`.
+      const m = /^\$(\w+)/.exec(stripped0);
+      const word = m?.[1] ?? "";
+      result.parseErrors.push(
+        `Op line \`${stripped0}\` in target '${currentTarget.name}' — \`$${word}\` is missing the space between \`$\` and the tool/connector name. ` +
+        `Did you mean \`$ ${word} ...\` (external MCP dispatch)? ` +
+        `\`$set\` / \`$append\` are the only no-space \`$\`-prefix ops (mutation statements).`,
+      );
     }
   }
 
