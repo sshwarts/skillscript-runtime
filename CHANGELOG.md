@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.9.7 — 2026-05-27 — HttpWebhookAgentConnector example impl
+
+**Q5 deliverable from the v0.9.6 audit** (`df34313e`). Bundled example
+AgentConnector for HTTP-webhook substrates — the canonical worked example
+adopter agents read + fork when wiring their own substrate. Lives in
+`examples/connectors/` (outside narrow-core LOC budget per audit decision).
+
+### Added
+
+- **`examples/connectors/HttpWebhookAgentConnector/`** — full directory:
+  - `HttpWebhookAgentConnector.ts` — the connector class with strict input
+    validation in `fromEnv()` (NaN-guard on timeout, agents-shape validation,
+    required-url enforcement). Validation pattern is intentionally educational
+    for adopter forks.
+  - `README.md` — canonical reference for adopter agents. Documents Models
+    A/B/C deployment shapes (URL-routed / body-routed / variable-substituted),
+    wire format, auth (bearer + HMAC combinable), forking discipline.
+  - `.env.example` — nested JSON config + bearer + HMAC stubs.
+  - `receiver-example/express.js` + `flask.py` — reference receiver snippets
+    with HMAC raw-body validation pattern (validate BEFORE parse).
+  - `tests/HttpWebhookAgentConnector.test.ts` — 32 tests, mock HTTP server
+    (Node built-in `http.createServer`, zero external deps).
+
+### Design choices documented
+
+- **Wire body includes `agent_id` at top-level** alongside the canonical
+  `DeliveryPayload` shape — extension to the wire format the
+  HttpWebhookAgentConnector defines (not the contract itself). Enables Model
+  B router-receivers to dispatch without URL inspection. Optional for
+  Model-A-only deployments.
+- **Receipt synthesis is permissive** — tolerantly parses substrate-specific
+  response shapes (NanoClaw `{status, id}`, Discord message JSON, Slack
+  `{ts, channel}`, empty body) into canonical `DeliveryReceipt`. Adopters
+  with strict shape replace `synthesizeReceipt()`.
+- **Three deployment models** without code branching:
+  - Model A: one URL per agent_id (URL-routed)
+  - Model B: single URL, router receiver, agent_id in body
+  - Model C: variable-driven channel selection in the skill
+    (`notify(agent="agent-${CHANNEL}", ...)`)
+
+### Out of scope (fork to add)
+
+Retries, multi-region failover, OAuth/mTLS/SAML auth, streaming deliveries,
+async-callback `request_response()` reply pattern (v0.10 design choice).
+
+### Per Perry's `3f04b413` code review
+
+Two adopter-footgun catches landed before push (fromEnv `timeout_ms` NaN guard,
+agents JSON shape validation); five optional polish items (option naming
+consistency `auth_header`→`authorization`, README softening on Model-A vs
+Model-B forking, Bearer+HMAC combinability note, malformed receiver JSON test,
+`client_validation` cause_kind enum) absorbed in the same patch.
+
 ## 0.9.6 — 2026-05-27 — AgentConnector audit + contract lock for v1.0
 
 **First connector contract audit + lock for v1.0** per Perry's thread `b722bbf4`.
