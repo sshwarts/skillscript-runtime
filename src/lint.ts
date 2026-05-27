@@ -1605,6 +1605,106 @@ const OUTPUT_AGENT_TARGET_NO_EMIT: LintRule = {
   },
 };
 
+// v0.9.3 — P1.2 numeric-subscript dotted-ref like `${ARRAY.0}` or
+// `${LATEST.items.0}`. The substitution machinery's resolveRef does
+// string-keyed property access; arrays handle string keys ("0" coerces
+// to index 0) at runtime, so single-step `${ARR.0}` may resolve when
+// `ARR` is bound to an array — but multi-step `${LATEST.items.0.field}`
+// or chained subscripts are fragile and surface as silent failures.
+// Per R8 minion #5: cold author wrote `${LATEST.items.0}` against a
+// query result; got UnresolvedVariableError. Foreach iteration is the
+// canonical pattern for indexed access.
+//
+// Tier-2 warning: cold authors get a clear nudge toward `foreach`
+// instead of guessing at numeric subscripts.
+const NUMERIC_SUBSCRIPT: LintRule = {
+  id: "numeric-subscript",
+  severity: "warning",
+  description: "A `${VAR.N}` substitution ref uses a numeric segment (e.g. `${ARR.0}` or `${LATEST.items.0}`). Numeric subscripts are not a first-class language feature — `foreach IT in ${VAR}` is the canonical iteration pattern.",
+  remediation: "Replace with `foreach IT in ${VAR}:` to iterate, or with `$set FIRST = ${VAR|first}` (when first-only is the intent). If a specific JSON-array element is unavoidable, bind it via an intermediary `$ json_parse` op + dotted descent against the parsed structure.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    const reported = new Set<string>();
+    // Pattern: `${X.0...}` or `${X.items.5}` etc — any segment that's
+    // all-digits inside a brace-form substitution. Skip $(...) legacy
+    // form since it's already tier-2 deprecated.
+    const re = /\$\{([A-Za-z_]\w*(?:\.\w+)+)/g;
+    const scanString = (s: string, targetName: string): void => {
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(s)) !== null) {
+        const ref = m[1]!;
+        const segments = ref.split(".");
+        // First segment is var name (can't be numeric); look at the rest
+        const hasNumeric = segments.slice(1).some((seg) => /^\d+$/.test(seg));
+        if (!hasNumeric) continue;
+        const key = `${targetName}:${ref}`;
+        if (reported.has(key)) continue;
+        reported.add(key);
+        findings.push({
+          rule: "numeric-subscript",
+          severity: "warning",
+          message: `Substitution ref \`\${${ref}}\` in target '${targetName}' uses a numeric segment. Numeric subscripts aren't first-class; use \`foreach\` iteration or bind via \`$ json_parse\` for indexed access against parsed JSON.`,
+          block: targetName,
+          extras: { ref },
+        });
+      }
+    };
+    for (const [targetName, target] of ctx.parsed.targets) {
+      walkOps(target.ops, (op) => {
+        // Scan body + kwargs (which live in body for $ ops; in setValue for $set/$append)
+        if (op.body !== undefined) scanString(op.body, targetName);
+        if (op.setValue !== undefined) scanString(op.setValue, targetName);
+      });
+    }
+    return findings;
+  },
+};
+
+// v0.9.3 — P1.3 canonicalize `recipients=[...]` over `addressed_to="..."`
+// for `$ memory_write` dispatch. The bundled MemoryStoreMcpConnector only
+// reads `args["recipients"]` (line 132 of memory-store-mcp.ts), so
+// `addressed_to=...` was always a doc-bug: it parsed but silently
+// dropped. Help docs had it pre-v0.9.3 (`help({topic:"connectors"})`
+// line 318) — fixed in this same ship. Lint catches any cold author
+// who picked the wrong shape from older docs / muscle memory.
+//
+// Tier-2 warning, not tier-1 — adopter substrates may genuinely accept
+// `addressed_to` if they wire a custom MemoryStoreMcpConnector. The
+// lint nudges toward the bundled-canonical shape without breaking
+// adopter freedom.
+const DEPRECATED_ADDRESSED_TO: LintRule = {
+  id: "deprecated-addressed-to",
+  severity: "warning",
+  description: "`$ memory_write addressed_to=...` is not the canonical kwarg for the bundled MemoryStoreMcpConnector. The bundled bridge reads `recipients=[...]` (array). `addressed_to` may parse but silently drops in default deployments.",
+  remediation: "Rewrite as `$ memory_write content=\"...\" recipients=[<agent_id>, ...] -> R`. The bracket-array form is the canonical shape that the bundled `MemoryStoreMcpConnector` reads. Adopters with a custom memory bridge that genuinely accepts `addressed_to` can wire it; this lint is a nudge toward the default contract.",
+  check: (ctx) => {
+    const findings: LintFinding[] = [];
+    const reported = new Set<string>();
+    for (const [targetName, target] of ctx.parsed.targets) {
+      walkOps(target.ops, (op) => {
+        if (op.kind !== "$") return;
+        const m = /^([A-Za-z_][\w:-]*)/.exec(op.body);
+        if (m === null) return;
+        const toolName = m[1]!;
+        // Only fire on memory_write — adopters may have other tools that
+        // legitimately accept addressed_to.
+        if (toolName !== "memory_write") return;
+        if (!/\baddressed_to\s*=/.test(op.body)) return;
+        const key = `${targetName}:${op.body}`;
+        if (reported.has(key)) return;
+        reported.add(key);
+        findings.push({
+          rule: "deprecated-addressed-to",
+          severity: "warning",
+          message: `\`$ memory_write ... addressed_to=...\` in target '${targetName}' — the bundled MemoryStoreMcpConnector reads \`recipients=[...]\`, not \`addressed_to=\`. Use \`recipients=[<agent_id>, ...]\` (bracket-array form).`,
+          block: targetName,
+        });
+      });
+    }
+    return findings;
+  },
+};
+
 const OUTPUT_AGENT_TARGET_NO_CONNECTOR: LintRule = {
   id: "output-agent-target-no-connector",
   severity: "warning",
@@ -2225,6 +2325,8 @@ const RULES: LintRule[] = [
   UNUSED_AUGMENTING_HEADER,
   OUTPUT_AGENT_TARGET_NO_EMIT,
   OUTPUT_AGENT_TARGET_NO_CONNECTOR,
+  NUMERIC_SUBSCRIPT,
+  DEPRECATED_ADDRESSED_TO,
   // v0.9.2 — promoted from tier-3 info to tier-1 error (P0.9 in c9c667d2)
   NO_DEFAULT_TARGET,
   COLON_KWARG_SYNTAX,

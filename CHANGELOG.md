@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.9.3 — 2026-05-27
+
+**Deferred design calls — P1.2 + P1.3.** Closes the last two items in
+Perry's locked v0.9.x sequencing (`c9c667d2`). Two tier-2 lint
+additions, no parser or runtime surface changes — design calls landing
+as guardrails rather than language extensions.
+
+### Added — `numeric-subscript` lint (P1.2)
+
+Cold authors hit `${LATEST.items.0}` expecting indexed array access;
+the substitution resolver's dotted descent does string-keyed property
+access which works on JS arrays for direct single-step subscript but
+fails silently on multi-segment refs. Per R8 minion #5 finding in
+`dec3ca8a`.
+
+- **Tier-2 warning `numeric-subscript`** fires when a `${VAR.N...}`
+  ref has any numeric segment after the var name.
+- **Remediation**: use `foreach IT in ${VAR}:` for iteration, or
+  `${VAR|first}` for first-only, or bind via `$ json_parse` against
+  parsed JSON for true indexed access.
+- **Design call**: numeric subscripts NOT promoted to first-class
+  syntax. Would conflict with dotted-field-access semantics when JSON
+  keys are numeric strings; foreach is the canonical shape.
+
+### Added — `deprecated-addressed-to` lint (P1.3)
+
+`$ memory_write` docs mixed `recipients=["agent"]` (array, plural) and
+`addressed_to="agent"` (string, singular) across the quickstart vs
+connectors topic. The bundled `MemoryStoreMcpConnector` only ever read
+`recipients=[...]` — `addressed_to=` parsed but silently dropped.
+Per R8 minion #4 finding in `dec3ca8a`.
+
+- **Tier-2 warning `deprecated-addressed-to`** fires on
+  `$ memory_write ... addressed_to=...` with the canonical-fix
+  recommendation.
+- **Docs fix**: `help({topic:"connectors"})` example updated to
+  `recipients=[oncall]` (bracket-array form) — the actual contract.
+- **Design call**: `recipients=[...]` is canonical (array, plural,
+  matches AMP broker model). Adopters with custom MemoryStoreMcpConnector
+  impls that genuinely accept `addressed_to` can wire it — the lint
+  is a nudge toward the bundled-default contract, not tier-1.
+
+### Notes
+
+- 7 new tests (`v0.9.3-design-calls.test.ts`).
+- Suite at 1105/1116 passing, 10 skipped, 1 baseline YouTrack env-gated.
+- Concludes the v0.9.x patch series per Perry's locked sequencing.
+  Remaining work (R8/qwen re-validation as periodic harness; v1.0 cold-
+  author signoff) is bandwidth-driven from here.
+
 ## 0.9.2 — 2026-05-27
 
 **Compiler permissiveness + runtime observability.** Closes P0.5–P0.9

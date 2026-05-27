@@ -315,7 +315,7 @@ The canonical paths for LLM calls and memory queries are MCP dispatch through ad
 \`\`\`
 $ llm prompt="Classify priority: \${ISSUE.summary}" -> VERDICT
 $ memory mode=fts query="recent incidents" limit=10 -> CONTEXT
-$ memory_write content="\${REPORT}" addressed_to="oncall" tags="morning-sweep" approved="cron deliverable" -> R
+$ memory_write content="\${REPORT}" recipients=[oncall] tags=[morning-sweep] approved="cron deliverable" -> R
 \`\`\`
 
 **Today's reality (v0.9.x).** Default deployments auto-wire \`llm\` + \`memory\` + \`memory_write\` MCP connectors via bundled bridges (\`LocalModelMcpConnector\` over \`LocalModel\`; \`MemoryStoreMcpConnector\` over \`MemoryStore\` — the same bridge instance registered under both \`memory\` and \`memory_write\` names so query + write share substrate). All three work zero-config against the bundled Ollama + SQLite contracts; adopters override by re-registering the same connector names against their own substrate. The legacy \`~ prompt=...\` and \`> mode=... query=...\` ops continue to dispatch through the bundled typed contracts with tier-2 \`deprecated-symbol-op\` warnings; \`$ memory_write content="..." recipients=[...] -> R\` is the canonical durable-handoff path shipped in v0.8.0.
