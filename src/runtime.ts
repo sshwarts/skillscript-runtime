@@ -120,11 +120,30 @@ export interface ExecutionError {
   innerCause?: string;
 }
 
+/**
+ * v0.9.2 — fallback-fire record per P1.4. When an op's `(fallback: ...)`
+ * trailer absorbs a dispatch failure, the runtime appends one record so
+ * callers can distinguish "real success" from "fallback substituted."
+ * Previously the caller saw `errors: []` either way and couldn't tell.
+ */
+export interface FallbackRecord {
+  target: string;
+  opKind: string;
+  value: unknown;
+  reason: string;
+}
+
 export interface ExecuteResult {
   finalVars: Record<string, unknown>;
   emissions: string[];
   outputs: Record<string, unknown>;
   errors: ExecutionError[];
+  /**
+   * v0.9.2 — fallback events. Populated when an op's `(fallback: ...)`
+   * trailer caught a dispatch failure. Empty array when no fallbacks
+   * fired. Inspect `length > 0` to detect partial-success runs.
+   */
+  fallbacks: FallbackRecord[];
   targetOrder: string[];
   /**
    * Delivery receipts from `AgentConnector.deliver` calls fired after the
@@ -142,6 +161,17 @@ export interface AgentDeliveryReceiptRecord {
   agent_id: string;
   output_kind: "agent" | "template";
   receipt: DeliveryReceipt;
+  /**
+   * v0.9.2 — true when no real AgentConnector was wired and the
+   * NoOpAgentConnector fallback "handled" the dispatch (i.e. accepted
+   * the payload without delivering it anywhere). Cold authors writing
+   * `# Output: agent: oncall` skills against a runtime without an
+   * AgentConnector get a clear signal that the delivery didn't happen.
+   * Per P1.1 finding in `dec3ca8a`.
+   */
+  delivery_skipped?: boolean;
+  /** Human-readable reason when `delivery_skipped: true`. */
+  reason?: string;
 }
 
 interface ExecOpsResult {
@@ -191,6 +221,7 @@ export async function execute(
   }
   const emissions: string[] = [];
   const errors: ExecutionError[] = [];
+  const fallbacks: FallbackRecord[] = [];
   let lastBoundVar: string | null = null;
 
   const absoluteTimeoutMs = ctx.absoluteTimeoutMs ?? DEFAULT_RUNTIME_ABSOLUTE_TIMEOUT_MS;
@@ -213,14 +244,14 @@ export async function execute(
     let targetLastValue: unknown = undefined;
 
     try {
-      const r = await execOps(target.ops, vars, emissions, ctx, targetName, parsed.timeout, absoluteTimeoutMs, traceBuilder);
+      const r = await execOps(target.ops, vars, emissions, fallbacks, ctx, targetName, parsed.timeout, absoluteTimeoutMs, traceBuilder);
       targetLastBound = r.lastBoundVar;
       targetLastValue = r.lastBoundVar !== null ? vars.get(r.lastBoundVar) : r.lastValue;
     } catch (err) {
       errors.push(buildExecutionError(err, targetName));
       if (target.elseBlock !== undefined) {
         try {
-          const r = await execOps(target.elseBlock, vars, emissions, ctx, targetName, parsed.timeout, absoluteTimeoutMs, traceBuilder);
+          const r = await execOps(target.elseBlock, vars, emissions, fallbacks, ctx, targetName, parsed.timeout, absoluteTimeoutMs, traceBuilder);
           targetLastBound = r.lastBoundVar;
           targetLastValue = r.lastBoundVar !== null ? vars.get(r.lastBoundVar) : r.lastValue;
         } catch (innerErr) {
@@ -315,11 +346,20 @@ export async function execute(
         ...(parsed.deliveryContext !== null ? { delivery_context: parsed.deliveryContext } : {}),
         ...(parsed.templates.length > 0 ? { templates: parsed.templates } : {}),
       };
+      // v0.9.2 — P1.1 flag the no-op dispatch case. When no real
+      // AgentConnector is wired, the NoOp fallback accepts the deliver
+      // call without doing anything; cold authors get a clear signal.
+      const hasRealConnector = ctx.registry.hasAgentConnector();
       try {
         const receipt = decl.kind === "agent"
           ? await agent.deliver(decl.target, { kind: "augment", content: body, ...common })
           : await agent.deliver(decl.target, { kind: "template", prompt: body, ...common });
-        agentDeliveryReceipts.push({ agent_id: decl.target, output_kind: decl.kind, receipt });
+        const record: AgentDeliveryReceiptRecord = { agent_id: decl.target, output_kind: decl.kind, receipt };
+        if (!hasRealConnector) {
+          record.delivery_skipped = true;
+          record.reason = `No AgentConnector wired for runtime; NoOpAgentConnector accepted but didn't deliver. Wire an AgentConnector via registry.registerAgentConnector('primary', <YourImpl>) to enable real delivery.`;
+        }
+        agentDeliveryReceipts.push(record);
       } catch (err) {
         // Delivery failure is non-fatal — record alongside other errors so
         // the dashboard surfaces it, but don't propagate. Skill execution
@@ -350,6 +390,7 @@ export async function execute(
     emissions,
     outputs,
     errors,
+    fallbacks,
     targetOrder: order,
     agentDeliveryReceipts,
   };
@@ -359,6 +400,7 @@ async function execOps(
   ops: SkillOp[],
   vars: Map<string, unknown>,
   emissions: string[],
+  fallbacks: FallbackRecord[],
   ctx: ExecuteContext,
   targetName: string,
   skillTimeoutSec: number | string | null,
@@ -368,7 +410,7 @@ async function execOps(
   let lastBoundVar: string | null = null;
   let lastValue: unknown = undefined;
   for (const op of ops) {
-    const r = await execOp(op, vars, emissions, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs, traceBuilder);
+    const r = await execOp(op, vars, emissions, fallbacks, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs, traceBuilder);
     if (r.lastBoundVar !== null) {
       lastBoundVar = r.lastBoundVar;
       lastValue = r.lastValue;
@@ -383,6 +425,7 @@ async function execOp(
   op: SkillOp,
   vars: Map<string, unknown>,
   emissions: string[],
+  fallbacks: FallbackRecord[],
   ctx: ExecuteContext,
   targetName: string,
   skillTimeoutSec: number | string | null,
@@ -392,7 +435,7 @@ async function execOp(
   const startMs = traceBuilder !== null ? Date.now() : 0;
   let errored = false;
   try {
-    return await execOpInner(op, vars, emissions, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs, traceBuilder);
+    return await execOpInner(op, vars, emissions, fallbacks, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs, traceBuilder);
   } catch (err) {
     errored = true;
     // Default-tag any escaping error with `op.kind`. Explicit makeOpError()
@@ -430,6 +473,7 @@ async function execOpInner(
   op: SkillOp,
   vars: Map<string, unknown>,
   emissions: string[],
+  fallbacks: FallbackRecord[],
   ctx: ExecuteContext,
   targetName: string,
   skillTimeoutSec: number | string | null,
@@ -605,6 +649,14 @@ async function execOpInner(
           const fallbackValue = op.fallback;
           vars.set(flatKey, fallbackValue);
           if (op.outputVar !== undefined) vars.set(op.outputVar, fallbackValue);
+          // v0.9.2 — P1.4 record fallback firing so callers can distinguish
+          // "read succeeded" from "fallback substituted."
+          fallbacks.push({
+            target: targetName,
+            opKind: "file_read",
+            value: fallbackValue,
+            reason: `file_read failed: ${(err as Error).message}`,
+          });
           return { lastBoundVar: op.outputVar ?? flatKey, lastValue: fallbackValue };
         }
         throw makeOpError(
@@ -636,6 +688,9 @@ async function execOpInner(
           `\`file_write(path="${path}")\` in target '${targetName}' failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+      // v0.9.2 — P2.5 transcript line on successful write so cold authors
+      // can confirm side effects landed without reading the file back.
+      emissions.push(`[file_write] wrote ${Buffer.byteLength(content, "utf8")} bytes to ${path}`);
       return { lastBoundVar: null, lastValue: undefined };
     }
     case "notify": {
@@ -841,6 +896,13 @@ async function execOpInner(
         if (dollarFallback !== undefined) {
           vars.set(flatKey, dollarFallback);
           if (op.outputVar !== undefined) vars.set(op.outputVar, dollarFallback);
+          // v0.9.2 — P1.4 record the fallback substitution
+          fallbacks.push({
+            target: targetName,
+            opKind: "$",
+            value: dollarFallback,
+            reason: `$ ${connectorLabel}${toolName} failed: ${(err as Error).message}`,
+          });
           return { lastBoundVar: op.outputVar ?? flatKey, lastValue: dollarFallback };
         }
         throw err;
@@ -983,7 +1045,7 @@ async function execOpInner(
       let last: ExecOpsResult = { lastBoundVar: null, lastValue: undefined };
       for (const item of listVal) {
         vars.set(iterName, item);
-        last = await execOps(op.foreachBody!, vars, emissions, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs, traceBuilder);
+        last = await execOps(op.foreachBody!, vars, emissions, fallbacks, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs, traceBuilder);
       }
       for (const k of Array.from(vars.keys())) {
         if (!before.has(k)) vars.delete(k);
@@ -993,11 +1055,11 @@ async function execOpInner(
     case "if": {
       for (const branch of op.ifBranches!) {
         if (evalCondition(branch.cond, vars)) {
-          return execOps(branch.body, vars, emissions, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs, traceBuilder);
+          return execOps(branch.body, vars, emissions, fallbacks, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs, traceBuilder);
         }
       }
       if (op.ifElseBody !== undefined) {
-        return execOps(op.ifElseBody, vars, emissions, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs, traceBuilder);
+        return execOps(op.ifElseBody, vars, emissions, fallbacks, ctx, targetName, skillTimeoutSec, absoluteTimeoutMs, traceBuilder);
       }
       return { lastBoundVar: null, lastValue: undefined };
     }

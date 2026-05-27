@@ -69,7 +69,11 @@ describe("v0.7.0 — file_read / file_write function-call ops", () => {
     ].join("\n");
     const result = await runSkill(src);
     expect(result.errors).toEqual([]);
-    expect(result.emissions).toEqual(["hello from skill"]);
+    // v0.9.2 — file_write emits a confirmation transcript line on success.
+    expect(result.emissions).toEqual([
+      expect.stringMatching(/^\[file_write\] wrote 16 bytes to /),
+      "hello from skill",
+    ]);
     // Verify the file was actually written
     expect(readFileSync(path, "utf8")).toBe("hello from skill");
   });
