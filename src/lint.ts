@@ -850,7 +850,7 @@ const UNWIRED_PRIMARY_CONNECTOR: LintRule = {
         findings.push({
           rule: "unwired-primary-connector",
           severity: "info",
-          message: `\`$ ${toolName}\` in target '${targetName}' is a bare tool op against no wired connector (wired: ${wired}) — every call site declares \`(fallback: ...)\`. Lint runs at authoring-time and the fallback resolves at dispatch-time, so tier-1 lint passes; the runtime branch is reached only if dispatch fails in production.`,
+          message: `\`$ ${toolName}\` in target '${targetName}': connector isn't wired (wired: ${wired}), but every call site declares \`(fallback: ...)\`. Tier-1 lint demoted — at runtime, the fallback value binds when the dispatch errors, so the skill keeps working without the real connector.`,
           block: targetName,
           extras: { tool: toolName, hasFallback: true },
         });

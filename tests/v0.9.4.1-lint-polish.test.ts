@@ -27,7 +27,8 @@ default: m
     const finding = r.findings.find((f) => f.rule === "unwired-primary-connector");
     expect(finding).toBeDefined();
     expect(finding!.severity).toBe("info");
-    expect(finding!.message).toMatch(/every call site declares.*fallback/i);
+    expect(finding!.message).toMatch(/every call site declares.*\(fallback/i);
+    expect(finding!.message).toMatch(/fallback value binds when the dispatch errors/i);
     expect(finding!.extras?.hasFallback).toBe(true);
   });
 
