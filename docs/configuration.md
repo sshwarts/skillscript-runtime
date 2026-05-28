@@ -4,8 +4,8 @@ How to configure a skillscript-runtime deployment.
 
 The single config file is **`~/.skillscript/connectors.json`** (or any path passed via `--connectors`). It has two top-level concerns:
 
-1. **`substrate`** — which `SkillStore`, `MemoryStore`, and `LocalModel` the runtime hosts (MCP server + web dashboard) use. (v0.10+)
-2. **Named MCP connector instances** — `youtrack`, `github`, etc. — invoked via `$ <name>` in skill source. (v0.4.0+)
+1. **`substrate`** — which `SkillStore`, `MemoryStore`, and `LocalModel` the runtime hosts (MCP server + web dashboard) use.
+2. **Named MCP connector instances** — `youtrack`, `github`, etc. — invoked via `$ <name>` in skill source.
 
 The runtime loads `connectors.json` at startup. Missing file → graceful empty config (substrate defaults to filesystem skills + conditional sqlite memories; no MCP connectors). Malformed JSON or unknown fields → structured errors surfaced at bootstrap.
 
@@ -25,7 +25,7 @@ A typical out-of-the-box `~/.skillscript/connectors.json`:
 }
 ```
 
-Equivalent to omitting the file entirely — these are the v0.10 base config defaults.
+Equivalent to omitting the file entirely — these are the base config defaults.
 
 To switch skills storage to SQLite:
 
@@ -104,7 +104,7 @@ The runtime doesn't register a connector for this slot. Useful for explicitly di
 
 References an adopter-written class implementing the relevant contract. `module` is the path to the JS file; `export` is the named export (defaults to `default`); `config` is passed to the constructor.
 
-> **v0.10 limitation**: sync `bootstrap()` can't dynamic-import. Custom-via-connectors.json surfaces a clear error and falls back to the default. Adopters wanting custom impls today write a programmatic bootstrap that calls `registry.registerSkillStore("primary", new AmpSkillStore(...))` directly — same pattern as the runtime's reference `bootstrap()`. Async-bootstrap with dynamic-import support is planned for a follow-up.
+> **Limitation**: sync `bootstrap()` can't dynamic-import. Custom-via-connectors.json surfaces a clear error and falls back to the default. Adopters wanting custom impls today write a programmatic bootstrap that calls `registry.registerSkillStore("primary", new AmpSkillStore(...))` directly — same pattern as the runtime's reference `bootstrap()`. Async-bootstrap with dynamic-import support is planned.
 
 ---
 
@@ -252,7 +252,7 @@ A bundled migration tool isn't shipped — different adopters want different thi
 
 ### Multi-instance posture
 
-Running both a dev instance (filesystem) and an adopter instance (sqlite or custom) side by side is common for v0.10+ deployments. Use separate `--port` + `--connectors` paths:
+Running both a dev instance (filesystem) and an adopter instance (sqlite or custom) side by side is common. Use separate `--port` + `--connectors` paths:
 
 ```bash
 # Dev — filesystem skills, port 7878

@@ -1,9 +1,9 @@
 {
   "_comment": "Per-host connector wiring. Copied to ~/.skillscript/connectors.json by `skillfile init`. The top-level `substrate` key selects singleton substrate connectors (SkillStore, MemoryStore, LocalModel). All other top-level keys define named MCP connector instances referenced via `$ name args` in skill source.",
 
-  "_comment_substrate": "v0.10 substrate selection — runtime hosts (MCP server + web dashboard) honor whatever you configure here. The bundled CLI authoring commands (`skillfile compile`, `skillfile lint`, `skillfile audit`, `skillfile list`) stay filesystem-pinned regardless — they're the FS-authoring loop. Three legs: bundled filesystem, bundled sqlite, adopter-custom (write your own SkillStore impl).",
+  "_comment_substrate": "Substrate selection — runtime hosts (MCP server + web dashboard) honor whatever you configure here. The bundled CLI authoring commands (`skillfile compile`, `skillfile lint`, `skillfile audit`, `skillfile list`) stay filesystem-pinned regardless — they're the FS-authoring loop. Three legs: bundled filesystem, bundled sqlite, adopter-custom (write your own SkillStore impl).",
 
-  "_comment_substrate_forms": "Each substrate slot accepts: (a) bare string for built-in types — \"filesystem\", \"sqlite\", \"ollama\"; (b) null to explicitly disable; (c) object form `{type, config}` to override defaults; (d) object form `{type:\"custom\", module, export, config}` for adopter-custom impls (requires programmatic bootstrap today — sync `bootstrap()` doesn't dynamic-import yet).",
+  "_comment_substrate_forms": "Each substrate slot accepts: (a) bare string for built-in types — \"filesystem\", \"sqlite\", \"ollama\"; (b) null to explicitly disable; (c) object form `{type, config}` to override defaults; (d) object form `{type:\"custom\", module, export, config}` for adopter-custom impls (requires programmatic bootstrap; sync `bootstrap()` doesn't dynamic-import).",
 
   "substrate": {
     "skill_store": "filesystem",
@@ -22,7 +22,7 @@
       "config": { "baseUrl": "http://gpu-host:11434", "defaultModelTag": "gemma2:9b" }
     },
 
-    "_example_custom": "Adopter-custom impl. Write `class FooSkillStore implements SkillStore { ... }` then reference it here. NOTE v0.10 — this form requires a programmatic bootstrap (sync `bootstrap()` can't dynamic-import). Wire via your own bootstrap script today; declarative custom config arrives in a follow-up.",
+    "_example_custom": "Adopter-custom impl. Write `class FooSkillStore implements SkillStore { ... }` then reference it here. NOTE — this form requires a programmatic bootstrap (sync `bootstrap()` can't dynamic-import). Wire via your own bootstrap script today; declarative custom config is a planned follow-up.",
     "_example_custom_object": {
       "type": "custom",
       "module": "./my-amp-skill-store.js",
@@ -31,7 +31,7 @@
     }
   },
 
-  "_comment_classes": "v0.4.0+ closed-set class registry. Available: `RemoteMcpConnector` (stdio-bridged remote MCP). Use `runtime_capabilities({include:['mcpConnectorClasses']})` to introspect the runtime's available class set. v0.7.2 added `LocalModelMcpConnector` + `MemoryStoreMcpConnector` bridges so `$ llm` / `$ memory` work canonically — these auto-wire when their substrates exist.",
+  "_comment_classes": "Closed-set class registry for MCP connectors. Available: `RemoteMcpConnector` (stdio-bridged remote MCP). Use `runtime_capabilities({include:['mcpConnectorClasses']})` to introspect the available class set. The `LocalModelMcpConnector` + `MemoryStoreMcpConnector` bridges (for `$ llm` / `$ memory` canonical dispatch) auto-wire when their substrates are configured above.",
 
   "_comment_security": "This file is secret-bearing when filled with real credentials. The repo's `.gitignore` excludes `connectors.json` (the live copy) but tracks `connectors.json.example`. Prefer `${VAR}` substitution over in-file literals for deployments.",
 

@@ -286,7 +286,7 @@ Swap in `$ ticketing_search`, `$ llm`, `$ memory_write` once you've wired connec
 
 Skills don't know what they're talking to. Five contracts decouple language from substrate:
 
-| Contract | Purpose | v0.10 base config |
+| Contract | Purpose | Base config |
 |---|---|---|
 | `SkillStore` | Skill source persistence | `FilesystemSkillStore` (default); switch via `substrate.skill_store` in `connectors.json` |
 | `MemoryStore` | Retrieval over a knowledge store | `SqliteMemoryStore` (conditional on dbPath); switch via `substrate.memory_store` |
@@ -304,8 +304,8 @@ Wire your own by implementing the interface and registering in `connectors.json`
 
 Per-host configuration. The runtime loads it at startup. Two top-level concerns:
 
-1. **`substrate`** (v0.10+) — which `SkillStore` / `MemoryStore` / `LocalModel` the runtime hosts use
-2. **Named MCP connector instances** (v0.4.0+) — each becomes a connector referenced via `$ <name>` in skill source
+1. **`substrate`** — which `SkillStore` / `MemoryStore` / `LocalModel` the runtime hosts use
+2. **Named MCP connector instances** — each becomes a connector referenced via `$ <name>` in skill source
 
 ```json
 {
@@ -335,7 +335,7 @@ Two credential shapes:
 
 **Credential discipline (hard requirement):** `connectors.json` is secret-bearing. The repo's `.gitignore` excludes it by default. Use the version-controlled `connectors.json.example` as the template — copy it to `connectors.json` (gitignored), fill in real values. For deployments, prefer `${VAR}` substitution over in-file literals; commit the `${...}` references but keep the actual credentials in deployment env.
 
-**Closed-set class registry:** the runtime ships a fixed list of `class:` values it recognizes. v0.4.0 ships with `CallbackMcpConnector` (wired via embedder code only, not configurable from JSON). v0.4.1 adds `RemoteMcpConnector` for the stdio-bridged remote MCP pattern. Plugin-style runtime-arbitrary class loading is deliberately out of scope — see [ARCHITECTURE.md](ARCHITECTURE.md) for the rationale. Use `runtime_capabilities({include:["mcpConnectorClasses"]})` to introspect the available set in your runtime.
+**Closed-set class registry:** the runtime ships a fixed list of `class:` values it recognizes. `RemoteMcpConnector` is the JSON-instantiable class for the stdio-bridged remote MCP pattern; `CallbackMcpConnector` is wired via embedder code only (not configurable from JSON). Plugin-style runtime-arbitrary class loading is deliberately out of scope — see [ARCHITECTURE.md](ARCHITECTURE.md) for the rationale. Use `runtime_capabilities({include:["mcpConnectorClasses"]})` to introspect the available set in your runtime.
 
 ## CLI
 
