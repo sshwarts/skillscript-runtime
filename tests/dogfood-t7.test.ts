@@ -155,19 +155,20 @@ describe("T7 — CLI --help surface", () => {
 });
 
 describe("T7 — examples directory", () => {
-  it("12. curated examples (≥ 6 .skill.md files + README + programmatic demo)", () => {
+  it("12. curated examples (≥ 6 .skill.md files in skillscripts/ + README + programmatic demo)", () => {
     const examplesDir = join(REPO_ROOT, "examples");
-    const cmd = `ls ${examplesDir}/*.skill.md | wc -l`;
+    const skillscriptsDir = join(examplesDir, "skillscripts");
+    const cmd = `ls ${skillscriptsDir}/*.skill.md | wc -l`;
     const count = Number(execSync(cmd, { encoding: "utf8" }).trim());
     expect(count).toBeGreaterThanOrEqual(6);
     expect(existsSync(join(examplesDir, "README.md"))).toBe(true);
     expect(existsSync(join(examplesDir, "programmatic-trace-demo.mjs"))).toBe(true);
-    expect(existsSync(join(examplesDir, "hello.skill.md"))).toBe(true);
+    expect(existsSync(join(skillscriptsDir, "hello.skill.md"))).toBe(true);
   });
 
   it("13. all .skill.md examples lint clean", () => {
-    const examplesDir = join(REPO_ROOT, "examples");
-    const files = execSync(`ls ${examplesDir}/*.skill.md`, { encoding: "utf8" }).trim().split("\n");
+    const skillscriptsDir = join(REPO_ROOT, "examples", "skillscripts");
+    const files = execSync(`ls ${skillscriptsDir}/*.skill.md`, { encoding: "utf8" }).trim().split("\n");
     for (const f of files) {
       // Tier-1 errors break compile; lint returns 0 iff there are no errors.
       execSync(`node ${join(REPO_ROOT, "dist/cli.js")} lint ${f}`, { encoding: "utf8" });

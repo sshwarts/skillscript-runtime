@@ -414,7 +414,7 @@ The Thread 2 acceptance criteria require both bundled-default impls AND AMP-back
 
 ## Bundled default implementations
 
-Out-of-the-box runnable on first install — `skillfile init` + `skillfile run examples/hello.skill` works without any deployment configuration.
+Out-of-the-box runnable on first install — `skillfile init` + `skillfile run examples/skillscripts/hello.skill.md` works without any deployment configuration.
 
 - **MemoryStore default:** SQLite-backed local store with FTS + tag filters. Lives at `~/.skillscript/memory.db` (overridable). Single-process, single-user. Capabilities: `supports_tag_filter: true`, `supports_writes: true`, `supports_semantic: false` (v1 — semantic via SQLite extensions is a v1.x add).
 - **LocalModel defaults:** three Ollama-backed instances — `default` (gemma2:9b), `gemma2` (alias of default), `qwen` (qwen2.5:7b). All at `localhost:11434` (per-instance overridable). Capabilities: `supports_timeout: true`, `supports_max_tokens: true`, `supports_streaming: false` (v1).
@@ -1069,7 +1069,7 @@ All defaults are file paths or `localhost` references — explicitly overridable
 ```
 npm install -g skillscript-runtime
 skillfile init
-skillfile run examples/hello.skill
+skillfile run examples/skillscripts/hello.skill.md
 ```
 
 Three commands. Working installation. Bundled examples demonstrate each form (autonomous, inline, compile-to-skill — mirroring the PRD's Use Cases section).

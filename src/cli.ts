@@ -62,7 +62,7 @@ const COMMAND_HELP: Readonly<Record<string, CommandHelp>> = {
       { flag: "--trace on|off|sample", description: "Record execution trace via FilesystemTraceStore" },
     ],
     examples: [
-      "skillfile execute examples/hello.skill.md",
+      "skillfile execute examples/skillscripts/hello.skill.md",
       "skillfile execute hello --input WHO=Scott",
       "skillfile execute hello --mechanical --trace on",
     ],
@@ -82,7 +82,7 @@ const COMMAND_HELP: Readonly<Record<string, CommandHelp>> = {
       { flag: "--sidecar <path>", description: "Write provenance to this path (default: <output>.provenance.json)" },
     ],
     examples: [
-      "skillfile compile examples/hello.skill.md",
+      "skillfile compile examples/skillscripts/hello.skill.md",
       "skillfile compile hello --format prose",
       "skillfile compile hello --inline-provenance",
     ],
@@ -93,7 +93,7 @@ const COMMAND_HELP: Readonly<Record<string, CommandHelp>> = {
     args: [{ name: "<provenance-path>", description: "Path to a .provenance.json sidecar file" }],
     options: [{ flag: "--json", description: "Emit structured JSON instead of pretty-printed text" }],
     examples: [
-      "skillfile audit examples/hello.skill.provenance.json",
+      "skillfile audit examples/skillscripts/hello.skill.provenance.json",
       "skillfile audit support-response.provenance.json --json",
     ],
   },
@@ -106,7 +106,7 @@ const COMMAND_HELP: Readonly<Record<string, CommandHelp>> = {
       { flag: "--human", description: "Pretty-print findings (default when --json absent)" },
     ],
     examples: [
-      "skillfile lint examples/hello.skill.md",
+      "skillfile lint examples/skillscripts/hello.skill.md",
       "skillfile lint hello --json",
     ],
   },
@@ -336,7 +336,7 @@ async function cmdInit(): Promise<number> {
   connectors.json ${join(HOME_DIR, "connectors.json")}
 
 Next:
-  skillfile run examples/hello.skill.md
+  skillfile run examples/skillscripts/hello.skill.md
 `);
   return 0;
 }
