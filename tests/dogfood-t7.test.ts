@@ -24,8 +24,8 @@ const REPO_ROOT = join(__dirname, "..");
 const PACKAGE_JSON = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as Record<string, unknown>;
 
 describe("T7 — package.json polish", () => {
-  it("1. version is 0.13.5 (build script split: check-published-paths.mjs runs in `build` for host/CI, `build:dist` (tsc + dashboard) is what Docker invokes)", () => {
-    expect(PACKAGE_JSON["version"]).toBe("0.13.5");
+  it("1. version is 0.13.6 (docs/cold-adopter sweep: SKILLSCRIPT_HOME section + default-paths table correction + SqliteMemoryStore reduced-feature note + REGEXP warning log-once)", () => {
+    expect(PACKAGE_JSON["version"]).toBe("0.13.6");
   });
 
   it("2. main + types + bin + engines.node ≥ 22.5 declared", () => {

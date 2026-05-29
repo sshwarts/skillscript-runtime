@@ -11,6 +11,34 @@ The runtime loads `connectors.json` at startup. Missing file → graceful empty 
 
 ---
 
+## `SKILLSCRIPT_HOME` — the root override
+
+Every default path the runtime computes is rooted under `SKILLSCRIPT_HOME`:
+
+| Default path | Resolves to |
+|---|---|
+| Connectors file | `$SKILLSCRIPT_HOME/connectors.json` |
+| Config file | `$SKILLSCRIPT_HOME/skillscript.config.json` |
+| Triggers file | `$SKILLSCRIPT_HOME/triggers.json` |
+| Skills directory (`skillsDir`) | `$SKILLSCRIPT_HOME/skills/` |
+| Sqlite skill store dbPath | `$SKILLSCRIPT_HOME/skills/skills.db` |
+| Sqlite memory store dbPath | `$SKILLSCRIPT_HOME/memory.db` |
+| Trace directory | `$SKILLSCRIPT_HOME/traces/` |
+
+`SKILLSCRIPT_HOME` defaults to `~/.skillscript`. Set the env var to relocate **everything** under a different root — the cleanest multi-instance isolation primitive:
+
+```bash
+# Adopter instance with fully isolated state
+export SKILLSCRIPT_HOME=~/.skillscript-adopter
+skillfile dashboard --host 127.0.0.1 --port 7879
+```
+
+Every derived path now lives under `~/.skillscript-adopter/`; the dev instance at `~/.skillscript/` is untouched. No `--connectors` flag, no explicit `dbPath` overrides needed — defaults follow `SKILLSCRIPT_HOME`. See [`docs/adopter-playbook.md`](adopter-playbook.md) § "Two-instance posture" for the broader pattern.
+
+> **Why this matters for adopter setups.** Without `SKILLSCRIPT_HOME` isolation, two daemons running side-by-side would share `triggers.json`, `skillsDir` (filesystem default), and any other `$HOME/<thing>` default — even if their sqlite `dbPath`s were explicitly distinct. `SKILLSCRIPT_HOME` is the architectural primitive; everything else derives from it.
+
+---
+
 ## Quick start
 
 A typical out-of-the-box `~/.skillscript/connectors.json`:
@@ -86,10 +114,12 @@ The runtime doesn't register a connector for this slot. Useful for explicitly di
 
 | Type | Config fields |
 |---|---|
-| `filesystem` (skill_store) | none — uses the CLI's `skillsDir` |
-| `sqlite` (skill_store) | `dbPath` (default: `<skillsDir>/skills.db`) |
-| `sqlite` (memory_store) | `dbPath` (default: CLI's `MEMORY_DB` or `<skillsDir>/memories.db`) |
+| `filesystem` (skill_store) | none — uses the CLI's `skillsDir` (defaults to `$SKILLSCRIPT_HOME/skills/`) |
+| `sqlite` (skill_store) | `dbPath` (default: `$SKILLSCRIPT_HOME/skills/skills.db`) |
+| `sqlite` (memory_store) | `dbPath` (default: `$SKILLSCRIPT_HOME/memory.db`; `MEMORY_DB` env overrides) |
 | `ollama` (local_model) | `baseUrl` (default: `OLLAMA_BASE_URL` env or `http://localhost:11434`), **`defaultModelTag` (required — e.g., `"gemma2:9b"`, `"llama3.1:8b"`)** |
+
+> **`SqliteMemoryStore` feature surface.** The bundled `sqlite` memory_store is a deliberately minimal reference implementation: `supports_writes` + `supports_tag_filter` are true; `supports_semantic`, `supports_pinning`, `supports_decay_model`, `supports_thread_status_filter` are all false. Rich features (semantic retrieval, pinning, decay scoring, thread-status workflow) come from substrate impls — adopters fork `examples/connectors/MemoryStoreTemplate/` and wire their backing system (memory broker, vector DB, AMP, etc.). The bundled impl exists so the runtime works out-of-box; adopters with richer memory substrates write their own.
 
 Worked Ollama example (because the short form isn't valid for `local_model`):
 

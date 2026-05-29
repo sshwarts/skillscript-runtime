@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.13.6 — 2026-05-29 — Cold-adopter docs sweep + REGEXP warning UX
+
+Fresh-agent Phase 1 dogfood (v0.13.5 install, isolated `SKILLSCRIPT_HOME=
+~/.skillscript-adopter`) completed successfully — the daemon-isolation
+primitive worked end-to-end. Perry's review surfaced 4 docs/UX gaps worth
+addressing before Phase 2.
+
+### Fixed
+
+- **`docs/configuration.md` default-paths table** — the `sqlite` memory_store
+  row said `<skillsDir>/memories.db`. Actual is `$SKILLSCRIPT_HOME/memory.db`
+  (different directory AND filename). The CLI threads `MEMORY_DB =
+  $HOME/memory.db` through bootstrap; the `<skillsDir>/memories.db` fallback
+  in `bootstrap.ts:420` never fires from the CLI launch path. Fixed both
+  rows to use explicit `$SKILLSCRIPT_HOME` paths matching the code.
+- **`docs/configuration.md` SKILLSCRIPT_HOME gap** — the canonical config
+  doc never mentioned the root-override env var despite it being "the
+  architectural primitive" for multi-instance isolation. Added a new top-
+  level section before "Quick start" listing every default path that
+  derives from `SKILLSCRIPT_HOME` + the side-by-side adopter example. Cold
+  adopters reading configuration.md for path config now see the primitive
+  immediately, not buried in adopter-playbook's "Two-instance posture."
+- **`src/connectors/sqlite-skill-store.ts` REGEXP warning** — was emitted
+  on every construction; on macOS node:sqlite builds (no REGEXP), every
+  launch printed the warning. Now log-once per process via module-level
+  flag. The manifest still exposes `regexp_fallback_active` per-instance
+  for adopters who want to introspect programmatically. UX win: clean
+  startup logs on macOS without losing the signal.
+
+### Added
+
+- **`docs/adopter-playbook.md` SqliteMemoryStore reduced-features note** —
+  bundled SqliteMemoryStore reports `false` for `supports_semantic` /
+  `supports_pinning` / `supports_decay_model` / `supports_thread_status_filter`.
+  This is intentional: the bundled impl is a deliberately minimal reference
+  for FTS-style tag/text retrieval. Adopters needing semantic / pinning /
+  decay-scoring fork `MemoryStoreTemplate/` and wire their backing system
+  (memory broker, vector DB, AMP, etc.). Now called out alongside the
+  4-of-6-trigger-sources-parse-but-don't-fire gap in § "Substrate
+  ship-status > Notable gaps the playbook should be honest about."
+
+### Meta-lesson
+
+Phase 1 dogfood validated the v0.13.3 → v0.13.5 docs/install hardening AND
+the SKILLSCRIPT_HOME isolation primitive end-to-end. But the docs that an
+adopter READS (configuration.md) didn't mention the primitive that makes
+multi-instance work — discovery of `SKILLSCRIPT_HOME` required reading
+adopter-playbook or the env section of README. Cold-reader signal beats
+maintainer assumptions: I'd internalized SKILLSCRIPT_HOME as obvious
+because I'd been editing the code; the cold agent needed to grep `cli.ts`
+to find it. **A primitive that's load-bearing for adopter posture deserves
+top-billing in the adopter-facing config doc.**
+
+Same pattern as the v0.13.3 finding ("README links docs that don't ship"):
+both are cases of "the dev's mental model of what's adopter-facing diverged
+from what's actually adopter-accessible." Banked in dev-log §26.
+
 ## 0.13.5 — 2026-05-29 — Build script split: link-guard out of the Docker build path
 
 v0.13.4 (Dockerfile-COPY patch) failed in CI for the same root cause as

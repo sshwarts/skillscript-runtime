@@ -21,6 +21,13 @@ import { extractStatusFromBody, stampApprovalToken } from "../approval.js";
 
 const CONTRACT_VERSION = "1.0.0";
 
+// v0.13.6 — Module-level flag so the REGEXP-fallback warning prints at most
+// once per process, regardless of how many SqliteSkillStore instances get
+// constructed against how many dbPaths. The warning describes a property of
+// the loaded `node:sqlite` binary (build-time absence of REGEXP), not of any
+// particular database file.
+let regexpWarningPrinted = false;
+
 // Lazy-load `node:sqlite` at instance construction time, not module load.
 // Vite (vitest dev pipeline) strips the `node:` prefix and fails to resolve
 // plain `sqlite`; createRequire bypasses Vite entirely. Matches the pattern
@@ -122,11 +129,17 @@ export class SqliteSkillStore implements SkillStore {
     this.db = new DatabaseSync(config.dbPath);
     this.bootstrap();
     this.regexpSupported = this.probeRegexpSupport();
-    if (!this.regexpSupported) {
+    // v0.13.6 — REGEXP support is a property of the loaded node:sqlite
+    // binary, not the dbPath. Multiple instances would otherwise repeat
+    // the same warning. Module-level flag suppresses repeat prints; the
+    // manifest still exposes `regexp_fallback_active` per-instance.
+    if (!this.regexpSupported && !regexpWarningPrinted) {
+      regexpWarningPrinted = true;
       process.stderr.write(
-        `[SqliteSkillStore] REGEXP not supported by node:sqlite build at ${config.dbPath}; ` +
+        `[SqliteSkillStore] REGEXP not supported by node:sqlite build; ` +
         `\`query({name_pattern: ...})\` will fall back to a JS-side filter over a full-table scan ` +
-        `(no index help). Use \`status\` / \`tag\` / \`since\` filters instead where possible.\n`,
+        `(no index help). Use \`status\` / \`tag\` / \`since\` filters instead where possible. ` +
+        `(One-time warning per process; manifest.regexp_fallback_active exposes per-instance state.)\n`,
       );
     }
   }
