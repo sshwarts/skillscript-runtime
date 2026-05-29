@@ -1,5 +1,150 @@
 # Changelog
 
+## 0.13.0 — 2026-05-29 — code-smell sweep (5 surfaces, contract + runtime + connector tightening)
+
+Quality-bar pass through five distinct smells (per Scott's review). All fixes
+probed live; no behavioral surprises. Pre-adoption rule applies — TypeScript
+contract changes are breaking for any adopter type annotations, but no
+external adopters yet.
+
+### Smell #3 — Contract drift (HIGH)
+
+`ManifestInfo.manifest: Record<string, unknown>` and
+`StaticCapabilities.features: Record<string, boolean>` were free-form. Adopters
+reverse-engineered per impl; typos in `# Requires:` lint checks went
+undetected.
+
+- Discriminated `StaticCapabilities` union per kind (`SkillStoreCapabilities`,
+  `MemoryStoreCapabilities`, `LocalModelCapabilities`, `McpConnectorCapabilities`,
+  `AgentConnectorCapabilities`)
+- Per-kind feature unions (closed-set, typo-safe at authoring time):
+  `SkillStoreFeature` (5 flags), `MemoryStoreFeature` (7), `LocalModelFeature`
+  (4 — added `supports_embedding`), `McpConnectorFeature` (3),
+  `AgentConnectorFeature` (6)
+- Parameterized `ManifestInfo<K>` with per-kind manifest interfaces
+  (`SkillStoreManifest`, `MemoryStoreManifest`, `LocalModelManifest`,
+  `McpConnectorManifest`) — curated known fields + `[key: string]: unknown`
+  adopter-extension catch-all
+- All 9 bundled connector impls + 3 fork templates updated to use per-kind
+  return-type annotations on `staticCapabilities()` / `manifest()`
+
+**5 pre-existing bugs caught + fixed** as the type system tightened:
+- `supports_writes` (plural) vs `supports_write` (singular) divergence between
+  features and manifest in 3 files (canonical now: `supports_writes` plural;
+  manifest's duplicate dropped)
+- `supports_embedding` flag was used but not in any union (added to
+  `LocalModelFeature`)
+- `MemoryStoreMcpConnector.features.supports_write` was substrate leakage at
+  bridge layer (dropped; bridge inherits via `staticTools().includes("memory_write")`)
+- `conformance.ts` had a dead `mode === "fts"` arm checking
+  `supports_fts` flag that no connector ever declared
+- `conformance.ts` indexed `caps.features` without discriminating the union;
+  added `if (caps.connector_type !== "skill_store") return` guards
+
+### Smell #4 — Inconsistent error surface (MEDIUM-HIGH)
+
+`makeOpError(kind, msg)` was a 4-line shim returning bare `Error` with tacked-on
+`opKind`. `buildExecutionError` special-cased `OpError instanceof` so
+`makeOpError` outputs always lost the `remediation` surface. Plus bare
+`throw new Error(...)` in `$append` validation. Plus inlined
+`err instanceof Error ? err.message : String(err)` at 5 sites.
+
+- **Dropped `makeOpError`**; 12 call sites now `throw new OpError(message, kind, remediation, target)` with real cold-author remediation strings
+- **2 bare `throw new Error` in `$append`** validation → `OpError` (target initialization remediation)
+- **`messageOf(err: unknown): string` helper** in `errors.ts`; 5 inlined
+  `err instanceof Error ? err.message : String(err)` patterns consolidated
+- **`local-model.ts` silent network catch fixed**: was
+  `.catch(() => [] as string[])` that swallowed all failures + cached empty
+  result forever; now surfaces `manifest.fetch_error: <message>` field on
+  `LocalModelManifest`, doesn't cache on failure (retries next call), writes
+  one deduped stderr warning per unique error. `fetchInstalledModels()` itself
+  no longer swallows HTTP non-2xx either.
+
+Cold author hitting `file_read` against a missing path now sees:
+```json
+{ "class": "OpError",
+  "remediation": "Verify the path exists and is readable, or add `(fallback: \"default\")` to the op for graceful failure." }
+```
+(was `class: "Error"` with no remediation pre-v0.13.)
+
+### Smell #5 — AgentConnector asymmetric default (MEDIUM-HIGH)
+
+`getAgentConnector` silently returned `NoOpAgentConnector` when nothing was
+wired (other `get*` methods throw). `getAgentConnectorClass` had `NoOp as unknown as
+AgentConnectorClass` cast that masked any interface drift.
+
+- **`getAgentConnector(name?)` now throws** on missing — symmetric with
+  `getSkillStore` / `getMcpConnector` / etc.
+- **`getAgentConnectorOrDefault(name?)`** — explicit opt-in for NoOp
+  fallback (used by runtime dispatch paired with `hasAgentConnector()` check
+  to flag `delivery_skipped`)
+- **`getAgentConnectorClassOrDefault(name?)`** — direct typing; no `as unknown
+  as` cast. If `NoOpAgentConnector` ever drifts from `AgentConnectorClass`,
+  the compiler reports it.
+
+Runtime behavior on the wire is unchanged (NoOp dispatch still records
+`delivery_skipped: true` with remediation); the registry surface is now
+explicit about which path the caller chose.
+
+### Smell #7 — SqliteSkillStore: silent REGEXP fallback + fragile transactions (MEDIUM)
+
+`node:sqlite` doesn't ship with REGEXP. Pre-v0.13 query path tried `name REGEXP`
+in SQL, caught the failure, rebuilt the query without REGEXP, and did a JS-side
+regex over a full table scan. Operator had no idea the index was bypassed.
+Plus three near-identical BEGIN/COMMIT/ROLLBACK blocks.
+
+- **REGEXP support probed once at construction**. When unsupported: write
+  stderr warning, set internal flag, fall back to JS-side filter proactively
+  (no try/catch on every query), surface `manifest.regexp_fallback_active:
+  true` for `runtime_capabilities` discovery
+- **`withTransaction<T>(fn: () => T): T` helper** consolidates the three
+  transaction blocks (`store()`, `delete()`, `update_status()`). The "ROLLBACK
+  after a successful COMMIT throws" edge case lives in the helper, documented
+  once
+- **`delete()`'s post-commit `SkillNotFoundError` throw moved outside** the
+  transaction (it's reporting on commit completion, not a rollback condition)
+- **`skillRow` JSDoc documents** the cascade-delete ambiguity (can't
+  distinguish "never existed" from "deleted between calls" — fundamental
+  limitation under hard-cascade)
+
+### Smell #8 — SqliteMemoryStore: FTS gotchas (MEDIUM)
+
+`domain_tags` filter was a post-FTS JS substring scan on the JSON tags column
+(linear, wrong-ranked). `sanitizeFtsQuery` wrapped every token in quotes
+including operators — `"a OR b"` became literal phrase search for the word "OR",
+silently breaking FTS5 boolean syntax.
+
+- **Normalized `memory_tags(memory_id, tag)` relation** + `(tag)` index. Tag
+  filter pushed into SQL via `EXISTS` join. One-time backfill on bootstrap
+  from existing JSON when relation is empty + memories has tags-bearing rows
+  (adopter migrations from earlier versions are automatic)
+- **Semantic change**: tag filter is now **exact match** (was substring); tag
+  `"production"` no longer matches `"production-staging"`. Surfaced in
+  manifest as `tag_filter_semantic: "exact match via indexed memory_tags
+  relation"`
+- **`raw:` prefix escape hatch** for FTS5 boolean syntax: `raw:foo OR bar`
+  passes through verbatim; caller takes responsibility for FTS5 syntax
+  correctness. Default sanitizer behavior accurately documented:
+  phrase-tokens, boolean ops disabled. Surfaced in manifest as
+  `fts_query_semantic: "phrase-tokens (boolean ops disabled); use raw: prefix
+  for FTS5 syntax"`
+
+### Test surface
+
+1271/1272 tests passing (YouTrack env-gate only, pre-existing). New tests
+across the 5 smell-fix arcs all green. LOC narrow-core 9300 → 9550 (~150 LOC
+of contract / connector tightening; `types.ts` per-kind unions + manifest
+interfaces dominate).
+
+### Notes
+
+- No new dependencies. No connector contract additions beyond the type
+  refinement. No substrate-config changes.
+- Every fix was probed live before commit — file_read OpError surface; Ollama
+  fetch_error field; SqliteSkillStore REGEXP fallback warning + manifest
+  field; memory_tags exact match + raw: escape; AgentConnector symmetric
+  throw + OrDefault opt-in.
+
 ## 0.12.0 — 2026-05-28 — McpConnectorTemplate fork skeleton + McpConnector contract audit
 
 Closes the v0.10–v0.12 connector-house-in-order arc. Same pattern as v0.10

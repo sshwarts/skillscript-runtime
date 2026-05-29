@@ -252,13 +252,14 @@ describe("SqliteSkillStore — auto-stamp on store()", () => {
 });
 
 describe("SqliteSkillStore — manifest + staticCapabilities", () => {
-  it("manifest reports kind=sqlite + feature flags", async () => {
+  it("manifest reports kind=sqlite", async () => {
     const store = new SqliteSkillStore({ dbPath: ":memory:" });
     try {
       const m = await store.manifest();
       expect(m.capabilities_version).toBe("1");
-      expect((m.manifest as Record<string, unknown>)["kind"]).toBe("sqlite");
-      expect((m.manifest as Record<string, unknown>)["supports_versioning"]).toBe(true);
+      expect(m.manifest.kind).toBe("sqlite");
+      // v0.13.0 — capability flags moved out of manifest. Source of truth
+      // is `staticCapabilities().features`; see next test.
     } finally {
       store.close();
     }

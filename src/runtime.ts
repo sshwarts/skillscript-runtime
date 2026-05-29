@@ -18,6 +18,7 @@ import {
   UnresolvedVariableError,
   TypeMismatchError,
   MissingSkillReferenceError,
+  messageOf,
 } from "./errors.js";
 import { TraceBuilder, shouldTraceFire } from "./trace.js";
 import type { TraceConfig, TraceStore } from "./trace.js";
@@ -390,9 +391,12 @@ export async function execute(
   // (T7.1). `agent: <name>` routes as `kind: "augment"` (v0.8.0 rename
   // of legacy `prompt-context:`); `template: <name>` as `kind: "template"`.
   // Skipped in mechanical mode so previews don't deliver placeholder content
-  // to real substrates. Connector fallback: Registry.getAgentConnector()
+  // to real substrates. Connector fallback: Registry.getAgentConnectorOrDefault()
   // returns a transparent NoOpAgentConnector when no adapter is wired, so
-  // the dispatch loop never throws on missing-substrate; the no-op logs to stderr.
+  // the dispatch loop never throws on missing-substrate; we pair with the
+  // explicit `hasAgentConnector()` check to flag `delivery_skipped` (v0.13.0
+  // — was `getAgentConnector()` with silent fallback; that asymmetry hid
+  // wiring gaps until prod).
   const agentDeliveryReceipts: AgentDeliveryReceiptRecord[] = [];
   if (ctx.mechanical !== true) {
     for (const decl of outputDecls) {
@@ -402,7 +406,7 @@ export async function execute(
       if (decl.kind !== "agent" && decl.kind !== "template") continue;
       const key = `${decl.kind}:${decl.target}`;
       const body = String(outputs[key] ?? emissions.join("\n"));
-      const agent = ctx.registry.getAgentConnector();
+      const agent = ctx.registry.getAgentConnectorOrDefault();
       // v0.9.6 audit Q8 — build DeliveryMeta per the locked v1.0 shape.
       // Runtime auto-fills dispatch_id, sent_at, origin; threads optional
       // event_type from frontmatter (`# Event-type:` fallback per Q9).
@@ -570,10 +574,11 @@ async function execOpInner(
       if (existing === undefined) {
         // Lint should have caught this at compile; defensive guard at runtime
         // for skipLintPreflight paths or programmatic execution.
-        throw new Error(
-          `\`$append ${targetName} ...\`: target variable not initialized. ` +
-          `Add \`$set ${targetName} = []\` before the \`$append\`, or declare ` +
-          `in \`# Vars: ${targetName}=[]\`.`,
+        throw new OpError(
+          `\`$append ${targetName} ...\`: target variable not initialized.`,
+          "$append",
+          `Initialize via \`$set ${targetName} = []\` (list-append) or \`$set ${targetName} = ""\` (string-concat), or declare in \`# Vars: ${targetName}=[]\`.`,
+          targetName,
         );
       }
       const substituted = substituteRuntime(op.setValue!, vars);
@@ -601,9 +606,11 @@ async function execOpInner(
         vars.set(targetName, concatenated);
         return { lastBoundVar: targetName, lastValue: concatenated };
       }
-      throw new Error(
-        `\`$append ${targetName} ...\`: target must be a list or string (got ${existing === null ? "null" : typeof existing}). ` +
+      throw new OpError(
+        `\`$append ${targetName} ...\`: target must be a list or string (got ${existing === null ? "null" : typeof existing}).`,
+        "$append",
         `Initialize via \`$set ${targetName} = []\` for list-append, or \`$set ${targetName} = ""\` for string-concat.`,
+        targetName,
       );
     }
     case "?": {
@@ -644,7 +651,12 @@ async function execOpInner(
       } else {
         const tokens = tokenizeShellArgs(body);
         if (tokens.length === 0) {
-          throw makeOpError("@", `Empty \`@\` op body in target '${targetName}'.`);
+          throw new OpError(
+            `Empty \`@\` op body in target '${targetName}'.`,
+            "@",
+            "Provide a shell command body, e.g., `@ echo hello`.",
+            targetName,
+          );
         }
         const [bin, ...args] = tokens;
         stdout = await execShellCommand(bin!, args, shellTimeoutMs);
@@ -673,9 +685,11 @@ async function execOpInner(
       // routed through else: / # OnError:. Closes the silent-fall-through
       // security bug pattern (subsequent `apply:` running on a "no").
       if (isDeclineResponse(response)) {
-        throw makeOpError(
-          "??",
+        throw new OpError(
           `User declined at \`??\` prompt: '${promptStr}' (response: '${response}'). Dependent targets short-circuited.`,
+          "??",
+          "If decline should not short-circuit, handle the response in an `else:` branch or `# OnError:` fallback.",
+          targetName,
         );
       }
       return {
@@ -722,13 +736,15 @@ async function execOpInner(
             target: targetName,
             opKind: "file_read",
             value: fallbackValue,
-            reason: `file_read failed: ${(err as Error).message}`,
+            reason: `file_read failed: ${messageOf(err)}`,
           });
           return { lastBoundVar: op.outputVar ?? flatKey, lastValue: fallbackValue };
         }
-        throw makeOpError(
+        throw new OpError(
+          `\`file_read(path="${path}")\` in target '${targetName}' failed: ${messageOf(err)}`,
           "file_read",
-          `\`file_read(path="${path}")\` in target '${targetName}' failed: ${err instanceof Error ? err.message : String(err)}`,
+          "Verify the path exists and is readable, or add `(fallback: \"default\")` to the op for graceful failure.",
+          targetName,
         );
       }
       vars.set(flatKey, content);
@@ -750,9 +766,11 @@ async function execOpInner(
         await fsMkdir(pathDirname(path), { recursive: true });
         await fsWriteFile(path, content, "utf8");
       } catch (err) {
-        throw makeOpError(
+        throw new OpError(
+          `\`file_write(path="${path}")\` in target '${targetName}' failed: ${messageOf(err)}`,
           "file_write",
-          `\`file_write(path="${path}")\` in target '${targetName}' failed: ${err instanceof Error ? err.message : String(err)}`,
+          "Verify the path is writable. Parent directory is auto-created; check filesystem permissions.",
+          targetName,
         );
       }
       // v0.9.2 — P2.5 transcript line on successful write so cold authors
@@ -825,7 +843,7 @@ async function execOpInner(
           dispatched.push({
             connector: entry.name,
             ok: false,
-            error: err instanceof Error ? err.message : String(err),
+            error: messageOf(err),
           });
         }
       }
@@ -838,9 +856,11 @@ async function execOpInner(
       const body = substituteRuntime(op.body, vars);
       const m = /^([A-Za-z_][\w:-]*)\s*([\s\S]*)$/.exec(body);
       if (m === null) {
-        throw makeOpError(
-          "$",
+        throw new OpError(
           `Malformed \`$\` op body: '${body}' — expected 'TOOL_NAME key=value ...'`,
+          "$",
+          "Use `$ tool_name key=value ...` syntax. See `help({topic: 'ops'})` for examples.",
+          targetName,
         );
       }
       const toolName = m[1]!;
@@ -876,7 +896,12 @@ async function execOpInner(
           if (op.outputVar !== undefined) vars.set(op.outputVar, childResult);
           return { lastBoundVar: op.outputVar ?? flatKey, lastValue: childResult };
         } catch (err) {
-          throw makeOpError("$", `\`$ execute_skill\` failed: ${(err as Error).message}`);
+          throw new OpError(
+            `\`$ execute_skill\` failed: ${messageOf(err)}`,
+            "$",
+            "Inspect the inner error; the child skill may have its own runtime failures. See its trace via `skillfile fires <skill>`.",
+            targetName,
+          );
         }
       }
 
@@ -890,15 +915,22 @@ async function execOpInner(
       if (toolName === "json_parse" && op.mcpConnector === undefined) {
         const input = argsStr.trim();
         if (input === "") {
-          throw makeOpError("$", `\`$ json_parse\` requires an input expression (target '${targetName}').`);
+          throw new OpError(
+            `\`$ json_parse\` requires an input expression (target '${targetName}').`,
+            "$",
+            "Provide input: `$ json_parse $(VAR) -> OUT` or `$ json_parse '{\"k\":1}' -> OUT`.",
+            targetName,
+          );
         }
         let parsed: unknown;
         try {
           parsed = JSON.parse(input);
         } catch (err) {
-          throw makeOpError(
+          throw new OpError(
+            `\`$ json_parse\` input is not valid JSON. Got: '${input.slice(0, 40)}${input.length > 40 ? "..." : ""}' — ${messageOf(err)}`,
             "$",
-            `\`$ json_parse\` input is not valid JSON. Got: '${input.slice(0, 40)}${input.length > 40 ? "..." : ""}' — ${(err as Error).message}`,
+            "Ensure the input is valid JSON. Use the `|json` filter on a variable to pre-format if it isn't already structured.",
+            targetName,
           );
         }
         vars.set(flatKey, parsed);
@@ -939,9 +971,11 @@ async function execOpInner(
         });
         const blocking = diagnostics.find((d) => d.severity === "error");
         if (blocking !== undefined) {
-          throw makeOpError(
-            "$",
+          throw new OpError(
             `${blocking.message} (Defense-in-depth: lint should have caught this earlier.)`,
+            "$",
+            "Run `skillfile lint` against the skill to surface this at compile time.",
+            targetName,
           );
         }
       }
@@ -993,7 +1027,7 @@ async function execOpInner(
             target: targetName,
             opKind: "$",
             value: dollarFallback,
-            reason: `$ ${connectorLabel}${toolName} failed: ${(err as Error).message}`,
+            reason: `$ ${connectorLabel}${toolName} failed: ${messageOf(err)}`,
           });
           return { lastBoundVar: op.outputVar ?? flatKey, lastValue: dollarFallback };
         }
@@ -1009,9 +1043,11 @@ async function execOpInner(
         (rawResult as { isError?: unknown }).isError === true
       ) {
         const innerText = extractToolErrorText(rawResult);
-        throw makeOpError(
-          "$",
+        throw new OpError(
           `tool ${connectorLabel}${toolName} returned isError: ${innerText}`,
+          "$",
+          "The tool itself failed; inspect the inner error text. Add `(fallback: ...)` to the op for graceful failure.",
+          targetName,
         );
       }
       const bindValue = unwrapToolResult(rawResult);
@@ -1157,12 +1193,6 @@ async function execOpInner(
     }
   }
   return { lastBoundVar: null, lastValue: undefined };
-}
-
-function makeOpError(opKind: string, message: string): Error & { opKind: string } {
-  const err = new Error(message) as Error & { opKind: string };
-  err.opKind = opKind;
-  return err;
 }
 
 /**
@@ -1314,7 +1344,11 @@ async function execShellCommand(bin: string, args: string[], timeoutMs: number):
     child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
     child.on("error", (err) => {
       clearTimeout(timer);
-      reject(makeOpError("@", `Failed to spawn '${bin}': ${err.message}`));
+      reject(new OpError(
+        `Failed to spawn '${bin}': ${err.message}`,
+        "@",
+        "Verify the binary is on PATH and executable. Check for typos in the `@` op body.",
+      ));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
@@ -1324,9 +1358,10 @@ async function execShellCommand(bin: string, args: string[], timeoutMs: number):
       }
       if (code !== 0) {
         const trimmed = stderr.trim();
-        reject(makeOpError(
-          "@",
+        reject(new OpError(
           `Shell command '${bin}' exited with code ${code}${trimmed ? `: ${trimmed.slice(0, 200)}` : ""}.`,
+          "@",
+          "Inspect the stderr output. Add `(fallback: ...)` to the `@` op for graceful failure on non-zero exit.",
         ));
         return;
       }

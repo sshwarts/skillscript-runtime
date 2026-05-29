@@ -84,10 +84,13 @@ async function executeSkill(source: string, registry: Registry, mechanical = fal
 }
 
 describe("AgentConnector — dispatch wiring", () => {
-  it("1. Registry returns NoOpAgentConnector when no adapter is registered", () => {
+  it("1. Registry — getAgentConnector throws on missing (symmetric); getAgentConnectorOrDefault returns NoOp (explicit opt-in)", () => {
     const reg = new Registry();
     expect(reg.hasAgentConnector()).toBe(false);
-    const agent = reg.getAgentConnector();
+    // v0.13.0 — getAgentConnector now throws on missing, matching the
+    // other get* methods. Silent NoOp fallback moved to getAgentConnectorOrDefault.
+    expect(() => reg.getAgentConnector()).toThrow(/AgentConnector 'primary' not registered/);
+    const agent = reg.getAgentConnectorOrDefault();
     expect(agent).toBeInstanceOf(NoOpAgentConnector);
   });
 

@@ -9,7 +9,7 @@ import type {
   SkillStatus,
   SkillFilter,
   VersionInfo,
-  StaticCapabilities,
+  SkillStoreCapabilities,
   ManifestInfo,
 } from "./types.js";
 import {
@@ -88,7 +88,7 @@ export interface SqliteSkillStoreConfig {
  * own adopter SkillStore impl).
  */
 export class SqliteSkillStore implements SkillStore {
-  static staticCapabilities(): StaticCapabilities {
+  static staticCapabilities(): SkillStoreCapabilities {
     return {
       connector_type: "skill_store",
       implementation: "SqliteSkillStore",
@@ -104,6 +104,14 @@ export class SqliteSkillStore implements SkillStore {
   }
 
   private readonly db: DatabaseSync;
+  /**
+   * v0.13.0 — REGEXP support probed once at construction. `node:sqlite`
+   * doesn't include REGEXP by default. When unsupported, `query()` with
+   * `name_pattern` falls back to a JS-side filter over a full-table scan
+   * (no index help). Surfaced in `manifest()` so adopters notice the
+   * degradation; was a silent fallback before.
+   */
+  private readonly regexpSupported: boolean;
 
   constructor(config: SqliteSkillStoreConfig) {
     if (config.dbPath !== ":memory:") {
@@ -113,6 +121,44 @@ export class SqliteSkillStore implements SkillStore {
     const DatabaseSync = loadDatabaseSync();
     this.db = new DatabaseSync(config.dbPath);
     this.bootstrap();
+    this.regexpSupported = this.probeRegexpSupport();
+    if (!this.regexpSupported) {
+      process.stderr.write(
+        `[SqliteSkillStore] REGEXP not supported by node:sqlite build at ${config.dbPath}; ` +
+        `\`query({name_pattern: ...})\` will fall back to a JS-side filter over a full-table scan ` +
+        `(no index help). Use \`status\` / \`tag\` / \`since\` filters instead where possible.\n`,
+      );
+    }
+  }
+
+  private probeRegexpSupport(): boolean {
+    try {
+      this.db.prepare(`SELECT 1 WHERE 'a' REGEXP 'a'`).get();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * v0.13.0 — transaction helper. Wraps a synchronous block in
+   * BEGIN/COMMIT/ROLLBACK with the "ROLLBACK after COMMIT may itself fail"
+   * edge case absorbed once. Three callers (`store()`, `delete()`,
+   * `update_status()`) consolidate here.
+   */
+  private withTransaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN");
+    try {
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (err) {
+      // ROLLBACK after a successful COMMIT throws ("cannot rollback - no
+      // transaction is active") — that's a no-op for our purposes. Swallow
+      // the ROLLBACK error; always re-raise the original.
+      try { this.db.exec("ROLLBACK"); } catch { /* no-op */ }
+      throw err;
+    }
   }
 
   private bootstrap(): void {
@@ -147,15 +193,18 @@ export class SqliteSkillStore implements SkillStore {
     `);
   }
 
-  async manifest(): Promise<ManifestInfo> {
+  async manifest(): Promise<ManifestInfo<"skill_store">> {
     return {
       capabilities_version: "1",
       manifest: {
         kind: "sqlite",
-        supports_write: true,
-        supports_versioning: true,
-        supports_tag_filter: true,
+        // v0.13.0 — capability flags moved to StaticCapabilities.features only.
+        // Manifest is substrate metadata (kind, paths, runtime context),
+        // NOT a duplicate capability surface.
         tag_filter_note: "json_extract on metadata.tags; O(n) table scan",
+        // v0.13.0 — surfaces when REGEXP isn't compiled into node:sqlite
+        // so adopters can see the index-bypass at runtime_capabilities.
+        regexp_fallback_active: !this.regexpSupported,
       },
     };
   }
@@ -202,10 +251,12 @@ export class SqliteSkillStore implements SkillStore {
       where.push(`status IN (${placeholders})`);
       wanted.forEach((s, i) => { params[`$status${i}`] = s; });
     }
-    if (filter?.name_pattern !== undefined) {
+    if (filter?.name_pattern !== undefined && this.regexpSupported) {
       where.push(`name REGEXP $name_pattern`);
       params["$name_pattern"] = filter.name_pattern;
     }
+    // v0.13.0 — JS-side `name_pattern` filter applied post-query when
+    // REGEXP is unsupported. Proactive instead of catch-and-retry.
     if (filter?.since !== undefined) {
       where.push(`updated_at >= $since`);
       params["$since"] = filter.since;
@@ -231,29 +282,15 @@ export class SqliteSkillStore implements SkillStore {
     if (filter?.offset !== undefined) sql += ` OFFSET $offset`;
     if (filter?.limit !== undefined) params["$limit"] = filter.limit;
     if (filter?.offset !== undefined) params["$offset"] = filter.offset;
-    let rows: Array<Record<string, unknown>>;
-    try {
-      rows = this.db.prepare(sql).all(params) as Array<Record<string, unknown>>;
-    } catch (err) {
-      // REGEXP isn't built into node:sqlite by default. If a name_pattern
-      // filter is supplied and REGEXP fails, fall back to a JS-side regex
-      // over the unfiltered set. Acceptable since FilesystemSkillStore takes
-      // the same scan-and-filter approach.
-      if (filter?.name_pattern !== undefined && /REGEXP/.test((err as Error).message ?? "")) {
-        const rebuiltWhere = where.filter((w) => !w.includes("REGEXP"));
-        const rebuiltSql = `SELECT name, current_version, content_hash, status, source, description,
-                                   metadata_json, created_at, updated_at, status_changed_at
-                              FROM skills ${rebuiltWhere.length > 0 ? `WHERE ${rebuiltWhere.join(" AND ")}` : ""}
-                              ORDER BY name`;
-        delete params["$name_pattern"];
-        const all = this.db.prepare(rebuiltSql).all(params) as Array<Record<string, unknown>>;
-        const pat = new RegExp(filter.name_pattern);
-        rows = all.filter((r) => pat.test(r["name"] as string));
-        if (filter?.offset !== undefined) rows = rows.slice(filter.offset);
-        if (filter?.limit !== undefined) rows = rows.slice(0, filter.limit);
-      } else {
-        throw err;
-      }
+    let rows = this.db.prepare(sql).all(params) as Array<Record<string, unknown>>;
+    // v0.13.0 — apply JS-side `name_pattern` filter when REGEXP unsupported.
+    // Operator was warned at construction; manifest.regexp_fallback_active
+    // reflects this at runtime_capabilities.
+    if (filter?.name_pattern !== undefined && !this.regexpSupported) {
+      const pat = new RegExp(filter.name_pattern);
+      rows = rows.filter((r) => pat.test(r["name"] as string));
+      if (filter?.offset !== undefined) rows = rows.slice(filter.offset);
+      if (filter?.limit !== undefined) rows = rows.slice(0, filter.limit);
     }
     return rows.map((r) => this.metadataRowToMeta(r["name"] as string, r));
   }
@@ -367,22 +404,18 @@ export class SqliteSkillStore implements SkillStore {
   }
 
   async delete(name: string): Promise<void> {
-    this.db.exec("BEGIN");
-    try {
-      const result = this.db.prepare(
+    const result = this.withTransaction(() => {
+      const r = this.db.prepare(
         `DELETE FROM skills WHERE name = $name`,
       ).run({ $name: name });
       this.db.prepare(
         `DELETE FROM skill_versions WHERE name = $name`,
       ).run({ $name: name });
-      this.db.exec("COMMIT");
-      if (result.changes === 0) throw new SkillNotFoundError(name, "SqliteSkillStore");
-    } catch (err) {
-      // ROLLBACK is safe even after a COMMIT — sqlite returns an error we
-      // ignore. Only re-raise the caught error.
-      try { this.db.exec("ROLLBACK"); } catch { /* no-op */ }
-      throw err;
-    }
+      return r;
+    });
+    // Post-commit no-rows check — the transaction completed cleanly, but
+    // there was nothing to delete. Same shape as the other "not found" misses.
+    if (result.changes === 0) throw new SkillNotFoundError(name, "SqliteSkillStore");
   }
 
   async update_status(name: string, status: SkillStatus): Promise<VersionInfo> {
@@ -397,8 +430,7 @@ export class SqliteSkillStore implements SkillStore {
     const version = shortHash(content_hash);
     const nowSec = Math.floor(Date.now() / 1000);
 
-    this.db.exec("BEGIN");
-    try {
+    this.withTransaction(() => {
       this.db.prepare(
         `UPDATE skills SET
             current_version = $version,
@@ -431,11 +463,7 @@ export class SqliteSkillStore implements SkillStore {
         $previous: previous_status,
         $changedAt: nowSec,
       });
-      this.db.exec("COMMIT");
-    } catch (err) {
-      try { this.db.exec("ROLLBACK"); } catch { /* no-op */ }
-      throw err;
-    }
+    });
 
     return {
       name,
@@ -451,6 +479,14 @@ export class SqliteSkillStore implements SkillStore {
     this.db.close();
   }
 
+  /**
+   * v0.13.0 — Throws `SkillNotFoundError` on miss. Cannot distinguish
+   * "never existed" from "deleted between calls" — hard-cascade `delete()`
+   * removes the skill row + all skill_versions, so the substrate has no
+   * evidence either way. Callers needing that distinction must track
+   * delete events themselves (e.g., watch their own `delete()` calls) or
+   * switch to soft-delete (tombstone via `update_status("Disabled")`).
+   */
   private skillRow(name: string): Record<string, unknown> {
     const row = this.db.prepare(
       `SELECT name, current_version, content_hash, status, source, description,

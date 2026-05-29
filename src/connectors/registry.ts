@@ -139,16 +139,28 @@ export class Registry {
     return must(this.mcpConnectors, name, "McpConnector").instance;
   }
   /**
-   * Returns the registered AgentConnector or a transparent `NoOpAgentConnector`
-   * when none is wired. Unlike the other `get*` methods, this never throws —
-   * the no-op fallback lets `# Output: agent:` dispatch resolve
-   * cleanly in test/dev environments without an explicit substrate setup.
-   * Adopters wire a real impl for production via `registerAgentConnector`.
+   * Returns the registered AgentConnector. Throws when missing — symmetric
+   * with `getSkillStore` / `getMcpConnector` / etc. v0.13.0 — was silent
+   * NoOp fallback; that pattern hid wiring gaps until prod (skills with
+   * `# Output: agent:` ran "successfully" in dev with no real delivery).
+   * Callers that want graceful-no-op behavior use
+   * `getAgentConnectorOrDefault()` explicitly.
    */
   getAgentConnector(name = "primary"): AgentConnector {
+    return must(this.agentConnectors, name, "AgentConnector").instance;
+  }
+
+  /**
+   * Returns the registered AgentConnector, or `NoOpAgentConnector` when none
+   * is wired. Use this when you genuinely want the no-op default (test rigs,
+   * runtime dispatch paths that pair the return with a separate
+   * `hasAgentConnector()` check to record `delivery_skipped`). v0.13.0 —
+   * explicit opt-in replaces the silent fallback of pre-v0.13
+   * `getAgentConnector()`.
+   */
+  getAgentConnectorOrDefault(name = "primary"): AgentConnector {
     const entry = this.agentConnectors.get(name);
-    if (entry !== undefined) return entry.instance;
-    return DEFAULT_AGENT_CONNECTOR;
+    return entry !== undefined ? entry.instance : DEFAULT_AGENT_CONNECTOR;
   }
 
   // ─── Get class (linter offline lookup) ──────────────────────────────────
@@ -165,10 +177,25 @@ export class Registry {
   getMcpConnectorClass(name = "primary"): McpConnectorClass {
     return must(this.mcpConnectors, name, "McpConnector").ctor;
   }
+  /**
+   * Returns the registered AgentConnector class. Throws when missing —
+   * symmetric with the other `get*Class` methods. v0.13.0 — was silent
+   * fallback to `NoOpAgentConnector` via `as unknown as` cast; the cast
+   * masked any interface drift.
+   */
   getAgentConnectorClass(name = "primary"): AgentConnectorClass {
+    return must(this.agentConnectors, name, "AgentConnector").ctor;
+  }
+
+  /**
+   * Returns the registered AgentConnector class, or `NoOpAgentConnector`
+   * when none is wired. Direct typing — no `unknown` cast. If
+   * `NoOpAgentConnector` ever drifts from `AgentConnectorClass`, the
+   * compiler tells us here.
+   */
+  getAgentConnectorClassOrDefault(name = "primary"): AgentConnectorClass {
     const entry = this.agentConnectors.get(name);
-    if (entry !== undefined) return entry.ctor;
-    return NoOpAgentConnector as unknown as AgentConnectorClass;
+    return entry !== undefined ? entry.ctor : NoOpAgentConnector;
   }
 
   // ─── List distinct classes per kind ─────────────────────────────────────

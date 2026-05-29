@@ -177,7 +177,15 @@ const CORE_PATHS = [
 // from examples/ to src/connectors/ so runtime hosts (MCP server + dashboard)
 // can honor substrate config from connectors.json. Per Scott direction
 // (2026-05-28) — MCP and dashboard MUST honor whatever skillstore is configured.
-const NARROW_MAX_LOC = 9300;
+// v0.13:  nudged narrow ceiling 9300 → 9550 for the contract-drift fix arc.
+// types.ts grew ~140 LOC for per-kind discriminated capabilities + manifest
+// interfaces + feature-flag unions. runtime.ts net-grew ~30 LOC turning
+// `makeOpError(kind, msg)` shim into proper `new OpError(msg, kind, remediation, target)`
+// throws with real cold-author remediation strings at 14 sites. memory-store.ts
+// + sqlite-skill-store.ts each grew for normalized tag relation / REGEXP probe /
+// withTransaction helper / fetch_error surfacing — the connector-house-in-order
+// arc's quality-bar tightening continues paying down.
+const NARROW_MAX_LOC = 9550;
 const NARROW_MAX_FILES = 22;
 const BROAD_INFO_LOC = 9500;
 const BROAD_INFO_FILES = 28;

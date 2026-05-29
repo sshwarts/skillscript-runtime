@@ -148,7 +148,8 @@ export const SkillStoreConformance = {
         name: "update_status: previous_status populated when supports_audit_trail=true",
         run: withInstance(fixture, async (store) => {
           const caps = fixture.ctor.staticCapabilities();
-          if (caps.features["supports_audit_trail"] !== true) return; // skip; feature opt-out
+          if (caps.connector_type !== "skill_store") return; // fixture mismatch — skip
+          if (caps.features["supports_audit_trail"] !== true) return; // feature opt-out
           await store.store("conformance-test", SAMPLE_SKILL);
           const v = await store.update_status("conformance-test", "Approved");
           assert(v.previous_status !== undefined, "audit-trail impl must populate previous_status");
@@ -160,6 +161,7 @@ export const SkillStoreConformance = {
         name: "filter narrows by status when supports_writes=true",
         run: withInstance(fixture, async (store) => {
           const caps = fixture.ctor.staticCapabilities();
+          if (caps.connector_type !== "skill_store") return; // fixture mismatch — skip
           if (caps.features["supports_writes"] !== true) return;
           await store.store("draft-a", SAMPLE_SKILL);
           await store.store("approved-b", SAMPLE_SKILL);
@@ -202,14 +204,15 @@ export const MemoryStoreConformance = {
       },
       {
         category: "feature-behavior",
-        name: "supportedModes that declare true actually work",
+        name: "optional modes (semantic, rerank) work when declared",
         run: withInstance(fixture, async (store) => {
           const caps = fixture.ctor.staticCapabilities();
-          const modes = ["fts", "semantic", "rerank"] as const;
-          for (const mode of modes) {
-            const flag = `supports_${mode === "fts" ? "fts" : mode}` as const;
+          if (caps.connector_type !== "memory_store") return; // fixture mismatch — skip
+          // FTS is the baseline mode (always supported); only check optionals.
+          const optionalModes = ["semantic", "rerank"] as const;
+          for (const mode of optionalModes) {
+            const flag = `supports_${mode}` as const;
             if (caps.features[flag] === true) {
-              // Should not throw; empty result acceptable.
               const r = await store.query({ query: "test", limit: 1, mode });
               assert(Array.isArray(r), `mode='${mode}' must return an array`);
             }

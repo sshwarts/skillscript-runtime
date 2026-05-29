@@ -33,7 +33,7 @@ import type {
   PortableMemory,
   MemoryWrite,
   MemoryWriteRecord,
-  StaticCapabilities,
+  MemoryStoreCapabilities,
   ManifestInfo,
 } from "../../../src/connectors/types.js";
 
@@ -54,7 +54,7 @@ export class MemoryStoreTemplate implements MemoryStore {
    * before exercising features. Set conservatively — overclaiming triggers
    * cryptic downstream failures; underclaiming hides usable features.
    */
-  static staticCapabilities(): StaticCapabilities {
+  static staticCapabilities(): MemoryStoreCapabilities {
     return {
       connector_type: "memory_store",
       implementation: "MemoryStoreTemplate", // ← rename to your class name
@@ -89,7 +89,7 @@ export class MemoryStoreTemplate implements MemoryStore {
    *       supported_modes: ["fts"], score_range: "unbounded",
    *       supported_filters: ["domain_tags"], supports_write: true } }
    */
-  async manifest(): Promise<ManifestInfo> {
+  async manifest(): Promise<ManifestInfo<"memory_store">> {
     // TODO — return a snapshot of your substrate's capabilities.
     throw new Error("TODO: manifest() — return substrate-specific capability snapshot.");
   }

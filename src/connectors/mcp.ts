@@ -1,7 +1,7 @@
 import type {
   McpConnector,
   McpDispatchCtx,
-  StaticCapabilities,
+  McpConnectorCapabilities,
   ManifestInfo,
 } from "./types.js";
 
@@ -26,7 +26,7 @@ export type DispatchFn = (
 ) => Promise<unknown>;
 
 export class CallbackMcpConnector implements McpConnector {
-  static staticCapabilities(): StaticCapabilities {
+  static staticCapabilities(): McpConnectorCapabilities {
     return {
       connector_type: "mcp_connector",
       implementation: "CallbackMcpConnector",
@@ -49,7 +49,7 @@ export class CallbackMcpConnector implements McpConnector {
     return this.dispatchFn(toolName, args, ctxOverrides);
   }
 
-  async manifest(): Promise<ManifestInfo> {
+  async manifest(): Promise<ManifestInfo<"mcp_connector">> {
     return {
       capabilities_version: "1",
       manifest: {

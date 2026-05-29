@@ -8,7 +8,7 @@ import type {
   MemoryWriteRecord,
   PortableMemory,
   QueryFilters,
-  StaticCapabilities,
+  MemoryStoreCapabilities,
   ManifestInfo,
 } from "./types.js";
 
@@ -70,7 +70,7 @@ export interface SqliteMemoryStoreConfig {
 }
 
 export class SqliteMemoryStore implements MemoryStore {
-  static staticCapabilities(): StaticCapabilities {
+  static staticCapabilities(): MemoryStoreCapabilities {
     return {
       connector_type: "memory_store",
       implementation: "SqliteMemoryStore",
@@ -120,6 +120,40 @@ export class SqliteMemoryStore implements MemoryStore {
         INSERT INTO memories_fts(memories_fts, rowid, summary, detail) VALUES('delete', old.rowid, old.summary, old.detail);
         INSERT INTO memories_fts(rowid, summary, detail) VALUES (new.rowid, new.summary, new.detail);
       END;
+      -- v0.13.0 — normalized tag relation. Pre-v0.13 tag filter was a JS-side
+      -- substring scan over the JSON tags column (linear, wrong-ranked).
+      -- Relation lets SQL push tag predicates into indexed lookups + EXISTS
+      -- semantics. FK + ON DELETE CASCADE keeps the relation in sync when
+      -- memories rows are removed (FTS triggers stay separate).
+      CREATE TABLE IF NOT EXISTS memory_tags (
+        memory_id TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        PRIMARY KEY (memory_id, tag),
+        FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS memory_tags_tag_idx ON memory_tags(tag);
+      PRAGMA foreign_keys = ON;
+    `);
+    this.backfillMemoryTags();
+  }
+
+  /**
+   * v0.13.0 — one-time backfill on bootstrap. If memory_tags is empty AND
+   * memories has tags-bearing rows (pre-v0.13 data), populate from the JSON
+   * column. Idempotent: subsequent bootstraps find memory_tags non-empty and
+   * skip. Adopters migrating from earlier versions get indexed tag filters
+   * without an explicit migration step.
+   */
+  private backfillMemoryTags(): void {
+    const have = (this.db.prepare("SELECT COUNT(*) AS c FROM memory_tags").get() as { c: number }).c;
+    if (have > 0) return;
+    const hasJson = (this.db.prepare("SELECT COUNT(*) AS c FROM memories WHERE tags IS NOT NULL").get() as { c: number }).c;
+    if (hasJson === 0) return;
+    this.db.exec(`
+      INSERT OR IGNORE INTO memory_tags (memory_id, tag)
+      SELECT m.id, je.value
+      FROM memories m, json_each(m.tags) je
+      WHERE m.tags IS NOT NULL;
     `);
   }
 
@@ -138,27 +172,29 @@ export class SqliteMemoryStore implements MemoryStore {
       return rows.map((r) => this.rowToMemory(r, undefined));
     }
     const sanitized = this.sanitizeFtsQuery(query);
+    // v0.13.0 — push tag filter into SQL via EXISTS join on memory_tags
+    // relation. Exact match (was JS substring scan; semantic change). Reduces
+    // a linear-time JS filter to an indexed lookup; ranking still by FTS
+    // score (tags don't influence relevance, just inclusion).
+    const tagFilter = filters["domain_tags"];
+    const params: Record<string, unknown> = { $q: sanitized, $limit: limit };
+    let tagJoin = "";
+    if (typeof tagFilter === "string" && tagFilter !== "") {
+      tagJoin = "AND EXISTS (SELECT 1 FROM memory_tags mt WHERE mt.memory_id = m.id AND mt.tag = $tag)";
+      params["$tag"] = tagFilter;
+    }
     const rows = this.db.prepare(
       `SELECT m.id, m.summary, m.detail, m.tags, m.created_at, m.metadata, bm25(memories_fts) AS score
          FROM memories_fts
          JOIN memories m ON memories_fts.rowid = m.rowid
-        WHERE memories_fts MATCH $q
+        WHERE memories_fts MATCH $q ${tagJoin}
         ORDER BY score
         LIMIT $limit`,
-    ).all({ $q: sanitized, $limit: limit }) as Array<Record<string, unknown>>;
-    const results = rows.map((r) => this.rowToMemory(r, r["score"] as number | undefined));
-
-    // Optional substring filter on domain_tags. Stored as a JSON-stringified array.
-    if (typeof filters["domain_tags"] === "string" && filters["domain_tags"] !== "") {
-      const needle = filters["domain_tags"] as string;
-      return results.filter((m) =>
-        Array.isArray(m.domain_tags) && m.domain_tags.some((t) => t.includes(needle)),
-      );
-    }
-    return results;
+    ).all(params) as Array<Record<string, unknown>>;
+    return rows.map((r) => this.rowToMemory(r, r["score"] as number | undefined));
   }
 
-  async manifest(): Promise<ManifestInfo> {
+  async manifest(): Promise<ManifestInfo<"memory_store">> {
     return {
       capabilities_version: "1",
       manifest: {
@@ -166,7 +202,12 @@ export class SqliteMemoryStore implements MemoryStore {
         supported_modes: ["fts"],
         score_range: "unbounded",
         supported_filters: ["domain_tags"],
-        supports_write: true,
+        // v0.13.0 — `domain_tags` filter pushed into SQL via memory_tags
+        // relation; exact match semantic (was substring scan pre-v0.13).
+        tag_filter_semantic: "exact match via indexed memory_tags relation",
+        // v0.13.0 — `query` field is phrase-tokens by default; prefix with
+        // `raw:` for adopter-explicit FTS5 syntax.
+        fts_query_semantic: "phrase-tokens (boolean ops disabled); use `raw:` prefix for FTS5 syntax",
       },
     };
   }
@@ -207,7 +248,8 @@ export class SqliteMemoryStore implements MemoryStore {
     created_at?: number;
     metadata?: Record<string, unknown>;
   }): void {
-    const tags = memory.domain_tags ? JSON.stringify(memory.domain_tags) : null;
+    const tagList = memory.domain_tags ?? [];
+    const tagsJson = tagList.length > 0 ? JSON.stringify(tagList) : null;
     const metadata = memory.metadata ? JSON.stringify(memory.metadata) : null;
     const createdAt = memory.created_at ?? Math.floor(Date.now() / 1000);
     this.db.prepare(
@@ -219,10 +261,19 @@ export class SqliteMemoryStore implements MemoryStore {
       $id: memory.id,
       $summary: memory.summary,
       $detail: memory.detail ?? null,
-      $tags: tags,
+      $tags: tagsJson,
       $createdAt: createdAt,
       $metadata: metadata,
     });
+    // v0.13.0 — maintain the memory_tags relation. Clear + reinsert keeps
+    // upsert semantics clean (tag list is canonical per call).
+    this.db.prepare("DELETE FROM memory_tags WHERE memory_id = $id").run({ $id: memory.id });
+    if (tagList.length > 0) {
+      const ins = this.db.prepare(
+        "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES ($id, $tag)",
+      );
+      for (const tag of tagList) ins.run({ $id: memory.id, $tag: tag });
+    }
   }
 
   close(): void {
@@ -247,11 +298,26 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   /**
-   * Strip FTS5 special syntax to safe phrase form. FTS5 errors on bare
-   * punctuation; quote each whitespace-separated token to make a phrase
-   * search. Authors who want raw FTS5 syntax can pass it pre-quoted.
+   * v0.13.0 — sanitize a query string for FTS5 MATCH.
+   *
+   * Default behavior: split on whitespace, quote each token. FTS5 sees N
+   * literal phrase tokens AND'd together. **Boolean operators like `OR` /
+   * `NOT` / `NEAR` are NOT supported** — they're quoted as literal phrase
+   * tokens and become a search for those words. This is a deliberate
+   * safety stance over arbitrary user input.
+   *
+   * Escape hatch: prefix the query with `raw:` and the rest passes through
+   * verbatim. Caller takes responsibility for FTS5 syntax + injection
+   * safety. Example: `raw:foo OR bar`.
+   *
+   * Pre-v0.13 docstring claimed "pre-quoted" passed through; that wasn't
+   * accurate (the tokenizer re-quoted). The `raw:` prefix is the actual
+   * escape hatch.
    */
   private sanitizeFtsQuery(q: string): string {
+    if (q.startsWith("raw:")) {
+      return q.slice(4).trim();
+    }
     return q
       .split(/\s+/)
       .filter((s) => s.length > 0)

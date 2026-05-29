@@ -36,7 +36,7 @@
 import type {
   McpConnector,
   McpDispatchCtx,
-  StaticCapabilities,
+  McpConnectorCapabilities,
   ManifestInfo,
   MemoryStore,
   MemoryWrite,
@@ -46,7 +46,7 @@ import type {
 const CONTRACT_VERSION = "1.0.0";
 
 export class MemoryStoreMcpConnector implements McpConnector {
-  static staticCapabilities(): StaticCapabilities {
+  static staticCapabilities(): McpConnectorCapabilities {
     return {
       connector_type: "mcp_connector",
       implementation: "MemoryStoreMcpConnector",
@@ -55,7 +55,9 @@ export class MemoryStoreMcpConnector implements McpConnector {
         supports_identity_propagation: false,
         supports_streaming_responses: false,
         supports_batch: false,
-        supports_write: true,
+        // v0.13.0 — dropped `supports_write` (substrate leakage at bridge layer).
+        // The bridge inherits write capability transitively from the wrapped
+        // MemoryStore via `staticTools().includes("memory_write")`.
       },
     };
   }
@@ -141,7 +143,7 @@ export class MemoryStoreMcpConnector implements McpConnector {
     return this.memoryStore.write(entry);
   }
 
-  async manifest(): Promise<ManifestInfo> {
+  async manifest(): Promise<ManifestInfo<"mcp_connector">> {
     const msManifest = await this.memoryStore.manifest();
     return {
       capabilities_version: "1",

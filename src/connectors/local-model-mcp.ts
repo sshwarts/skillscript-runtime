@@ -25,7 +25,7 @@
 import type {
   McpConnector,
   McpDispatchCtx,
-  StaticCapabilities,
+  McpConnectorCapabilities,
   ManifestInfo,
   LocalModel,
 } from "./types.js";
@@ -33,7 +33,7 @@ import type {
 const CONTRACT_VERSION = "1.0.0";
 
 export class LocalModelMcpConnector implements McpConnector {
-  static staticCapabilities(): StaticCapabilities {
+  static staticCapabilities(): McpConnectorCapabilities {
     return {
       connector_type: "mcp_connector",
       implementation: "LocalModelMcpConnector",
@@ -81,7 +81,7 @@ export class LocalModelMcpConnector implements McpConnector {
     return this.localModel.run(prompt, opts);
   }
 
-  async manifest(): Promise<ManifestInfo> {
+  async manifest(): Promise<ManifestInfo<"mcp_connector">> {
     const lmManifest = await this.localModel.manifest();
     return {
       capabilities_version: "1",

@@ -9,7 +9,7 @@ import type {
   WakeOpts,
   WakeReceipt,
 } from "./agent.js";
-import type { StaticCapabilities } from "./types.js";
+import type { AgentConnectorCapabilities } from "./types.js";
 
 /**
  * Default AgentConnector — `list_agents` returns []; `deliver` and `wake`
@@ -28,7 +28,7 @@ import type { StaticCapabilities } from "./types.js";
  * should look here for "how do I shape my impl."
  */
 export class NoOpAgentConnector implements AgentConnector {
-  static staticCapabilities(): StaticCapabilities {
+  static staticCapabilities(): AgentConnectorCapabilities {
     return {
       connector_type: "agent_connector",
       implementation: "NoOpAgentConnector",

@@ -26,7 +26,7 @@ import { RUNTIME_VERSION } from "../version.js";
 import type {
   McpConnector,
   McpDispatchCtx,
-  StaticCapabilities,
+  McpConnectorCapabilities,
   ManifestInfo,
 } from "./types.js";
 
@@ -91,7 +91,7 @@ export class RemoteMcpDispatchError extends Error {
 }
 
 export class RemoteMcpConnector implements McpConnector {
-  static staticCapabilities(): StaticCapabilities {
+  static staticCapabilities(): McpConnectorCapabilities {
     return {
       connector_type: "mcp_connector",
       implementation: "RemoteMcpConnector",
@@ -255,7 +255,7 @@ export class RemoteMcpConnector implements McpConnector {
     return result;
   }
 
-  async manifest(): Promise<ManifestInfo> {
+  async manifest(): Promise<ManifestInfo<"mcp_connector">> {
     await this.start();
     return {
       capabilities_version: "1",

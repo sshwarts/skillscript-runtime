@@ -35,7 +35,7 @@ import type {
   SkillStatus,
   SkillFilter,
   VersionInfo,
-  StaticCapabilities,
+  SkillStoreCapabilities,
   ManifestInfo,
 } from "../../../src/connectors/types.js";
 
@@ -55,7 +55,7 @@ export class SkillStoreTemplate implements SkillStore {
    * before exercising features. Set conservatively — overclaiming triggers
    * cryptic downstream failures; underclaiming hides usable features.
    */
-  static staticCapabilities(): StaticCapabilities {
+  static staticCapabilities(): SkillStoreCapabilities {
     return {
       connector_type: "skill_store",
       implementation: "SkillStoreTemplate", // ← rename to your class name
@@ -83,7 +83,7 @@ export class SkillStoreTemplate implements SkillStore {
    * Capability snapshot for `runtime_capabilities` discovery. Return free-form
    * substrate-specific metadata (kind, version, supported modes, etc.).
    */
-  async manifest(): Promise<ManifestInfo> {
+  async manifest(): Promise<ManifestInfo<"skill_store">> {
     // TODO — return a snapshot of your substrate's capabilities.
     throw new Error("TODO: manifest() — return substrate-specific capability snapshot.");
   }

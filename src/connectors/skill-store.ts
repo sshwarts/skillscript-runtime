@@ -8,7 +8,7 @@ import type {
   SkillStatus,
   SkillFilter,
   VersionInfo,
-  StaticCapabilities,
+  SkillStoreCapabilities,
   ManifestInfo,
 } from "./types.js";
 import { SkillNotFoundError, VersionNotFoundError, StorageConflictError } from "../errors.js";
@@ -37,7 +37,7 @@ const CONTRACT_VERSION = "1.0.0";
  * shareable. Consumers MUST treat `version` as opaque (equality only).
  */
 export class FilesystemSkillStore implements SkillStore {
-  static staticCapabilities(): StaticCapabilities {
+  static staticCapabilities(): SkillStoreCapabilities {
     return {
       connector_type: "skill_store",
       implementation: "FilesystemSkillStore",
@@ -54,7 +54,7 @@ export class FilesystemSkillStore implements SkillStore {
 
   constructor(private readonly rootDir: string) {}
 
-  async manifest(): Promise<ManifestInfo> {
+  async manifest(): Promise<ManifestInfo<"skill_store">> {
     return {
       capabilities_version: "1",
       manifest: {

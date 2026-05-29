@@ -150,6 +150,15 @@ export class TimeoutError extends ConnectorError {
 // (agent-authored output).
 
 /**
+ * Pull a human-readable message out of an unknown thrown value. Handles the
+ * `err instanceof Error ? err.message : String(err)` pattern in one place
+ * so call sites don't reinvent it.
+ */
+export function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
  * Base class for any error thrown during op dispatch. Carries the op kind,
  * the target where the op lived, an optional inner cause (preserved when
  * an underlying connector / spawn / etc. error propagates upward), and an

@@ -59,7 +59,7 @@
 import type {
   McpConnector,
   McpDispatchCtx,
-  StaticCapabilities,
+  McpConnectorCapabilities,
   ManifestInfo,
 } from "../../../src/connectors/types.js";
 
@@ -80,7 +80,7 @@ export class McpConnectorTemplate implements McpConnector {
    * Conservative defaults shown; flip to true once your impl actually supports
    * each capability.
    */
-  static staticCapabilities(): StaticCapabilities {
+  static staticCapabilities(): McpConnectorCapabilities {
     return {
       connector_type: "mcp_connector",
       implementation: "McpConnectorTemplate", // ← rename to your class name
@@ -193,7 +193,7 @@ export class McpConnectorTemplate implements McpConnector {
    *   { capabilities_version: "1", manifest: { kind: "remote-mcp",
    *       command: "...", framing: "lsp", tools_available: [...] } }
    */
-  async manifest(): Promise<ManifestInfo> {
+  async manifest(): Promise<ManifestInfo<"mcp_connector">> {
     // TODO — return a snapshot of your transport's metadata.
     throw new Error("TODO: manifest() — return transport-specific capability snapshot.");
   }

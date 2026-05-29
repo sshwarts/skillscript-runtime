@@ -24,8 +24,8 @@ const REPO_ROOT = join(__dirname, "..");
 const PACKAGE_JSON = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as Record<string, unknown>;
 
 describe("T7 — package.json polish", () => {
-  it("1. version is 0.12.0 (McpConnectorTemplate + McpConnector contract audit; connector-house-in-order arc complete)", () => {
-    expect(PACKAGE_JSON["version"]).toBe("0.12.0");
+  it("1. version is 0.13.0 (code-smell sweep: discriminated capabilities + per-kind manifests + OpError remediation + SqliteSkillStore REGEXP probe + memory-store tag relation + AgentConnector symmetric registry)", () => {
+    expect(PACKAGE_JSON["version"]).toBe("0.13.0");
   });
 
   it("2. main + types + bin + engines.node ≥ 22.5 declared", () => {
@@ -75,12 +75,12 @@ describe("T7 — distributed code surface", () => {
     expect(out.trim(), `found AMP identifiers: ${out}`).toBe("");
   });
 
-  it("7. narrow-core LOC ceiling holds (< 9300 / 22 files; ..., v0.7.0 → 7150, v0.7.1 → 7250, v0.7.2 → 7550, v0.8.0 → 8200, v0.9.4 → 8300, v0.9.6 → 8550, v0.9.8 → 8650, v0.10 → 9300)", () => {
+  it("7. narrow-core LOC ceiling holds (< 9550 / 22 files; ..., v0.7.0 → 7150, v0.7.1 → 7250, v0.7.2 → 7550, v0.8.0 → 8200, v0.9.4 → 8300, v0.9.6 → 8550, v0.9.8 → 8650, v0.10 → 9300, v0.13 → 9550)", () => {
     const out = execSync("node scripts/loc-ceiling.mjs", { cwd: REPO_ROOT, encoding: "utf8" });
     const match = /CORE\s+(\d+) LOC across (\d+) files/.exec(out);
     expect(match).not.toBeNull();
     const [, locStr, filesStr] = match!;
-    expect(Number(locStr)).toBeLessThan(9300);
+    expect(Number(locStr)).toBeLessThan(9550);
     expect(Number(filesStr)).toBeLessThan(22);
   });
 

@@ -21,28 +21,176 @@
 /** The five connector kinds. */
 export type ConnectorType = "skill_store" | "memory_store" | "local_model" | "mcp_connector" | "agent_connector";
 
+// ─── Per-contract feature-flag namespaces ─────────────────────────────────
+//
+// Closed-set unions per connector kind. `# Requires:` lint clauses match
+// against `<connector_type>.<flag>`; the union enforces typo-safety at
+// authoring time on the connector side AND at lint time when validating
+// the closed set.
+
+export type SkillStoreFeature =
+  | "supports_writes"
+  | "supports_versioning"
+  | "supports_tag_filter"
+  | "supports_audit_trail"
+  | "supports_atomic_status_transitions";
+
+export type MemoryStoreFeature =
+  | "supports_writes"
+  | "supports_tag_filter"
+  | "supports_semantic"
+  | "supports_rerank"
+  | "supports_thread_status_filter"
+  | "supports_pinning"
+  | "supports_decay_model";
+
+export type LocalModelFeature =
+  | "supports_max_tokens"
+  | "supports_timeout"
+  | "supports_streaming"
+  | "supports_embedding";
+
+export type McpConnectorFeature =
+  | "supports_identity_propagation"
+  | "supports_streaming_responses"
+  | "supports_batch";
+
+/** AgentConnector flags are method-presence shape (one per contract method). */
+export type AgentConnectorFeature =
+  | "deliver"
+  | "wake"
+  | "list_agents"
+  | "agent_status"
+  | "health_check"
+  | "request_response";
+
 /**
  * Static capabilities — declared by the connector class, consumed by the
- * linter offline. `features` is a string→boolean map of feature flags;
- * skill `# Requires:` clauses match against the names. See per-contract
- * feature-flag namespaces below.
+ * linter offline. Discriminated union per `connector_type`; per-kind
+ * feature unions enforce closed-set flag names at compile time. `# Requires:`
+ * lint clauses match against `<connector_type>.<flag>`.
  */
-export interface StaticCapabilities {
-  connector_type: ConnectorType;
+interface BaseStaticCapabilities {
   /** Implementation class name; appears in conformance test output + dashboard. */
   implementation: string;
   /** Contract version this implementation targets (e.g. "1.0.0"). Lets the runtime refuse incompatible impls. */
   contract_version: string;
-  features: Record<string, boolean>;
 }
+
+export interface SkillStoreCapabilities extends BaseStaticCapabilities {
+  connector_type: "skill_store";
+  features: Partial<Record<SkillStoreFeature, boolean>>;
+}
+
+export interface MemoryStoreCapabilities extends BaseStaticCapabilities {
+  connector_type: "memory_store";
+  features: Partial<Record<MemoryStoreFeature, boolean>>;
+}
+
+export interface LocalModelCapabilities extends BaseStaticCapabilities {
+  connector_type: "local_model";
+  features: Partial<Record<LocalModelFeature, boolean>>;
+}
+
+export interface McpConnectorCapabilities extends BaseStaticCapabilities {
+  connector_type: "mcp_connector";
+  features: Partial<Record<McpConnectorFeature, boolean>>;
+}
+
+export interface AgentConnectorCapabilities extends BaseStaticCapabilities {
+  connector_type: "agent_connector";
+  features: Partial<Record<AgentConnectorFeature, boolean>>;
+}
+
+export type StaticCapabilities =
+  | SkillStoreCapabilities
+  | MemoryStoreCapabilities
+  | LocalModelCapabilities
+  | McpConnectorCapabilities
+  | AgentConnectorCapabilities;
+
+// ─── Per-contract manifest shapes ─────────────────────────────────────────
+//
+// Each contract's `manifest()` returns substrate metadata for its kind.
+// Known fields are typed; the `[key: string]: unknown` catch-all lets
+// adopter impls add substrate-specific extensions without losing type
+// safety on the known fields. AgentConnector has no manifest() (per v0.9.6
+// audit), so no AgentConnectorManifest.
+//
+// **Convention**: `kind` is a string tag for the implementation flavor
+// ("filesystem", "sqlite", "ollama", "remote-mcp", ...). Not locked to a
+// union — adopter forks pick their own ("amp", "postgres", etc.).
+// **Capability flags** live in `StaticCapabilities.features`, NOT in
+// manifest. Don't duplicate.
+
+export interface SkillStoreManifest {
+  kind: string;
+  /** Filesystem-backed impls — root directory for `.skill.md` files. */
+  root_dir?: string;
+  /** SQLite-backed impls — db file path. */
+  db_path?: string;
+  /** Adopter-extension catch-all. */
+  [key: string]: unknown;
+}
+
+export interface MemoryStoreManifest {
+  kind: string;
+  /** Query modes the substrate supports — e.g., ["fts"], ["semantic", "rerank"]. */
+  supported_modes?: string[];
+  /** Filter fields the substrate honors in `query()`. */
+  supported_filters?: string[];
+  /** Score range hint — e.g., "unbounded", "0..1". */
+  score_range?: string;
+  [key: string]: unknown;
+}
+
+export interface LocalModelManifest {
+  kind: string;
+  /** Default model tag (e.g., "gemma2:9b"). */
+  default_model?: string;
+  /** Endpoint URL the impl connects to. */
+  endpoint?: string;
+  /** Available model list. Populated when the impl can introspect the substrate (e.g., `/api/tags` for Ollama). Absent on impls that don't enumerate. */
+  models_available?: string[];
+  /**
+   * Set when the substrate query that would populate `models_available`
+   * failed (network error, auth failure, parse error, etc.). Cold authors
+   * + adopters see this and know why the model list is empty, rather than
+   * silently getting `models_available: []` and assuming no models are
+   * installed. v0.13.0.
+   */
+  fetch_error?: string;
+  [key: string]: unknown;
+}
+
+export interface McpConnectorManifest {
+  kind: string;
+  /** Spawned command for child-process bridges. */
+  command?: string;
+  /** Stdio framing convention for child-process bridges. */
+  framing?: string;
+  /** Tools available — populated for bridges that introspect upstream MCPs at startup. */
+  tools_available?: string[];
+  /** For bridge connectors that wrap an underlying contract — the inner manifest. */
+  wraps?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+type ManifestPayload<K extends ConnectorType> =
+  K extends "skill_store" ? SkillStoreManifest
+  : K extends "memory_store" ? MemoryStoreManifest
+  : K extends "local_model" ? LocalModelManifest
+  : K extends "mcp_connector" ? McpConnectorManifest
+  : never;
 
 /**
  * Dynamic manifest — instance state. Runtime caches per `capabilities_version`;
- * connectors bump version on schema/structural changes only.
+ * connectors bump version on schema/structural changes only. Parameterized
+ * by connector kind; default is the open union for code that doesn't care.
  */
-export interface ManifestInfo {
+export interface ManifestInfo<K extends Exclude<ConnectorType, "agent_connector"> = Exclude<ConnectorType, "agent_connector">> {
   capabilities_version: string;
-  manifest: Record<string, unknown>;
+  manifest: ManifestPayload<K>;
 }
 
 // ─── SkillStore ───────────────────────────────────────────────────────────
