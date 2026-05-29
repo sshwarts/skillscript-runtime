@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.13.2 — 2026-05-29 — Publish recovery: retired the YouTrack proving test
+
+The release pipeline has been silently broken since the May 28 housecleaning
+sweep. Five tag pushes (v0.11.0 → v0.13.1) never reached npm, GHCR, or
+GitHub Releases — the `Test` step failed before any of those ran. Dogfood
+attempt (`npm install skillscript-runtime@0.13.1`) surfaced this: npm
+registry only had v0.10.0.
+
+### Two failure modes, single fix
+
+- **`ci.yml`** (every main push since May 28) failed on the env-gate assert
+  in `tests/v0.4.1-youtrack-proving.test.ts` — the test always-fails when
+  `YOUTRACK_TEST_TOKEN` is unset, and ci.yml never had that secret.
+- **`release.yml`** (every tag push since v0.11.0) passed the env gate
+  (token IS set as a release-only secret) but then failed on `ENOENT` for
+  `examples/youtrack-morning-sweep.skill.md` — the file got moved to
+  `examples/skillscripts/` in the housecleaning, and this one test was the
+  straggler I missed when fixing other path references.
+
+### Cut
+
+`tests/v0.4.1-youtrack-proving.test.ts` was a development-time MCP proving
+artifact, not part of the runtime contract. It depended on a live YouTrack
+instance + a CI secret + a personal cloud subdomain. The other ~10 tests
+that reference `youtrack` as a string fixture (allowlist, unwired-connector,
+function-call rejection, object-iteration) don't need a real backend and
+stay. The `examples/skillscripts/youtrack-morning-sweep.skill.md` skill
+stays too — it's a user-facing example of a remote MCP connector wired
+declaratively.
+
+### Removed
+
+- `tests/v0.4.1-youtrack-proving.test.ts` (entire file)
+- `YOUTRACK_TEST_TOKEN` env block + comment in `.github/workflows/release.yml`
+  Test step
+
+### Operational hygiene
+
+- The `YOUTRACK_TEST_TOKEN` GitHub repo secret should be deleted from repo
+  settings (UI action — not scriptable from CI). Token itself stays valid
+  in Scott's environment for ad-hoc local MCP probes if needed.
+
+### Meta-lesson banked
+
+The "ignorable YouTrack env-gate failure" note I'd carried across the v0.10
+→ v0.13.1 arc was load-bearing on a false premise. The test was passing on
+main pre-housecleaning when the token was set; the reorg broke it for a
+*new* reason (path), and I conflated the two failure modes. Pattern:
+when an unrelated change lands near a known-broken signal, re-classify
+the signal — don't assume the failure mode is unchanged.
+
 ## 0.13.1 — 2026-05-29 — LocalModel shape alignment + stale-content cleanup
 
 Per Scott review — LocalModel was the asymmetric contract. Other contracts
