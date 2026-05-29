@@ -32,7 +32,7 @@ interface AgentConnector {
 **Required**: `list_agents`, `deliver`, `wake`, `health_check`, `request_response`.
 **Optional**: `agent_status`.
 
-`request_response` is locked at v1.0 for the upcoming `exchange()` op shipping in v0.10. Until v0.10 runtime support lands, adopters should throw `NotImplementedError` from this method (see `NoOpAgentConnector` for the canonical pattern).
+`request_response` is locked at v1.0 for the planned `exchange()` op. Until the runtime support lands, adopters should throw `NotImplementedError` from this method (see `NoOpAgentConnector` for the canonical pattern).
 
 ### DeliveryPayload + DeliveryMeta
 
@@ -98,7 +98,7 @@ interface DeliveryReceipt {
 | `# Output: agent: X` lifecycle hook | `AgentConnector.deliver()` | `augment` | Frontmatter `# Event-type:` (if set); `event_type` & `correlation_id` always undefined |
 | `# Output: template: X` lifecycle hook | `AgentConnector.deliver()` | `template` | Same as above |
 | `notify(agent=X, message=..., event_type=..., correlation_id=...)` op | `AgentConnector.deliver()` | `augment` | Kwargs override frontmatter for `event_type`; `correlation_id` from kwarg only |
-| `exchange(agent=X, message=..., timeout=...)` op (v0.10, locked-shape) | `AgentConnector.request_response()` | `augment` | Same as notify; correlation_id required |
+| `exchange(agent=X, message=..., timeout=...)` op (locked-shape, runtime support pending) | `AgentConnector.request_response()` | `augment` | Same as notify; correlation_id required |
 
 ---
 
@@ -133,7 +133,7 @@ Implementation checklist:
 
 4. **Implement `health_check()`** — return `true` if substrate is reachable + configured. Webhook: HEAD/OPTIONS your endpoint. Tmux: check the session exists. File-drop: check the directory is writable.
 
-5. **Implement `request_response()`** — throw `NotImplementedError` until v0.10 ships. When v0.10 lands and your substrate supports synchronous reply, implement the contract: send payload, await reply matched by `correlation_id`, time out per `opts.timeout_ms`.
+5. **Implement `request_response()`** — throw `NotImplementedError` until the runtime support for `exchange()` lands. When it does, and your substrate supports synchronous reply, implement the contract: send payload, await reply matched by `correlation_id`, time out per `opts.timeout_ms`.
 
 6. **Optional: implement `agent_status?()`** — return `"active"` / `"idle"` / `"asleep"` / `"unknown"` per agent. Pure metadata; runtime does NOT gate delivery on this value (skip delivery via `delivery_skipped: true` on the receipt instead).
 
@@ -144,19 +144,6 @@ If your substrate matches the shape of a bundled connector closely (e.g., HTTP w
 - Don't touch `src/connectors/agent.ts` (contract) — that's the highest-merge-cost surface
 - Fork `src/connectors/agent-noop.ts` or `src/connectors/agent-http-webhook.ts` into your own file; register YOUR fork via `registry.registerAgentConnector()`
 - Stay on the `AgentConnector` interface — don't add methods; if you need substrate-specific helpers, make them adopter-local
-
----
-
-## Migration from v0.7.x / v0.8.x / pre-v0.9.6
-
-The pre-adoption rule (no external users yet) applies; v0.9.6 is the contract's first stable lock. If you were experimenting against pre-v0.9.6 code, the changes you'll hit:
-
-- `manifest()` removed (Q2). Adopter impls drop the method.
-- `health_check()` + `request_response()` added (Q1, Q6). Adopter impls must add these.
-- `DeliveryPayload.format`, `source_skill`, `triggered_by`, `delivery_context`, `templates` removed from contract (Q8, Q10, Q11). All folded into `meta` (`source_skill` → `meta.origin.skill_name`; `triggered_by` → `meta.origin.trigger_kind` + `meta.sent_at`).
-- `DeliveryReceipt.delivery_skipped` added (Q7). Adopter impls can set; runtime honors.
-- `TriggerProvenance` interface dropped (Q12). `name` + `fired_at_ms` no longer surface in the envelope (trace-only).
-- `# Delivery-context:` frontmatter renamed to `# Event-type:` (Q9). Old name is no longer accepted by the parser.
 
 ---
 

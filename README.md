@@ -3,7 +3,7 @@
 *A language for agents to write themselves in.*
 
 [![npm version](https://img.shields.io/npm/v/skillscript-runtime.svg)](https://www.npmjs.com/package/skillscript-runtime)
-[![tests](https://img.shields.io/badge/tests-896%2F896-green)](#)
+[![tests](https://img.shields.io/badge/tests-passing-green)](#)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![status](https://img.shields.io/badge/status-pre--1.0-orange)](#status)
 
@@ -119,7 +119,7 @@ Every skillscript skill is one of three shapes, determined by the relationship t
 
 The kinds compose. A Headless monitor fires on cron, evaluates a condition, and routes into an Augmenting skill that wakes an agent with context, which itself references a Template skill for the agent to execute.
 
-The three kinds describe the skill's *role* (who consumes the output). Orthogonal to that is the skill's *delivery channel* — the actual op that ships the result. Three channels are first-class: `emit(text="...")` for embedded prompt-context, `$ memory_write content="..." addressed_to="<agent>"` for memory handoff, and `file_write(path="...", content="...")` for file handoff. A single skill can use any combination. See the [Language Reference](https://github.com/sshwarts/skillscript/blob/main/docs/language-reference.md) §1 for the full taxonomy.
+The three kinds describe the skill's *role* (who consumes the output). Orthogonal to that is the skill's *delivery channel* — the actual op that ships the result. Three channels are first-class: `emit(text="...")` for embedded prompt-context, `$ memory_write content="..." addressed_to="<agent>"` for memory handoff, and `file_write(path="...", content="...")` for file handoff. A single skill can use any combination. See the [Language Reference](docs/language-reference.md) §1 for the full taxonomy.
 
 ### Waking agents
 
@@ -267,8 +267,7 @@ The hello example is a single static target. A more representative shape is a cr
 snapshot:
     shell(command="df -h --output=source,pcent,target") -> USAGE
     file_write(path="/var/log/skillscript/disk-${EVENT.fired_at_unix}.txt",
-               content="${USAGE}",
-               approved="cron-fired daily snapshot")
+               content="${USAGE}")
     emit(text="Snapshot written for ${NOW}")
 
 default: snapshot
@@ -277,7 +276,7 @@ default: snapshot
 Three things to notice:
 
 1. **`# Triggers: cron:"..."`** — the runtime registers the cron schedule at load time; no external scheduler.
-2. **`# Autonomous: true`** — the skill-author's declaration that mutation ops (here `file_write`) are authorized to fire without per-call confirmation. Without this header, mutation ops require the inline `approved="<reason>"` kwarg shown above on each call site. Pick one; both work.
+2. **`# Autonomous: true`** — the skill-author's declaration that mutation ops (here `file_write`) are authorized to fire without per-call confirmation. Without this header, mutation ops require an inline `approved="<reason>"` kwarg on each call site, or a preceding `ask(...)` gate in the same target. Pick whichever fits.
 3. **`${EVENT.fired_at_unix}` + `${NOW}`** — ambient refs the runtime substitutes per-fire. `EVENT.*` covers the trigger payload; `NOW` is the ISO timestamp at op dispatch. See [Language Reference §3](docs/language-reference.md) for the full ambient list.
 
 Swap in `$ ticketing_search`, `$ llm`, `$ memory_write` once you've wired connectors, and the same skill shape becomes a real triage pipeline.
@@ -339,7 +338,7 @@ Two credential shapes:
 
 ## CLI
 
-14 commands cover the full authoring + ops lifecycle:
+15 commands cover the full authoring + ops lifecycle:
 
 | Command | Purpose |
 |---|---|
@@ -353,9 +352,11 @@ Two credential shapes:
 | `skillfile verify <path\|name> <hash>` | Verify against a known signature |
 | `skillfile replay <trace_id>` | Re-run from a captured trace |
 | `skillfile health` | Aggregate runtime health metrics |
+| `skillfile register-trigger <skill> <source> <name>` | Register an imperative trigger |
+| `skillfile unregister-trigger <trigger_id>` | Remove a registered trigger |
+| `skillfile list-triggers` | List registered triggers |
 | `skillfile serve [--port N]` | Headless: scheduler + MCP server, no SPA |
 | `skillfile dashboard [--port N]` | Same as `serve` plus dashboard SPA at `/` |
-| (Trigger management lives in the MCP surface, not the CLI) | |
 
 Run `skillfile <command> --help` for per-command flags. Use `serve` for production / containerized deployments and `dashboard` for development. CLI command names mirror the MCP tool names where they overlap (`execute` ↔ `execute_skill`, `compile` ↔ `compile_skill`, `lint` ↔ `lint_skill`), so authors who learn one surface can transfer immediately to the other.
 
@@ -376,11 +377,11 @@ This is the "agent reaches MCP" path — an external agent (Claude, GPT, anythin
 
 ## Examples
 
-Nine curated example skills in [`examples/`](examples/), covering:
+Curated example skills in [`examples/`](examples/), covering:
 
 - Multi-target DAG with `needs:` dependencies
 - Cron triggers with `# OnError:` fallback
-- Session-start `prompt-context:` delivery
+- Session-start `# Output: agent:` delivery
 - `ask(prompt=...)` interactive pattern
 - `# Requires:` cascade for compile-time data
 - `inline(skill=...)` skill composition
@@ -390,7 +391,7 @@ Each example is annotated with the language pattern it demonstrates.
 
 ## Architecture and deep documentation
 
-- **[Language Reference](docs/language-reference.md)** — canonical spec (1600+ lines, 13 sections). The single source of truth on syntax + semantics.
+- **[Language Reference](docs/language-reference.md)** — canonical spec. The single source of truth on syntax + semantics.
 - **[Configuration](docs/configuration.md)** — `connectors.json` substrate selection + named MCP connector wiring + adopter-custom impl path.
 - **[Adopter Playbook](docs/adopter-playbook.md)** — patterns for adopters embedding skillscript-runtime in their own deployment.
 - **[Connector Contract Reference](docs/connector-contract-reference.md)** — interface contracts for adopters writing their own connector impls.
@@ -399,7 +400,7 @@ Each example is annotated with the language pattern it demonstrates.
 
 ## Status
 
-Still under development
+Pre-1.0, no external adopters. Core language stable; connector contracts locked; distribution polish in progress.
 
 ## Contributing
 

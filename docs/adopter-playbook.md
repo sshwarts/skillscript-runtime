@@ -9,7 +9,7 @@ This playbook covers the load-bearing decisions, the two wiring patterns, and th
 Skillscript-runtime is substrate-neutral and assumes you have (or will choose):
 
 1. **A filesystem** — for skill source files (`.skill.md`), trace records, possibly a memory database. Sandbox via container, chroot, or limited-privilege process — operator's call.
-2. **A memory system** — for knowledge retrieval and (in v0.8.x+) memory writes. Could be SQLite-FTS (bundled), a vector database, an in-house store, an Obsidian-style notes system — whatever you already have.
+2. **A memory system** — for knowledge retrieval and memory writes. Could be SQLite-FTS (bundled), a vector database, an in-house store, an Obsidian-style notes system — whatever you already have.
 3. **An LLM endpoint** — Ollama running locally (bundled), a hosted API like OpenAI / Anthropic / Azure, or your own inference server.
 4. **An agent harness** — where skill output is delivered. Could be tmux sessions, a webhook receiver, an in-house agent runtime, or no harness at all (skills run for their text output only).
 
@@ -21,7 +21,7 @@ This is the most important architectural choice you'll make.
 
 ### Case 1 — typed-contract wiring (substrate-portable)
 
-You implement the typed connector contracts (`MemoryStore`, `LocalModel`, etc.) against your substrate. The v0.7.2 bridge classes (`MemoryStoreMcpConnector`, `LocalModelMcpConnector`) surface them as canonical `$ memory` / `$ llm` dispatch.
+You implement the typed connector contracts (`MemoryStore`, `LocalModel`, etc.) against your substrate. The bridge classes (`MemoryStoreMcpConnector`, `LocalModelMcpConnector`) surface them as canonical `$ memory` / `$ llm` dispatch.
 
 ```typescript
 class MyMemoryStore implements MemoryStore {
@@ -94,7 +94,7 @@ For each of the four substrates (memory, LLM, agent harness, MCP tools), decide 
 
 ### 3. Configure runtime knobs
 
-Create `skillscript.config.json` (v0.7.3) in your `$SKILLSCRIPT_HOME`:
+Create `skillscript.config.json` in your `$SKILLSCRIPT_HOME`:
 
 ```json
 {
@@ -177,22 +177,21 @@ The bundled `bootstrap()` is a starting point. For deployments with custom subst
 
 See `examples/custom-bootstrap.example.ts` for a worked walkthrough.
 
-## Substrate ship-status (v0.7.3)
+## Substrate ship-status
 
 | Substrate | Shipped contract | Shipped impls | Shipped bridge |
 |---|---|---|---|
-| SkillStore | ✓ `load`/`query`/`store`/`update_status` | `FilesystemSkillStore` | n/a |
-| MemoryStore | ✓ `query` (read-only) | `SqliteMemoryStore` | ✓ `MemoryStoreMcpConnector` |
+| SkillStore | ✓ `load`/`query`/`store`/`update_status`/`delete`/`versions`/`metadata`/`staticCapabilities` | `FilesystemSkillStore`, `SqliteSkillStore` | n/a |
+| MemoryStore | ✓ `query`/`write` | `SqliteMemoryStore` | ✓ `MemoryStoreMcpConnector` |
 | LocalModel | ✓ `run` | `OllamaLocalModel` | ✓ `LocalModelMcpConnector` |
 | McpConnector | ✓ `call` | `RemoteMcpConnector`, `CallbackMcpConnector` | n/a |
-| AgentConnector | ✓ `list_agents`/`deliver`/`wake`/`health_check`/`request_response`; optional `agent_status` | `NoOpAgentConnector` (default) | n/a |
+| AgentConnector | ✓ `list_agents`/`deliver`/`wake`/`health_check`/`request_response`; optional `agent_status` | `NoOpAgentConnector` (default), `HttpWebhookAgentConnector` | n/a |
 
-**Notable v0.7.x gaps the playbook should be honest about:**
+**Notable gaps the playbook should be honest about:**
 
-- **`MemoryStore.write()` is deferred to v0.8.x** bundled with the auth model. `$ memory_write` documented in v0.7.x docs is paper; the corresponding contract method ships when the auth model lands.
-- **4-of-6 trigger sources parse but don't fire.** `cron` and `session: start` work; `event`, `agent-event`, `file-watch`, `sensor` are parser-only stubs. Lands in v0.11+ when the event-bus design completes.
-- **Output kinds shrunk in v0.7.3.** `# Output:` accepts `text` / `prompt-context: <agent>` / `template: <agent>` / `file: <path>` / `none`. The pre-v0.7.3 `slack:` and `card:` values were substrate-specific and were dropped — adopters wanting Slack / WhatsApp / Discord / etc. delivery use either `$ slack.post ...` MCP dispatch inside the skill body OR deliver via `prompt-context: <agent>` and let the agent decide.
-- **Authorization model is hash-token approval (v0.9.0).** Skills must carry `# Status: Approved vN:<token>` where the token re-computes from the body minus its `# Status:` line. Bundled `v1:` is CRC32 — discipline-barrier strength, suited to single-operator deployments. Adversarial threat models swap a stronger function:
+- **4 of 6 trigger sources parse but don't fire.** `cron` and `session: start` work; `event`, `agent-event`, `file-watch`, `sensor` are parser-only stubs awaiting the event-bus surface.
+- **Output kinds are intentionally substrate-neutral.** `# Output:` accepts `text` / `agent: <name>` / `template: <name>` / `file: <path>` / `none`. Substrate-specific values (`slack:`, `card:`, etc.) are deliberately out of scope — adopters wanting Slack / WhatsApp / Discord / etc. delivery use either `$ slack.post ...` MCP dispatch inside the skill body OR deliver via `agent: <name>` and let the receiving agent decide.
+- **Authorization is hash-token approval.** Skills must carry `# Status: Approved vN:<token>` where the token re-computes from the body minus its `# Status:` line. Bundled `v1:` is CRC32 — discipline-barrier strength, suited to single-operator deployments. Adversarial threat models swap a stronger function:
 
   ```ts
   import { registerApprovalFn, setPreferredApprovalVersion } from "skillscript-runtime";
@@ -219,9 +218,9 @@ foreach S in ${SKILLS.items}:
 
 This works *only* when the memory substrate is Case-1 wired (typed-contract via bridge). Under Case-2 wiring, you'd need substrate-specific tool calls (`$ amp.search query=... payload_type=skill`) which are non-portable.
 
-## Contributing — dispatch-shape discipline (v0.9.1)
+## Contributing — dispatch-shape discipline
 
-The multi-layer-promise pattern (lint passes; runtime fails, or vice versa) recurred three times across v0.7.2 / v0.7.3 / v0.9.0 before the v0.9.1 `validateQualifiedDispatch` extraction made lint + runtime call the same validator. To prevent recurrence #4, every PR that introduces a new dispatch shape (a new way of writing `$ ...` ops, a new connector class entry point, a new lifecycle hook on `# Output:`) must land with:
+The multi-layer-promise pattern (lint passes; runtime fails, or vice versa) is the recurring failure mode for dispatch-shape work. `validateQualifiedDispatch` is the shared validator lint and runtime both call. To prevent the next recurrence, every PR that introduces a new dispatch shape (a new way of writing `$ ...` ops, a new connector class entry point, a new lifecycle hook on `# Output:`) must land with:
 
 1. **Lint test** — fixture that exercises the shape with lint only (`lint(source, {registry})`)
 2. **Runtime test** — same shape executed end-to-end (`executeSkillByName` or `executeSkillFromSource`)
@@ -237,4 +236,5 @@ Connector class authors implementing new `McpConnectorClass`-shaped contracts sh
 - **Custom bootstrap walkthrough** — `examples/custom-bootstrap.example.ts` — registering custom MCP connector classes
 - **Connectors example** — `scaffold/connectors.json` — annotated `connectors.json` shape
 - **Language reference** — `docs/language-reference.md` — skill syntax + frontmatter + lint codes
-- **Architecture** — `docs/ERD.md` — engineering requirements + design rationale
+- **Connector contracts** — `docs/connector-contract-reference.md` — substrate-neutral contract surfaces
+- **Configuration** — `docs/configuration.md` — `connectors.json` shape + substrate selection
