@@ -30,10 +30,11 @@ import { evaluateApprovalGate } from "./approval.js";
  * protocol conforms to MCP — real MCP clients (Claude Desktop, Cursor,
  * future tools) can consume the server unchanged.
  *
- * Surface: seven tools wrapping existing T6 primitives.
+ * Surface: tools wrapping existing T6 primitives.
  *
  *   skill_list({filter?})          → SkillCatalog (v0.9.8 — pre-grouped by audience)
- *   skill_metadata({name})         → metadata + version history
+ *   skill_metadata({name})         → metadata + version history + recent_fires + approval (no source — see skill_read)
+ *   skill_read({name, version?})   → {name, version, status, source} (v0.13.3 — symmetric peer to skill_write)
  *   skill_status({name, new_state})→ SkillStatus update (write)
  *   list_triggers({filter?})       → TriggerRegistration[]
  *   register_trigger({...})        → TriggerRegistration (write)
@@ -229,7 +230,7 @@ export class McpServer {
 
     this.registerTool({
       name: "skill_metadata",
-      description: "Get metadata + version history + source body + recent fires for a specific skill by name.",
+      description: "Get metadata + version history + recent fires + approval-gate state for a specific skill by name. For the source body itself, call skill_read.",
       inputSchema: {
         type: "object",
         properties: {
@@ -258,9 +259,32 @@ export class McpServer {
         return {
           metadata,
           versions,
-          source: loaded?.source ?? null,
           recent_fires,
           approval,
+        };
+      },
+    });
+
+    this.registerTool({
+      name: "skill_read",
+      description: "Read a skill's source body. Returns {name, version, status, source}. Symmetric peer to skill_write — when you want the body itself, not the surrounding metadata bag.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          version: { type: "string" },
+        },
+        required: ["name"],
+      },
+      handler: async (args) => {
+        const name = args["name"] as string;
+        const version = typeof args["version"] === "string" ? args["version"] : undefined;
+        const loaded = await this.deps.skillStore.load(name, version);
+        return {
+          name: loaded.name,
+          version: loaded.version,
+          status: loaded.metadata.status,
+          source: loaded.source,
         };
       },
     });

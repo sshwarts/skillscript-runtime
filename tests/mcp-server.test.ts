@@ -70,6 +70,7 @@ describe("McpServer protocol", () => {
         "set_trigger_enabled",
         "skill_list",
         "skill_metadata",
+        "skill_read",
         "skill_status",
         "skill_write",
         "unregister_trigger",
@@ -160,15 +161,46 @@ describe("McpServer.skill_list / skill_metadata / skill_status", () => {
     }
   });
 
-  it("skill_metadata returns metadata + version history", async () => {
+  it("skill_metadata returns metadata + version history (no source — see skill_read)", async () => {
     const { server, skillStore, cleanup } = withServer();
     try {
       await skillStore.store("hello", "# Skill: hello\n# Status: Draft\nt:\n    ! hi\ndefault: t\n");
       const resp = await server.handle(rpc("tools/call", { name: "skill_metadata", arguments: { name: "hello" } }));
-      const result = parseToolResult<{ metadata: { name: string; status: string }; versions: unknown[] }>(resp);
-      expect(result.metadata.name).toBe("hello");
-      expect(result.metadata.status).toBe("Draft");
-      expect(result.versions.length).toBeGreaterThanOrEqual(1);
+      const result = parseToolResult<Record<string, unknown>>(resp);
+      const meta = result["metadata"] as { name: string; status: string };
+      expect(meta.name).toBe("hello");
+      expect(meta.status).toBe("Draft");
+      expect((result["versions"] as unknown[]).length).toBeGreaterThanOrEqual(1);
+      // v0.13.3 — source removed from skill_metadata; callers use skill_read instead.
+      expect(result).not.toHaveProperty("source");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("skill_read returns {name, version, status, source} (v0.13.3)", async () => {
+    const { server, skillStore, cleanup } = withServer();
+    try {
+      const src = "# Skill: hello\n# Status: Draft\nt:\n    ! hi\ndefault: t\n";
+      await skillStore.store("hello", src);
+      const resp = await server.handle(rpc("tools/call", { name: "skill_read", arguments: { name: "hello" } }));
+      const result = parseToolResult<{ name: string; version: string; status: string; source: string }>(resp);
+      expect(result.name).toBe("hello");
+      expect(typeof result.version).toBe("string");
+      expect(result.status).toBe("Draft");
+      expect(result.source).toBe(src);
+      // Shape discipline: only these four keys.
+      expect(Object.keys(result).sort()).toEqual(["name", "source", "status", "version"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("skill_read on missing skill propagates error (v0.13.3)", async () => {
+    const { server, cleanup } = withServer();
+    try {
+      const resp = await server.handle(rpc("tools/call", { name: "skill_read", arguments: { name: "does-not-exist" } }));
+      expect("error" in resp).toBe(true);
     } finally {
       cleanup();
     }

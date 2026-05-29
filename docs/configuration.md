@@ -39,6 +39,8 @@ To switch skills storage to SQLite:
 
 Restart `skillfile dashboard` (or `skillfile serve`). The MCP server + dashboard UI now read/write skills from `~/.skillscript/skills/skills.db` instead of `.skill.md` files.
 
+> **Heads up on startup logs.** Sqlite-backed substrates use the built-in `node:sqlite` module, which is still flagged experimental in Node 22. Expect this line on every launch until Node de-experimentalizes it: `ExperimentalWarning: SQLite is an experimental feature and might change at any time`. Harmless; can be silenced per-process with `NODE_OPTIONS="--disable-warning=ExperimentalWarning"` if it clutters your logs.
+
 ---
 
 ## The substrate section

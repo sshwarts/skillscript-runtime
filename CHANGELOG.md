@@ -1,5 +1,96 @@
 # Changelog
 
+## 0.13.3 — 2026-05-29 — Docs/install hardening + skill_read MCP tool
+
+Fresh-agent Phase 1 dogfood (against v0.13.2 fresh install) surfaced 5 findings.
+This release closes all 5 + adds a permanent regression guard for the broken-
+README-link class.
+
+### Added
+
+- **`skill_read` MCP tool** — `skill_read({name, version?}) -> {name, version,
+  status, source}`. Symmetric peer to `skill_write`. Cold-reader friction: the
+  Phase 1 dogfood agent (correctly) reasoned to `skill_read` after seeing
+  `skill_write`; previously there was no peer. Routed through `SkillStore.load`
+  for shared audit-path with `skill_metadata` (per Perry's design-review thread
+  `df5f6c3f` — "asymmetric surfaces lead to misclassification").
+  - Net MCP surface: 14 → 15 tools.
+- **`scripts/check-published-paths.mjs`** — build-time guard that runs
+  `npm pack --dry-run --json` and verifies every relative markdown link in
+  `README.md` resolves to a path in the published tarball. Wired into the
+  `build` script — runs on every local build + CI release pipeline + dogfood-t7
+  pack test. Closes the regression class that caused this release.
+- **`docs/configuration.md` ExperimentalWarning note** — single line explaining
+  the `node:sqlite` "experimental feature" startup log so cold adopters don't
+  treat it as an error.
+
+### Changed (breaking — pre-adoption cheap)
+
+- **`skill_metadata` no longer returns `source`** — caller must use `skill_read`
+  for the source body. Exclusive shape (not additive) per Perry's call: pre-
+  adoption is the window to clean up the contract; two paths to the same data
+  ossify into auth-divergence + docs-drift + canonical-path arguments forever
+  after. Dashboard SPA migrated to call both tools in parallel.
+- **`package.json` `files` array** — added `"docs/*.md"`, removed
+  `"ARCHITECTURE.md"`. ARCHITECTURE.md is an internal-architecture doc for
+  runtime contributors, not adopters; stays in the source repo.
+- **`.npmignore`** (new) — excludes `docs/ERD.md` (internal ERD framing, not
+  adopter-facing).
+- **`README.md` Quickstart** — added a "Running side-by-side with another
+  instance?" callout recommending local install + `npx skillfile` over
+  `npm install -g` for multi-instance setups. The global `skillfile` binary
+  collides on PATH when running adopter + dev daemons side-by-side.
+- **`README.md` ARCHITECTURE.md link** — removed the `see ARCHITECTURE.md`
+  parenthetical from the closed-set class registry section (line 337). The
+  "deliberately out of scope" assertion stands on its own; runtime contributors
+  still have ARCHITECTURE.md in the source repo for the rationale.
+- **`README.md` MCP tool count** — corrected from 13 to 15 (was off-by-one
+  even before this release; now correct + reflects `skill_read` addition).
+
+### Fixed
+
+The 5 Phase 1 dogfood findings:
+
+1. **Broken docs links in npm tarball** — README linked to `docs/configuration.md`,
+   `docs/adopter-playbook.md`, `docs/connector-contract-reference.md`,
+   `docs/language-reference.md`, `docs/sqlite-skill-store.md`. None shipped.
+   Fixed via `files` array + permanent guard script.
+2. **`skill_read` MCP tool didn't exist** — agent's instinct hit a missing peer
+   to `skill_write`. Fixed via new tool + Perry's exclusive-shape decision.
+3. **README quickstart contradicted local-install constraint** — TL;DR + Quickstart
+   said `-g` install without noting PATH collision risk for multi-instance setups.
+   Fixed via Quickstart callout.
+4. **node:sqlite ExperimentalWarning surprise** — adopters seeing the warning at
+   startup didn't know it was Node-side and harmless. Fixed via docs note.
+5. **Scaffold note about custom-via-connectors.json** — already documented in
+   `docs/configuration.md` § "Custom form"; agent's instinct correct; no fix
+   needed. Confirmation banked.
+
+### Meta-lesson
+
+Same shape as v0.13.2: a `files` array regression undetected for 5 ship cycles
+because no test asserted "what the README claims is in the package is actually
+in the package." Dogfood caught it within hours of v0.13.2 publish. The
+`check-published-paths.mjs` guard closes the class structurally — not just this
+instance — so a future README link addition can't silently rot.
+
+Companion meta-lesson banked in [[skillscript-dev-log §25]]: when shipping a
+"docs hardening" release, also ship the structural guard that prevents the
+recurrence. Test-only assertions catch regressions; build-time guards prevent
+them from leaving the dev's machine.
+
+### Internal
+
+- `tests/dogfood-t7.test.ts` test #14 extended with positive assertions for the
+  5 user-facing docs + negative assertions for `ARCHITECTURE.md` and
+  `docs/ERD.md` (belt-and-braces alongside the build-time guard).
+- `tests/mcp-server.test.ts` — `skill_metadata` test asserts source absence
+  (`not.toHaveProperty("source")`); two new tests for `skill_read` (round-trip
+  + missing-skill error propagation).
+- `src/dashboard/spa/app.js` — `renderSkillDetail` now calls `skill_metadata`
+  and `skill_read` in parallel via `Promise.all`. Guarded `skill_read.catch`
+  so the detail view degrades cleanly if the source isn't loadable.
+
 ## 0.13.2 — 2026-05-29 — Publish recovery: retired the YouTrack proving test
 
 The release pipeline has been silently broken since the May 28 housecleaning

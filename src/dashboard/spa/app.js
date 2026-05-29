@@ -161,7 +161,15 @@ function renderSkills() {
 
 async function renderSkillDetail(name) {
   try {
-    const { metadata, versions, source, recent_fires, approval } = await callTool("skill_metadata", { name });
+    // v0.13.3 — source moved out of skill_metadata into dedicated skill_read.
+    // Call both in parallel; skill_read may fail if the skill name doesn't
+    // resolve (load() throws), so guard it to keep the detail view rendering.
+    const [meta, readResult] = await Promise.all([
+      callTool("skill_metadata", { name }),
+      callTool("skill_read", { name }).catch(() => null),
+    ]);
+    const { metadata, versions, recent_fires, approval } = meta;
+    const source = readResult?.source ?? null;
     const metrics = state.metrics?.perSkill?.[name];
     const triggersForSkill = state.triggers.filter((t) => t.skillName === name);
     // v0.9.0 — surface approval-gate state. When Approved + gate-not-ok,

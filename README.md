@@ -220,7 +220,7 @@ If that bet is wrong, skillscript stays a nice niche tool. If it's right, skills
 ## Quickstart
 
 ```bash
-# Install
+# Install (global for single-instance use)
 npm install -g skillscript-runtime
 
 # Author your first skill
@@ -252,6 +252,8 @@ docker run -p 7878:7878 -v $(pwd)/skills:/skills \
   -e SKILLSCRIPT_HOME=/skills \
   ghcr.io/sshwarts/skillscript-runtime:latest
 ```
+
+**Running side-by-side with another instance?** Skip the global install — `npm install skillscript-runtime` (no `-g`) inside your project, then launch via `npx skillfile dashboard --port 7879 --connectors ~/.skillscript/adopter-connectors.json`. Pin a different port + a separate connectors.json + distinct sqlite `dbPath`s under [docs/configuration.md](docs/configuration.md). Global install puts a single `skillfile` binary on PATH and complicates dev iteration against a parallel daemon.
 
 ### A canonical autonomous skill
 
@@ -334,7 +336,7 @@ Two credential shapes:
 
 **Credential discipline (hard requirement):** `connectors.json` is secret-bearing. The repo's `.gitignore` excludes it by default. Use the version-controlled `connectors.json.example` as the template — copy it to `connectors.json` (gitignored), fill in real values. For deployments, prefer `${VAR}` substitution over in-file literals; commit the `${...}` references but keep the actual credentials in deployment env.
 
-**Closed-set class registry:** the runtime ships a fixed list of `class:` values it recognizes. `RemoteMcpConnector` is the JSON-instantiable class for the stdio-bridged remote MCP pattern; `CallbackMcpConnector` is wired via embedder code only (not configurable from JSON). Plugin-style runtime-arbitrary class loading is deliberately out of scope — see [ARCHITECTURE.md](ARCHITECTURE.md) for the rationale. Use `runtime_capabilities({include:["mcpConnectorClasses"]})` to introspect the available set in your runtime.
+**Closed-set class registry:** the runtime ships a fixed list of `class:` values it recognizes. `RemoteMcpConnector` is the JSON-instantiable class for the stdio-bridged remote MCP pattern; `CallbackMcpConnector` is wired via embedder code only (not configurable from JSON). Plugin-style runtime-arbitrary class loading is deliberately out of scope. Use `runtime_capabilities({include:["mcpConnectorClasses"]})` to introspect the available set in your runtime.
 
 ## CLI
 
@@ -362,11 +364,11 @@ Run `skillfile <command> --help` for per-command flags. Use `serve` for producti
 
 ## MCP server surface
 
-The runtime exposes 13 tools over MCP (HTTP at `/rpc`) for cold-client authoring + observability:
+The runtime exposes 15 tools over MCP (HTTP at `/rpc`) for cold-client authoring + observability:
 
 | Category | Tools |
 |---|---|
-| Skill management | `skill_list`, `skill_metadata`, `skill_status`, `skill_write` |
+| Skill management | `skill_list`, `skill_metadata`, `skill_read`, `skill_status`, `skill_write` |
 | Authoring | `lint_skill`, `compile_skill` |
 | Composition | `execute_skill` |
 | Triggers | `list_triggers`, `register_trigger`, `unregister_trigger` |

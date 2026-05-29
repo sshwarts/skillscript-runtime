@@ -90,7 +90,7 @@ describe("T6b dogfood — dashboard end-to-end", () => {
     expect(body).toMatch(/#connectors/);
   });
 
-  it("2. MCP server reachable via /rpc with all 14 tools (v0.9.0 added set_trigger_enabled)", async () => {
+  it("2. MCP server reachable via /rpc with all 15 tools (v0.13.3 added skill_read)", async () => {
     const r = await fetch(`${ctx.baseUrl}/rpc`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -101,7 +101,7 @@ describe("T6b dogfood — dashboard end-to-end", () => {
     expect(names).toEqual([
       "compile_skill", "execute_skill", "health_metrics", "help", "lint_skill",
       "list_triggers", "register_trigger", "runtime_capabilities", "set_trigger_enabled",
-      "skill_list", "skill_metadata", "skill_status", "skill_write", "unregister_trigger",
+      "skill_list", "skill_metadata", "skill_read", "skill_status", "skill_write", "unregister_trigger",
     ]);
   });
 

@@ -24,8 +24,8 @@ const REPO_ROOT = join(__dirname, "..");
 const PACKAGE_JSON = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as Record<string, unknown>;
 
 describe("T7 — package.json polish", () => {
-  it("1. version is 0.13.2 (publish recovery — retired the live YouTrack proving test that broke the release pipeline for 5 ship cycles)", () => {
-    expect(PACKAGE_JSON["version"]).toBe("0.13.2");
+  it("1. version is 0.13.3 (docs/install hardening: bundle adopter-facing docs, drop ARCHITECTURE from package, build-time link guard, skill_read MCP tool)", () => {
+    expect(PACKAGE_JSON["version"]).toBe("0.13.3");
   });
 
   it("2. main + types + bin + engines.node ≥ 22.5 declared", () => {
@@ -199,12 +199,21 @@ describe.skipIf(process.env["ENABLE_T7_PACK_DOGFOOD"] !== "1")("T7 — pack + in
     execSync("npm install --silent", { cwd: testDir });
   });
 
-  it("14. tarball contains dist/connectors/index.js (barrel)", () => {
+  it("14. tarball contains dist/connectors/index.js (barrel) + adopter-facing docs", () => {
     const tarball = execSync(`ls ${testDir}/*.tgz`, { encoding: "utf8" }).trim();
     const contents = execSync(`tar -tzf ${tarball}`, { encoding: "utf8" });
     expect(contents).toMatch(/package\/dist\/connectors\/index\.js/);
     expect(contents).toMatch(/package\/LICENSE/);
     expect(contents).toMatch(/package\/README\.md/);
+    // v0.13.3 — the 5 user-facing docs ship so README links resolve in the package.
+    // ARCHITECTURE.md + docs/ERD.md are internal-only and stay out of the tarball.
+    expect(contents).toMatch(/package\/docs\/configuration\.md/);
+    expect(contents).toMatch(/package\/docs\/adopter-playbook\.md/);
+    expect(contents).toMatch(/package\/docs\/connector-contract-reference\.md/);
+    expect(contents).toMatch(/package\/docs\/language-reference\.md/);
+    expect(contents).toMatch(/package\/docs\/sqlite-skill-store\.md/);
+    expect(contents).not.toMatch(/package\/docs\/ERD\.md/);
+    expect(contents).not.toMatch(/package\/ARCHITECTURE\.md/);
     expect(contents).not.toMatch(/package\/tests\//);
     expect(contents).not.toMatch(/package\/src\//);
     expect(contents).not.toMatch(/package\/scripts\//);
