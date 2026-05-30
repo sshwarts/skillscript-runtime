@@ -22,6 +22,8 @@ export type {
   MemoryStoreClass,
   PortableMemory,
   QueryFilters,
+  MemoryWrite,
+  MemoryWriteRecord,
   LocalModel,
   LocalModelClass,
   McpConnector,

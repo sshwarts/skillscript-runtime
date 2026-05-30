@@ -36,6 +36,7 @@ import { evaluateApprovalGate } from "./approval.js";
  *   skill_list({filter?})          → SkillCatalog (v0.9.8 — pre-grouped by audience)
  *   skill_metadata({name})         → metadata + version history + recent_fires + approval (no source — see skill_read)
  *   skill_read({name, version?})   → {name, version, status, source} (v0.13.3 — symmetric peer to skill_write)
+ *   memory_read({id, store?})      → PortableMemory | null (v0.13.8 — direct lookup; no memory_write MCP by design)
  *   skill_status({name, new_state})→ SkillStatus update (write)
  *   list_triggers({filter?})       → TriggerRegistration[]
  *   register_trigger({...})        → TriggerRegistration (write)
@@ -287,6 +288,33 @@ export class McpServer {
           status: loaded.metadata.status,
           source: loaded.source,
         };
+      },
+    });
+
+    this.registerTool({
+      name: "memory_read",
+      description: "Read a memory by substrate-assigned id. Returns the PortableMemory or null if not found. Symmetric peer to skill_read; lets adopters/agents inspect persisted memories outside execute_skill. v0.13.8 — note: there is no `memory_write` MCP tool by design; writes are skill-context-only (`$ memory_write` op inside a skill body) to preserve intent-tracking.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          store: { type: "string", description: "Named MemoryStore (default: 'primary')" },
+        },
+        required: ["id"],
+      },
+      handler: async (args) => {
+        const id = args["id"] as string;
+        const storeName = typeof args["store"] === "string" ? args["store"] : "primary";
+        if (this.deps.registry === undefined || !this.deps.registry.hasMemoryStore(storeName)) {
+          throw new OpError(
+            `\`memory_read\` requires a MemoryStore registered as '${storeName}'; none found in registry.`,
+            "memory_read",
+            `Configure a MemoryStore in connectors.json substrate.memory_store, or register one programmatically via registry.registerMemoryStore("${storeName}", ...).`,
+            id,
+          );
+        }
+        const memoryStore = this.deps.registry.getMemoryStore(storeName);
+        return await memoryStore.get(id);
       },
     });
 

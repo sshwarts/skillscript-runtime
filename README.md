@@ -364,14 +364,15 @@ Run `skillfile <command> --help` for per-command flags. Use `serve` for producti
 
 ## MCP server surface
 
-The runtime exposes 15 tools over MCP (HTTP at `/rpc`) for cold-client authoring + observability:
+The runtime exposes 16 tools over MCP (HTTP at `/rpc`) for cold-client authoring + observability:
 
 | Category | Tools |
 |---|---|
 | Skill management | `skill_list`, `skill_metadata`, `skill_read`, `skill_status`, `skill_write` |
+| Memory | `memory_read` |
 | Authoring | `lint_skill`, `compile_skill` |
 | Composition | `execute_skill` |
-| Triggers | `list_triggers`, `register_trigger`, `unregister_trigger` |
+| Triggers | `list_triggers`, `register_trigger`, `unregister_trigger`, `set_trigger_enabled` |
 | Observability | `health_metrics` |
 | Discovery | `runtime_capabilities`, `help` |
 

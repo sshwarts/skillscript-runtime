@@ -1,5 +1,97 @@
 # Changelog
 
+## 0.13.8 — 2026-05-29 — Phase 3 fallout + memory_read MCP tool + storage-conventions docs
+
+Phase 3 cold-adopter dogfood (AMP-backed MemoryStore + AmpSkillStore vault
+migration) wrapped successfully. The cold agent delivered an implementer's-eye
+summary surfacing several contract-design questions Perry locked in thread
+`4b58c283`; v0.13.8 ships the narrow set (bug fix + docs + small additive),
+v0.14.0 will absorb the contract evolution (Q2 vault op-syntax + Q3
+strict_filters).
+
+### Added
+
+- **`memory_read(id, store?) -> PortableMemory | null` MCP tool** (Perry Q1C).
+  Direct memory lookup by substrate-assigned id; mirrors `skill_read` pattern.
+  Returns `null` on miss (matches MemoryStore's empty-set convention — distinct
+  from SkillStore's throw-on-miss; cold agent flagged this asymmetry as
+  load-bearing in their "credit where due" summary). **No `memory_write` MCP
+  by design** — writes are skill-context-only (`$ memory_write` op inside a
+  skill body) to preserve intent-tracking. Reaches via the registered
+  MemoryStore; errors cleanly when no store is registered.
+- **`MemoryStore.get(id): Promise<PortableMemory | null>`** — new contract
+  method backing `memory_read`. SqliteMemoryStore impl is a simple
+  `SELECT WHERE id = $id`. Adopters forking `MemoryStoreTemplate` add a
+  matching impl; null semantics must hold.
+- **`MemoryWrite` + `MemoryWriteRecord` re-exported** from
+  `skillscript-runtime/connectors`. Phase 3 cold agent caught v0.13.7's F2
+  fix was incomplete — `MemoryStoreTemplate.ts` imported these two types but
+  they weren't re-exported. Template now compiles standalone after fork
+  (same as the SkillStore/LocalModel/McpConnector/AgentConnector templates
+  did post-v0.13.7).
+- **`README.md` Memory row + tool count bumped 15 → 16** (memory_read in its
+  own row; matches dogfood-t7's table-vs-runtime drift guard added below).
+- **`docs/connector-contract-reference.md` § "Storage-layer conventions"**
+  (~120 lines). Documents the SkillStore + MemoryStore conventions that live
+  in bundled reference impls but aren't in the typed contracts:
+  `content_hash = sha256(approval-stamped body)`, `version = first 12 hex`,
+  `store()` auto-stamps approval token (runtime-semantic leak callout),
+  summary/detail split is convention, `get(id)` returns null vs SkillStore
+  `load()` throws, durability stance, filter-scope discipline. Cold-agent
+  framing: *"the contracts are shape-portable, not semantics-portable —
+  hidden coupling to the reference impl, documented only in its source."*
+  Now documented.
+- **`docs/adopter-playbook.md` § "Notable gaps"** — three new bullets covering
+  (1) SkillStore vs MemoryStore lifecycle asymmetry as design stance, (2)
+  durability-is-implementer's-responsibility, (3) filter-scope advisory-
+  today + v0.14.0 strict_filters preview. Includes Phase 3's AMP TTL example
+  as cautionary tale.
+
+### Fixed
+
+- **Doc drift in MCP-surface table** (Perry's `a8ac822f`). README listed 3
+  trigger tools; actual is 4. v0.13.3 fixed the total count but missed
+  per-row update for Triggers. `set_trigger_enabled` now in the Triggers
+  row.
+- **`docs/ERD.md` was silently shipping in the tarball** since v0.13.3 — the
+  `.npmignore` was theater (npm ignores `.npmignore` when `files` array is
+  set in `package.json`). Fixed via explicit `files` list (5 user-facing
+  docs enumerated, not a `docs/*.md` glob). `.npmignore` deleted as
+  redundant + misleading.
+- **`tests/dogfood-t7.test.ts` test #17 — README-vs-runtime tool-list
+  drift guard.** Closes the doc-drift class structurally: every tool the
+  README claims exists must exist in the runtime, every runtime tool must
+  be claimed somewhere in the MCP-surface table. Different class than
+  v0.13.3's link-guard (which validates path resolution, not table
+  content); same belt-and-braces pattern.
+
+### Meta-lesson banked
+
+**"Defaults matter more than knobs for security-relevant surfaces"**
+(Perry, thread `4b58c283`). All three Phase 3 contract design questions
+laddered to the same axis: Q1 (writes skill-context-only by default — no
+memory_write MCP; preserves intent-tracking), Q2 (vault choice explicit
+per-write; intent-driven not implicit), Q3 (strict_filters default-on for
+filter enforcement). The "we'll let adopters opt in" pattern is seductive
+and consistently wrong for scope/visibility/security shapes — aware
+adopters opt out, naive adopters get protection. Banked as a feedback
+memory for future contract decisions. Sibling to v0.13.7's `skill_status`
+silent-corruption finding: "the contract declares a discipline, but
+enforcement is opt-in or absent" is the recurring class.
+
+### Note on v0.14.0
+
+Two contract-evolution items locked but deferred:
+- **Q2** — `$ memory_write vault="..."` op-syntax kwarg (writes-only, not
+  on `$ memory` query). Real signal from Phase 3 cold agent who hit
+  "the op can't express it" for per-call team override.
+- **Q3** — `strict_filters: true` default + lint-time filter check +
+  `UnsupportedFilterError` class. Cold agent's "single most valuable fix
+  for non-SQLite adopters." Belt-and-braces (runtime + lint) per Perry.
+
+Both are language-grammar / behavior-change scope; bundling together in
+v0.14.0 keeps the contract evolution narrative clean.
+
 ## 0.13.7 — 2026-05-29 — skill_status silent-corruption hardening + fork-template re-exports
 
 Phase 2 dogfood (a cold adopter wrote a real `AmpSkillStore` against the 8-method

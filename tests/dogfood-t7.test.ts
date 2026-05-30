@@ -24,8 +24,8 @@ const REPO_ROOT = join(__dirname, "..");
 const PACKAGE_JSON = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as Record<string, unknown>;
 
 describe("T7 — package.json polish", () => {
-  it("1. version is 0.13.7 (skill_status silent-corruption hardening + per-kind Capabilities/Manifest types re-exported + fork-template imports fixed)", () => {
-    expect(PACKAGE_JSON["version"]).toBe("0.13.7");
+  it("1. version is 0.13.8 (Phase 3 fallout: memory_read MCP tool + MemoryWrite/MemoryWriteRecord re-exports + storage-conventions docs + set_trigger_enabled README fix + table-vs-runtime drift guard + ERD silent-ship fix)", () => {
+    expect(PACKAGE_JSON["version"]).toBe("0.13.8");
   });
 
   it("2. main + types + bin + engines.node ≥ 22.5 declared", () => {
@@ -255,5 +255,73 @@ describe.skipIf(process.env["ENABLE_T7_PACK_DOGFOOD"] !== "1")("T7 — pack + in
     writeFileSync(join(testDir, "test-roundtrip.mjs"), rtTest);
     const out = execSync("node test-roundtrip.mjs", { cwd: testDir, encoding: "utf8" });
     expect(out.trim()).toBe("OK");
+  });
+
+  // v0.13.8 — Perry caught a missing tool in the README MCP-surface table
+  // (set_trigger_enabled was real since v0.9.0 but never listed). Same class
+  // of doc-vs-code drift the check-published-paths.mjs link-guard doesn't
+  // catch (it validates path resolution, not table-content-vs-runtime).
+  // This assertion closes the class structurally: every tool the README
+  // claims exists must exist in the runtime, and every runtime tool must be
+  // claimed somewhere in the README's MCP-surface table.
+  it("17. README MCP-surface table matches runtime tools/list (no doc drift)", () => {
+    const readmePath = join(REPO_ROOT, "README.md");
+    const readme = readFileSync(readmePath, "utf8");
+
+    // Find the MCP-surface section — anchored on the "N tools over MCP" intro
+    // sentence + the table that follows it.
+    const sectionMatch = readme.match(
+      /exposes \d+ tools over MCP[\s\S]*?\| Discovery \| `[^|]+`[^|\n]*\|/m,
+    );
+    if (sectionMatch === null) {
+      throw new Error(
+        "Couldn't find README MCP-surface table — anchor sentence ('exposes N tools over MCP') or Discovery row may have moved",
+      );
+    }
+    const section = sectionMatch[0];
+
+    // Extract every backtick-quoted lowercase-with-underscores identifier
+    // from the table. These are the tools the README claims exist.
+    const documented = new Set<string>();
+    const toolRe = /`([a-z][a-z_]+)`/g;
+    let m: RegExpExecArray | null;
+    while ((m = toolRe.exec(section)) !== null) {
+      documented.add(m[1]!);
+    }
+    // Strip non-tool tokens that appear in row headers or prose (none today,
+    // but defensive — `/rpc` would be filtered out by the lowercase-only
+    // regex above already).
+
+    // Spawn a fresh-install McpServer + dump tools/list. Same surface as the
+    // running runtime.
+    const dumpScript = `
+      import { McpServer } from "skillscript-runtime";
+      import { FilesystemSkillStore, NoOpAgentConnector } from "skillscript-runtime/connectors";
+      import { mkdtempSync, rmSync } from "node:fs";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      const home = mkdtempSync(join(tmpdir(), "t7-tools-list-"));
+      // Minimal deps — McpServer registers all built-in tools regardless of
+      // whether the scheduler / trace store / etc. are real.
+      const stub = {};
+      const server = new McpServer({
+        skillStore: new FilesystemSkillStore(home),
+        scheduler: { getTriggers: () => [], registerTrigger: () => null, unregisterTrigger: () => false, setTriggerEnabled: () => null },
+        traceStore: { query: () => [] },
+        registry: { listSkillStores: () => [], listMemoryStores: () => [], listLocalModels: () => [], listMcpConnectors: () => [], listMcpConnectorClasses: () => [], listAgentConnectors: () => [] },
+        runtimeMode: "serve",
+      });
+      console.log(JSON.stringify(server.listTools().map(t => t.name).sort()));
+      rmSync(home, { recursive: true, force: true });
+    `;
+    writeFileSync(join(testDir, "test-tools-list.mjs"), dumpScript);
+    const out = execSync("node test-tools-list.mjs", { cwd: testDir, encoding: "utf8" });
+    const runtime = new Set<string>(JSON.parse(out.trim()) as string[]);
+
+    // Symmetric set diff — both directions matter.
+    const onlyDocumented = [...documented].filter((t) => !runtime.has(t));
+    const onlyRuntime = [...runtime].filter((t) => !documented.has(t));
+    expect(onlyDocumented, `README documents tools the runtime doesn't expose: ${onlyDocumented.join(", ")}`).toEqual([]);
+    expect(onlyRuntime, `Runtime exposes tools the README doesn't document: ${onlyRuntime.join(", ")}`).toEqual([]);
   });
 });

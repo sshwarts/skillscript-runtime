@@ -157,6 +157,17 @@ export class SqliteMemoryStore implements MemoryStore {
     `);
   }
 
+  // v0.13.8 — direct lookup by id. Mirrors `SqliteSkillStore.skillRow` shape
+  // but returns `null` on miss instead of throwing (per MemoryStore's empty-set
+  // convention, distinct from SkillStore's throw-on-miss).
+  async get(id: string): Promise<PortableMemory | null> {
+    const row = this.db.prepare(
+      "SELECT id, summary, detail, tags, created_at, metadata FROM memories WHERE id = $id",
+    ).get({ $id: id }) as Record<string, unknown> | undefined;
+    if (row === undefined) return null;
+    return this.rowToMemory(row, undefined);
+  }
+
   async query(filters: QueryFilters): Promise<PortableMemory[]> {
     const { query, limit, mode } = filters;
     if (mode !== "fts") {

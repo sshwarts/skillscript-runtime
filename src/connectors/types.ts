@@ -449,6 +449,16 @@ export interface MemoryStore {
    * dispatch context). Returns the substrate-assigned id + timestamp.
    */
   write(entry: MemoryWrite): Promise<MemoryWriteRecord>;
+  /**
+   * Direct lookup by substrate-assigned id. v0.13.8 — added so the
+   * `memory_read` MCP tool can inspect a memory without going through
+   * a query roundtrip. Returns `null` (not throws) when the id isn't
+   * found, matching MemoryStore's existing empty-set convention (vs.
+   * SkillStore which throws `SkillNotFoundError`). Substrates that
+   * don't have a queryable-by-id concept can implement via
+   * `query({id})` extension + filter, but `null` semantics must hold.
+   */
+  get(id: string): Promise<PortableMemory | null>;
   manifest(): Promise<ManifestInfo>;
 }
 
