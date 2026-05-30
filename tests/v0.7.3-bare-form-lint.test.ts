@@ -4,18 +4,18 @@ import { compile } from "../src/compile.js";
 import { execute } from "../src/runtime.js";
 import { bootstrap } from "../src/bootstrap.js";
 import { LocalModelMcpConnector } from "../src/connectors/local-model-mcp.js";
-import { MemoryStoreMcpConnector } from "../src/connectors/memory-store-mcp.js";
+import { DataStoreMcpConnector } from "../src/connectors/data-store-mcp.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LocalModel, MemoryStore, PortableMemory } from "../src/connectors/types.js";
+import type { LocalModel, DataStore, PortableData } from "../src/connectors/types.js";
 
 // v0.7.3 push-blocker fix (per Perry 75b964ed). The v0.7.2 bare-form
 // dispatch fix landed at the runtime resolver but the `unwired-primary-
 // connector` lint rule still used the pre-v0.7.2 model: bare `$ <name>`
 // was treated as a tool name needing `primary.<name>` lookup, ignoring
 // name-match against wired connectors. Cold-author skills with bare-form
-// `$ llm` / `$ memory` failed at lint before ever reaching the runtime
+// `$ llm` / `$ data_read` failed at lint before ever reaching the runtime
 // resolver — making the v0.7.2 "bare-form just works" promise broken at
 // the user-facing layer.
 //
@@ -37,16 +37,16 @@ class FakeLocalModel implements LocalModel {
   }
 }
 
-class FakeMemoryStore implements MemoryStore {
+class FakeDataStore implements DataStore {
   public lastQuery: Record<string, unknown> | null = null;
-  async query(filters: Record<string, unknown> & { query: string; limit: number; mode: string }): Promise<PortableMemory[]> {
+  async query(filters: Record<string, unknown> & { query: string; limit: number; mode: string }): Promise<PortableData[]> {
     this.lastQuery = filters;
     return [
-      { id: "m1", summary: "first item", confidence: 0.9, agentId: "test", vault: "private" } as unknown as PortableMemory,
+      { id: "m1", summary: "first item", confidence: 0.9, agentId: "test", vault: "private" } as unknown as PortableData,
     ];
   }
   async manifest(): Promise<{ capabilities_version: string; manifest: Record<string, unknown> }> {
-    return { capabilities_version: "1", manifest: { kind: "fake-memory-store" } };
+    return { capabilities_version: "1", manifest: { kind: "fake-data-store" } };
   }
 }
 
@@ -55,13 +55,13 @@ describe("v0.7.3 — bare-form bridge dispatch lint (full user path: lint → co
   beforeEach(() => { home = mkdtempSync(join(tmpdir(), "v073-bare-lint-")); });
   afterEach(() => { rmSync(home, { recursive: true, force: true }); });
 
-  it("LINT — bare `$ memory` passes when `memory` connector is wired (was push-blocker pre-v0.7.3)", async () => {
+  it("LINT — bare `$ data_read` passes when `memory` connector is wired (was push-blocker pre-v0.7.3)", async () => {
     const wired = bootstrap({ skillsDir: join(home, "skills"), traceDir: join(home, "traces") });
-    wired.registry.registerMcpConnector("memory", new MemoryStoreMcpConnector(new FakeMemoryStore()));
+    wired.registry.registerMcpConnector("data_read", new DataStoreMcpConnector(new FakeDataStore()));
 
-    const src = `# Skill: t\n# Status: Approved\nrun:\n    $ memory mode="fts" query="incidents" limit=5 -> R\n    emit(text="\${R.items|length}")\ndefault: run\n`;
+    const src = `# Skill: t\n# Status: Approved\nrun:\n    $ data_read mode="fts" query="incidents" limit=5 -> R\n    emit(text="\${R.items|length}")\ndefault: run\n`;
     const result = await lint(src, { registry: wired.registry });
-    // The exact assertion: no `unwired-primary-connector` errors against `$ memory`.
+    // The exact assertion: no `unwired-primary-connector` errors against `$ data_read`.
     const unwiredErrors = result.findings.filter((f) => f.rule === "unwired-primary-connector");
     expect(unwiredErrors).toEqual([]);
     expect(result.errorCount).toBe(0);
@@ -80,7 +80,7 @@ describe("v0.7.3 — bare-form bridge dispatch lint (full user path: lint → co
 
   it("LINT — bare `$ unknown_tool` STILL errors when no matching connector + no primary (regression guard)", async () => {
     const wired = bootstrap({ skillsDir: join(home, "skills"), traceDir: join(home, "traces") });
-    wired.registry.registerMcpConnector("memory", new MemoryStoreMcpConnector(new FakeMemoryStore()));
+    wired.registry.registerMcpConnector("data_read", new DataStoreMcpConnector(new FakeDataStore()));
     // `unknown_tool` has no matching connector and no primary → lint should error.
     const src = `# Skill: t\n# Status: Approved\nrun:\n    $ unknown_tool foo="bar" -> R\ndefault: run\n`;
     const result = await lint(src, { registry: wired.registry });
@@ -98,14 +98,14 @@ describe("v0.7.3 — bare-form bridge dispatch lint (full user path: lint → co
     expect(unwiredErrors).toEqual([]);
   });
 
-  it("FULL USER PATH — bare `$ memory` + `$ llm` skill runs lint → compile → execute end-to-end", async () => {
+  it("FULL USER PATH — bare `$ data_read` + `$ llm` skill runs lint → compile → execute end-to-end", async () => {
     const wired = bootstrap({ skillsDir: join(home, "skills"), traceDir: join(home, "traces") });
     const fakeLm = new FakeLocalModel();
-    const fakeMs = new FakeMemoryStore();
+    const fakeMs = new FakeDataStore();
     wired.registry.registerMcpConnector("llm", new LocalModelMcpConnector(fakeLm));
-    wired.registry.registerMcpConnector("memory", new MemoryStoreMcpConnector(fakeMs));
+    wired.registry.registerMcpConnector("data_read", new DataStoreMcpConnector(fakeMs));
 
-    const src = `# Skill: bare-bridge-canonical\n# Status: Approved\n# Vars: QUERY=incidents\nrun:\n    $ memory mode="fts" query="\${QUERY}" limit=3 -> MEMS\n    $ llm prompt="One-line summary of: \${MEMS.items|length} hits" -> SUMMARY\n    emit(text="\${SUMMARY}")\ndefault: run\n`;
+    const src = `# Skill: bare-bridge-canonical\n# Status: Approved\n# Vars: QUERY=incidents\nrun:\n    $ data_read mode="fts" query="\${QUERY}" limit=3 -> MEMS\n    $ llm prompt="One-line summary of: \${MEMS.items|length} hits" -> SUMMARY\n    emit(text="\${SUMMARY}")\ndefault: run\n`;
 
     // Step 1: lint must accept the bare-form (this was the push-blocker).
     const lintResult = await lint(src, { registry: wired.registry });

@@ -34,7 +34,7 @@ describe("v0.7.3 — loadSkillscriptConfig", () => {
     withTempConfig({
       skillsDir: "/var/skills",
       traceDir: "/var/traces",
-      memoryDbPath: "/var/memory.db",
+      dataDbPath: "/var/data.db",
       pollIntervalSeconds: 60,
       enableUnsafeShell: true,
       mode: "serve",
@@ -47,7 +47,7 @@ describe("v0.7.3 — loadSkillscriptConfig", () => {
       expect(result.config).toEqual({
         skillsDir: "/var/skills",
         traceDir: "/var/traces",
-        memoryDbPath: "/var/memory.db",
+        dataDbPath: "/var/data.db",
         pollIntervalSeconds: 60,
         enableUnsafeShell: true,
         mode: "serve",

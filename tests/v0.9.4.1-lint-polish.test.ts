@@ -23,7 +23,7 @@ m:
 
 default: m
 `;
-    const r = await lint(src, { mcpConnectorNames: ["llm", "memory"] });
+    const r = await lint(src, { mcpConnectorNames: ["llm", "data_read"] });
     const finding = r.findings.find((f) => f.rule === "unwired-primary-connector");
     expect(finding).toBeDefined();
     expect(finding!.severity).toBe("info");
@@ -42,7 +42,7 @@ m:
 
 default: m
 `;
-    const r = await lint(src, { mcpConnectorNames: ["llm", "memory"] });
+    const r = await lint(src, { mcpConnectorNames: ["llm", "data_read"] });
     const finding = r.findings.find((f) => f.rule === "unwired-primary-connector");
     expect(finding).toBeDefined();
     expect(finding!.severity).toBe("error");
@@ -59,7 +59,7 @@ m:
 
 default: m
 `;
-    const r = await lint(src, { mcpConnectorNames: ["llm", "memory"] });
+    const r = await lint(src, { mcpConnectorNames: ["llm", "data_read"] });
     const findings = r.findings.filter((f) => f.rule === "unwired-primary-connector");
     expect(findings).toHaveLength(1);
     expect(findings[0]!.severity).toBe("error");
@@ -70,12 +70,12 @@ default: m
 # Status: Approved
 
 m:
-    $ memory query="x" -> R
+    $ data_read query="x" -> R
     emit(text="\${R}")
 
 default: m
 `;
-    const r = await lint(src, { mcpConnectorNames: ["memory"] });
+    const r = await lint(src, { mcpConnectorNames: ["data_read"] });
     expect(r.findings.find((f) => f.rule === "unwired-primary-connector")).toBeUndefined();
   });
 });

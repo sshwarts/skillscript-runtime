@@ -5,7 +5,7 @@
 # Output: text
 
 answer:
-    $ memory mode=rerank query="${QUESTION}" limit=${K} -> HITS (fallback: [])
+    $ data_read mode=rerank query="${QUESTION}" limit=${K} -> HITS (fallback: [])
     $ llm prompt="Answer the question using ONLY the supplied passages. Cite each claim inline as [id:<memory-id>]. Question: ${QUESTION}. Passages: ${HITS|json}" maxTokens=900 -> RESPONSE
     emit(text="${RESPONSE}")
 

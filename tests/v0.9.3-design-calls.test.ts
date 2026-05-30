@@ -62,11 +62,11 @@ default: m
 });
 
 describe("v0.9.3 — P1.3 deprecated-addressed-to lint", () => {
-  it("fires on `$ memory_write ... addressed_to=...`", async () => {
+  it("fires on `$ data_write ... addressed_to=...`", async () => {
     const src = `# Skill: t
 # Status: Approved
 m:
-    $ memory_write content="hello" addressed_to="oncall" -> R
+    $ data_write content="hello" addressed_to="oncall" -> R
 default: m
 `;
     const r = await lint(src);
@@ -79,14 +79,14 @@ default: m
     const src = `# Skill: t
 # Status: Approved
 m:
-    $ memory_write content="hello" recipients=[oncall] -> R
+    $ data_write content="hello" recipients=[oncall] -> R
 default: m
 `;
     const r = await lint(src);
     expect(r.findings.find((f) => f.rule === "deprecated-addressed-to")).toBeUndefined();
   });
 
-  it("does NOT fire on other `$ memory_write`-shaped tools that aren't memory_write", async () => {
+  it("does NOT fire on other `$ data_write`-shaped tools that aren't data_write", async () => {
     const src = `# Skill: t
 # Status: Approved
 m:

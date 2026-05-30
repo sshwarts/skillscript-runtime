@@ -104,16 +104,16 @@ describe("v0.7.1 — unconfirmed-mutation broadening", () => {
     expect(um).toEqual([]);
   });
 
-  it("fires on $ memory_write without approved=", async () => {
-    const src = `# Skill: t\nrun:\n    $ memory_write content="x" -> R\n\ndefault: run\n`;
+  it("fires on $ data_write without approved=", async () => {
+    const src = `# Skill: t\nrun:\n    $ data_write content="x" -> R\n\ndefault: run\n`;
     const r = await lint(src);
     const um = r.findings.filter((f) => f.rule === "unconfirmed-mutation");
     expect(um.length).toBeGreaterThanOrEqual(1);
-    expect(um.some((f) => /memory_write/.test(f.message))).toBe(true);
+    expect(um.some((f) => /data_write/.test(f.message))).toBe(true);
   });
 
-  it("silent on $ memory_write preceded by ask(...) gate", async () => {
-    const src = `# Skill: t\nrun:\n    ask(prompt="proceed?") -> OK\n    $ memory_write content="x" -> R\n\ndefault: run\n`;
+  it("silent on $ data_write preceded by ask(...) gate", async () => {
+    const src = `# Skill: t\nrun:\n    ask(prompt="proceed?") -> OK\n    $ data_write content="x" -> R\n\ndefault: run\n`;
     const r = await lint(src);
     const um = r.findings.filter((f) => f.rule === "unconfirmed-mutation");
     expect(um).toEqual([]);

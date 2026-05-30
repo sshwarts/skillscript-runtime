@@ -5,8 +5,8 @@
 # Where skill files live. Filesystem SkillStore reads/writes here.
 skills_dir = "~/.skillscript/skills"
 
-# SQLite database for the bundled-default MemoryStore.
-memory_db = "~/.skillscript/memory.db"
+# SQLite database for the bundled-default DataStore.
+data_db = "~/.skillscript/data.db"
 
 # Plugin discovery roots (filesystem + npm packages, per the v1 spec).
 plugins_dir = "~/.skillscript/plugins"

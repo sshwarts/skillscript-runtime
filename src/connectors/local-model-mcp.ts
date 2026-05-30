@@ -4,7 +4,7 @@
 //
 // Per Perry's v0.7.2 kickoff (d284763f) + Scott's substrate-portability
 // architectural decision (831c2661 thread). This bridge — together with
-// `MemoryStoreMcpConnector` — defines the canonical MCP-dispatch contract
+// `DataStoreMcpConnector` — defines the canonical MCP-dispatch contract
 // for the LLM op class:
 //
 //   $ <connector_name> prompt="..." [maxTokens=N] [model="..."] -> R

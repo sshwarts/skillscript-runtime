@@ -24,8 +24,8 @@ const REPO_ROOT = join(__dirname, "..");
 const PACKAGE_JSON = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as Record<string, unknown>;
 
 describe("T7 — package.json polish", () => {
-  it("1. version is 0.13.8 (Phase 3 fallout: memory_read MCP tool + MemoryWrite/MemoryWriteRecord re-exports + storage-conventions docs + set_trigger_enabled README fix + table-vs-runtime drift guard + ERD silent-ship fix)", () => {
-    expect(PACKAGE_JSON["version"]).toBe("0.13.8");
+  it("1. version is 0.14.0 (MemoryStore → DataStore rename — hard rename across contract + ops + identifiers + files; misleading nomenclature retired pre-adoption)", () => {
+    expect(PACKAGE_JSON["version"]).toBe("0.14.0");
   });
 
   it("2. main + types + bin + engines.node ≥ 22.5 declared", () => {
@@ -87,13 +87,13 @@ describe("T7 — distributed code surface", () => {
   it("8. connectors barrel re-exports types + Registry + bundled impls", () => {
     const barrel = readFileSync(join(REPO_ROOT, "src/connectors/index.ts"), "utf8");
     expect(barrel).toMatch(/SkillStore/);
-    expect(barrel).toMatch(/MemoryStore/);
+    expect(barrel).toMatch(/DataStore/);
     expect(barrel).toMatch(/LocalModel/);
     expect(barrel).toMatch(/McpConnector/);
     expect(barrel).toMatch(/Registry/);
     expect(barrel).toMatch(/FilesystemSkillStore/);
     expect(barrel).toMatch(/OllamaLocalModel/);
-    expect(barrel).toMatch(/SqliteMemoryStore/);
+    expect(barrel).toMatch(/SqliteDataStore/);
     expect(barrel).toMatch(/CallbackMcpConnector/);
   });
 });
@@ -308,7 +308,7 @@ describe.skipIf(process.env["ENABLE_T7_PACK_DOGFOOD"] !== "1")("T7 — pack + in
         skillStore: new FilesystemSkillStore(home),
         scheduler: { getTriggers: () => [], registerTrigger: () => null, unregisterTrigger: () => false, setTriggerEnabled: () => null },
         traceStore: { query: () => [] },
-        registry: { listSkillStores: () => [], listMemoryStores: () => [], listLocalModels: () => [], listMcpConnectors: () => [], listMcpConnectorClasses: () => [], listAgentConnectors: () => [] },
+        registry: { listSkillStores: () => [], listDataStores: () => [], listLocalModels: () => [], listMcpConnectors: () => [], listMcpConnectorClasses: () => [], listAgentConnectors: () => [] },
         runtimeMode: "serve",
       });
       console.log(JSON.stringify(server.listTools().map(t => t.name).sort()));

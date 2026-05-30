@@ -17,12 +17,12 @@ import { FilesystemSkillStore } from "../src/connectors/skill-store.js";
 import { Registry } from "../src/connectors/registry.js";
 
 describe("v0.9.4 — N1 approved= kwarg suppresses unconfirmed-mutation", () => {
-  it("`$ memory_write content=... approved=...` suppresses the lint", async () => {
+  it("`$ data_write content=... approved=...` suppresses the lint", async () => {
     const src = `# Skill: t
 # Status: Approved
 
 m:
-    $ memory_write content="hi" approved="cron deliverable" -> R
+    $ data_write content="hi" approved="cron deliverable" -> R
 
 default: m
 `;
@@ -30,12 +30,12 @@ default: m
     expect(r.findings.find((f) => f.rule === "unconfirmed-mutation")).toBeUndefined();
   });
 
-  it("bare `$ memory_write ...` (no approved=) still fires", async () => {
+  it("bare `$ data_write ...` (no approved=) still fires", async () => {
     const src = `# Skill: t
 # Status: Approved
 
 m:
-    $ memory_write content="hi" -> R
+    $ data_write content="hi" -> R
 
 default: m
 `;
@@ -48,7 +48,7 @@ default: m
 # Status: Approved
 
 m:
-    $ memory_write content="hi" approved="reason here" -> R
+    $ data_write content="hi" approved="reason here" -> R
 
 default: m
 `;

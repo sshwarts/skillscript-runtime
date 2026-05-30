@@ -12,9 +12,9 @@ import { join } from "node:path";
 import { FilesystemSkillStore } from "../src/connectors/skill-store.js";
 import { Registry } from "../src/connectors/registry.js";
 import { LocalModelMcpConnector } from "../src/connectors/local-model-mcp.js";
-import { MemoryStoreMcpConnector } from "../src/connectors/memory-store-mcp.js";
+import { DataStoreMcpConnector } from "../src/connectors/data-store-mcp.js";
 import { OllamaLocalModel } from "../src/connectors/local-model.js";
-import { SqliteMemoryStore } from "../src/connectors/memory-store.js";
+import { SqliteDataStore } from "../src/connectors/data-store.js";
 import { validateQualifiedDispatch } from "../src/dispatch-validate.js";
 import { lint } from "../src/lint.js";
 import { McpServer, type JsonRpcRequest } from "../src/mcp-server.js";
@@ -42,10 +42,10 @@ describe("v0.9.1 — validateQualifiedDispatch", () => {
     registry.registerSkillStore("primary", new FilesystemSkillStore(join(dir, "skills")));
     registry.registerLocalModel("default", new OllamaLocalModel({ baseUrl: "http://localhost:11434", defaultModelTag: "gemma2:9b" }));
     registry.registerMcpConnector("llm", new LocalModelMcpConnector(registry.getLocalModel("default")));
-    registry.registerMemoryStore("primary", new SqliteMemoryStore({ dbPath: join(dir, "mem.db") }));
-    const memBridge = new MemoryStoreMcpConnector(registry.getMemoryStore("primary"));
-    registry.registerMcpConnector("memory", memBridge);
-    registry.registerMcpConnector("memory_write", memBridge);
+    registry.registerDataStore("primary", new SqliteDataStore({ dbPath: join(dir, "mem.db") }));
+    const memBridge = new DataStoreMcpConnector(registry.getDataStore("primary"));
+    registry.registerMcpConnector("data_read", memBridge);
+    registry.registerMcpConnector("data_write", memBridge);
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -137,13 +137,13 @@ default: m
       expect(finding).toBeUndefined();
     });
 
-    it("lint passes `$ memory.query` and `$ memory.memory_write` clean", async () => {
+    it("lint passes `$ data_read.query` and `$ data_read.data_write` clean", async () => {
       const src = `# Skill: ok
 # Status: Approved
 
 m:
-    $ memory.query query="x" -> Q
-    $ memory.memory_write content="y" -> W
+    $ data_read.query query="x" -> Q
+    $ data_read.data_write content="y" -> W
 
 default: m
 `;

@@ -4,7 +4,7 @@
 
 export {
   SkillStoreConformance,
-  MemoryStoreConformance,
+  DataStoreConformance,
   LocalModelConformance,
   McpConnectorConformance,
   AgentConnectorConformance,
@@ -14,7 +14,7 @@ export type {
   ConformanceTest,
   ConformanceCategory,
   SkillStoreFixture,
-  MemoryStoreFixture,
+  DataStoreFixture,
   LocalModelFixture,
   McpConnectorFixture,
   AgentConnectorFixture,

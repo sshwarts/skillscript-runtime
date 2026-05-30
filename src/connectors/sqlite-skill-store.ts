@@ -32,7 +32,7 @@ let regexpWarningPrinted = false;
 // Lazy-load `node:sqlite` at instance construction time, not module load.
 // Vite (vitest dev pipeline) strips the `node:` prefix and fails to resolve
 // plain `sqlite`; createRequire bypasses Vite entirely. Matches the pattern
-// in src/connectors/memory-store.ts.
+// in src/connectors/data-store.ts.
 const requireNode = createRequire(import.meta.url);
 type DatabaseSyncCtor = new (path: string) => DatabaseSync;
 interface DatabaseSync {

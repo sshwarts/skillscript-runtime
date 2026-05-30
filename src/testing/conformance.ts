@@ -31,9 +31,9 @@ import type {
   SkillStore,
   SkillStoreClass,
   SkillMeta,
-  MemoryStore,
-  MemoryStoreClass,
-  PortableMemory,
+  DataStore,
+  DataStoreClass,
+  PortableData,
   LocalModel,
   LocalModelClass,
   McpConnector,
@@ -175,30 +175,30 @@ export const SkillStoreConformance = {
   },
 };
 
-// ─── MemoryStore ──────────────────────────────────────────────────────────
+// ─── DataStore ──────────────────────────────────────────────────────────
 
-export interface MemoryStoreFixture {
-  build(): MemoryStore;
-  ctor: MemoryStoreClass;
-  seed?(instance: MemoryStore, memories: Partial<PortableMemory>[]): Promise<void>;
-  teardown?(instance: MemoryStore): Promise<void>;
+export interface DataStoreFixture {
+  build(): DataStore;
+  ctor: DataStoreClass;
+  seed?(instance: DataStore, memories: Partial<PortableData>[]): Promise<void>;
+  teardown?(instance: DataStore): Promise<void>;
 }
 
-export const MemoryStoreConformance = {
-  buildTests(fixture: MemoryStoreFixture): ConformanceTest[] {
+export const DataStoreConformance = {
+  buildTests(fixture: DataStoreFixture): ConformanceTest[] {
     return [
-      ...staticCapabilitiesTests(fixture.ctor, "memory_store"),
-      methodExistence("MemoryStore.query present", fixture, "query"),
-      methodExistence("MemoryStore.manifest present", fixture, "manifest"),
+      ...staticCapabilitiesTests(fixture.ctor, "data_store"),
+      methodExistence("DataStore.query present", fixture, "query"),
+      methodExistence("DataStore.manifest present", fixture, "manifest"),
       {
         category: "return-type",
-        name: "query returns array of PortableMemory shape",
+        name: "query returns array of PortableData shape",
         run: withInstance(fixture, async (store) => {
           const r = await store.query({ query: "anything", limit: 10, mode: "fts" });
           assert(Array.isArray(r), `query must return an array (got ${typeof r})`);
           for (const m of r) {
-            assert(typeof m.id === "string", "PortableMemory.id must be string");
-            assert(typeof m.summary === "string", "PortableMemory.summary must be string");
+            assert(typeof m.id === "string", "PortableData.id must be string");
+            assert(typeof m.summary === "string", "PortableData.summary must be string");
           }
         }),
       },
@@ -207,7 +207,7 @@ export const MemoryStoreConformance = {
         name: "optional modes (semantic, rerank) work when declared",
         run: withInstance(fixture, async (store) => {
           const caps = fixture.ctor.staticCapabilities();
-          if (caps.connector_type !== "memory_store") return; // fixture mismatch — skip
+          if (caps.connector_type !== "data_store") return; // fixture mismatch — skip
           // FTS is the baseline mode (always supported); only check optionals.
           const optionalModes = ["semantic", "rerank"] as const;
           for (const mode of optionalModes) {

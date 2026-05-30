@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.14.0 — 2026-05-30 — Rename: `MemoryStore` → `DataStore` (breaking)
+
+Pre-adoption window means breaking changes are still cheap. `MemoryStore` was
+misleading nomenclature — it imported cognitive / agent-mental-state semantics
+from AMP (the Tradita-internal substrate where this code originated) into what
+is actually a generic data-persistence contract. Adopters without an AMP-like
+memory broker had to mentally translate every time. Cost compounds per adopter;
+pay once now.
+
+The mental model after rename:
+
+| Contract | What it does | Adopter intuition |
+|---|---|---|
+| `SkillStore` | Named, versioned, lifecycle-tracked code artifacts | "My skill catalog / code repo / playbook library" |
+| `DataStore` | Generic key/value persistence with query | "My data store / KV store / search index" |
+| Richer semantics (vector retrieval, memory broker, etc.) | Wire via MCP, not via skillscript contract | "Bring my own substrate" |
+
+Both contracts describe what they DO. The asymmetry we documented in v0.13.8
+(SkillStore is mutable/versioned CRUD vs append-only search log) is now
+obvious-from-the-name, not a design stance the doc has to call out.
+
+### Breaking changes (every external identifier renamed; hard rename, no aliases)
+
+**Contract + types:**
+- `MemoryStore` → `DataStore`
+- `MemoryStoreClass` → `DataStoreClass`
+- `MemoryStoreCapabilities` → `DataStoreCapabilities`
+- `MemoryStoreManifest` → `DataStoreManifest`
+- `MemoryStoreFeature` → `DataStoreFeature`
+- `MemoryWrite` → `DataWrite`
+- `MemoryWriteRecord` → `DataWriteRecord`
+- `PortableMemory` → `PortableData`
+- `CuratedMemoryField` → `CuratedDataField`
+- `CURATED_MEMORY_FIELDS` → `CURATED_DATA_FIELDS`
+
+**Bundled impls + bridges + templates:**
+- `SqliteMemoryStore` → `SqliteDataStore`
+- `MemoryStoreMcpConnector` → `DataStoreMcpConnector`
+- `MemoryStoreTemplate` (fork-me skeleton) → `DataStoreTemplate`
+
+**Registry methods:**
+- `registerMemoryStore` → `registerDataStore`
+- `getMemoryStore` → `getDataStore`
+- `getMemoryStoreClass` → `getDataStoreClass`
+- `listMemoryStores` → `listDataStores`
+- `listMemoryStoreClasses` → `listDataStoreClasses`
+- `hasMemoryStore` → `hasDataStore`
+
+**Config + env + filesystem:**
+- `connectors.json` substrate key: `memory_store` → `data_store`
+- Env var: `MEMORY_DB` → `DATA_DB`
+- Bootstrap option: `memoryDbPath` → `dataDbPath`
+- Default db filename: `<SKILLSCRIPT_HOME>/memory.db` → `<SKILLSCRIPT_HOME>/data.db`
+- `runtime_capabilities` field: `memoryStores` → `dataStores`
+
+**Ops (skill source) + MCP tools:**
+- `$ memory ...` read op → `$ data_read ...`
+- `$ memory_write ...` write op → `$ data_write ...`
+- MCP tool: `memory_read` → `data_read`
+- Internally-registered MCP connector instance names: `memory` → `data_read`,
+  `memory_write` → `data_write`
+
+**Source files:**
+- `src/connectors/memory-store.ts` → `data-store.ts`
+- `src/connectors/memory-store-mcp.ts` → `data-store-mcp.ts`
+- `examples/connectors/MemoryStoreTemplate/` → `DataStoreTemplate/`
+- `examples/onboarding-scaffold/file-memory-store.ts` → `file-data-store.ts`
+
+### NOT renamed (intentional — naming is honest)
+
+- `SkillStore` (and `SqliteSkillStore`, `FilesystemSkillStore`, etc.) — skills
+  ARE skills. The misleading-naming pattern was specific to memory-store
+  importing agent-cognition semantics into generic data persistence.
+- `AgentConnector` (and the HTTP webhook bridge) — substrate-neutral delivery
+  to a frontier agent; name honestly describes the function.
+- `docs/sqlite-skill-store.md` filename — documents `SqliteSkillStore` which
+  stays named. (Perry's initial rename mapping had this as a typo; corrected.)
+- `language-reference.md` rename pass — separate doc lane, Perry's work.
+
+### Adopter migration
+
+This is a one-PR rename for any adopter who's forked a connector template. The
+patterns are mechanical: every `Memory` identifier in your code becomes `Data`;
+every `$ memory` op in your skills becomes `$ data_read`; every
+`registerMemoryStore` call becomes `registerDataStore`; etc.
+
+The Phase 2/3 cold-adopter `AmpMemoryStore` becomes `AmpDataStore` in the same
+fashion. ~5 LOC of identifier renames per file plus the constructor/import
+updates.
+
+### Why now
+
+[[project_pre_adoption_rule]]: pre-adoption window is cheap; aliases + soft
+deprecation are more total cost than one painful PR. SkillStore + DataStore is
+the mental model we'd want a v1.0 reader to see immediately. Pay once now.
+
 ## 0.13.8 — 2026-05-29 — Phase 3 fallout + memory_read MCP tool + storage-conventions docs
 
 Phase 3 cold-adopter dogfood (AMP-backed MemoryStore + AmpSkillStore vault

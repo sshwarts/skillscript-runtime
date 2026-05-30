@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { lint } from "../src/lint.js";
-import { SqliteMemoryStore } from "../src/connectors/memory-store.js";
+import { SqliteDataStore } from "../src/connectors/data-store.js";
 import { OllamaLocalModel } from "../src/connectors/local-model.js";
 import { FilesystemSkillStore } from "../src/connectors/skill-store.js";
 import { CallbackMcpConnector } from "../src/connectors/mcp.js";
@@ -52,24 +52,24 @@ default: a
 describe("lint — unknown-capability rule (offline validation)", async () => {
   it("ACCEPTS skill requiring a feature the registered class provides", async () => {
     const src = `# Skill: needs-tag-filter
-# Requires: memory_store.supports_tag_filter
+# Requires: data_store.supports_tag_filter
 
 t:
     ! hi
 
 default: t
 `;
-    const r = await lint(src, { classes: [SqliteMemoryStore] });
+    const r = await lint(src, { classes: [SqliteDataStore] });
     expect(r.findings.filter((f) => f.rule === "unknown-capability")).toEqual([]);
     expect(r.errorCount).toBe(0);
   });
 
   /**
-   * THE LOAD-BEARING MILESTONE. The skill requires `memory_store.supports_semantic`.
+   * THE LOAD-BEARING MILESTONE. The skill requires `data_store.supports_semantic`.
    * The SQLite default reports `supports_semantic: false` in its
-   * staticCapabilities. The linter calls `SqliteMemoryStore.staticCapabilities()`
+   * staticCapabilities. The linter calls `SqliteDataStore.staticCapabilities()`
    * — a class-level static method — without ever calling
-   * `new SqliteMemoryStore(...)`. No DB file is created; no network; no
+   * `new SqliteDataStore(...)`. No DB file is created; no network; no
    * substrate state touched. The validation is purely offline.
    *
    * This single assertion validates the entire static/dynamic capabilities
@@ -78,7 +78,7 @@ default: t
    */
   it("REJECTS skill requiring an unavailable feature — without constructing the connector", async () => {
     const src = `# Skill: needs-semantic
-# Requires: memory_store.supports_semantic
+# Requires: data_store.supports_semantic
 
 t:
     ! hi
@@ -86,13 +86,13 @@ t:
 default: t
 `;
     // Pass the CLASS, not an instance. The linter calls staticCapabilities()
-    // directly. No SqliteMemoryStore constructor is invoked.
-    const r = await lint(src, { classes: [SqliteMemoryStore] });
+    // directly. No SqliteDataStore constructor is invoked.
+    const r = await lint(src, { classes: [SqliteDataStore] });
 
     expect(r.errorCount).toBe(1);
     const finding = r.findings.find((f) => f.rule === "unknown-capability");
     expect(finding).toBeDefined();
-    expect(finding!.message).toMatch(/memory_store\.supports_semantic/);
+    expect(finding!.message).toMatch(/data_store\.supports_semantic/);
     expect(finding!.message).toMatch(/no registered connector class provides/);
   });
 
@@ -114,7 +114,7 @@ default: t
 
   it("multiple # Requires: lines accumulate independently", async () => {
     const src = `# Skill: multi
-# Requires: memory_store.supports_tag_filter
+# Requires: data_store.supports_tag_filter
 # Requires: local_model.supports_streaming
 
 t:
@@ -122,7 +122,7 @@ t:
 
 default: t
 `;
-    const r = await lint(src, { classes: [SqliteMemoryStore, OllamaLocalModel] });
+    const r = await lint(src, { classes: [SqliteDataStore, OllamaLocalModel] });
     // First clause satisfied; second not.
     expect(r.errorCount).toBe(1);
     expect(r.findings[0]!.message).toMatch(/local_model\.supports_streaming/);
@@ -146,7 +146,7 @@ default: t
 
   it("with no classes + no registry, capability check is skipped (no false errors)", async () => {
     const src = `# Skill: t
-# Requires: memory_store.supports_semantic
+# Requires: data_store.supports_semantic
 
 t:
     ! hi
@@ -160,14 +160,14 @@ default: t
   it("variable-resolution # Requires: doesn't interfere with capability parsing", async () => {
     const src = `# Skill: mixed
 # Requires: user-var:location -> LOCATION (fallback: ip-based)
-# Requires: memory_store.supports_tag_filter
+# Requires: data_store.supports_tag_filter
 
 t:
     ! $(LOCATION)
 
 default: t
 `;
-    const r = await lint(src, { classes: [SqliteMemoryStore] });
+    const r = await lint(src, { classes: [SqliteDataStore] });
     expect(r.errorCount).toBe(0);
   });
 
@@ -184,7 +184,7 @@ default: t
     // construct time, so this isn't a perfect side-effect proof. The
     // structural argument from reading lint.ts is what makes the claim airtight.)
     const src = `# Requires: local_model.supports_max_tokens\nt:\n    ! ok\ndefault: t\n`;
-    const r = await lint(src, { classes: [FilesystemSkillStore, SqliteMemoryStore, OllamaLocalModel, CallbackMcpConnector] });
+    const r = await lint(src, { classes: [FilesystemSkillStore, SqliteDataStore, OllamaLocalModel, CallbackMcpConnector] });
     expect(r.errorCount).toBe(0);
   });
 });

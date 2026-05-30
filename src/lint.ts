@@ -583,7 +583,7 @@ const UNKNOWN_RETRIEVAL_ARG: LintRule = {
   id: "unknown-retrieval-arg",
   severity: "warning",
   description: "A `>` retrieval op carries a kwarg outside the documented set (mode/query/limit/connector/fallback).",
-  remediation: "Remove the kwarg, or check it against your MemoryStore connector's documentation — extras pass through to the connector but unrecognized ones often indicate hallucinated syntax.",
+  remediation: "Remove the kwarg, or check it against your DataStore connector's documentation — extras pass through to the connector but unrecognized ones often indicate hallucinated syntax.",
   check: (ctx) => {
     const findings: LintFinding[] = [];
     for (const [targetName, target] of ctx.parsed.targets) {
@@ -692,8 +692,8 @@ const DISALLOWED_TOOL: LintRule = {
 // name. Runtime then failed downstream with misleading kwarg errors.
 //
 // The fix: connectors that ship with a closed static tool surface
-// (LocalModelMcpConnector → ["prompt"], MemoryStoreMcpConnector →
-// ["query", "memory_write"]) declare it via `staticTools()`; lint
+// (LocalModelMcpConnector → ["prompt"], DataStoreMcpConnector →
+// ["query", "data_write"]) declare it via `staticTools()`; lint
 // validates qualified dispatches against that surface.
 //
 // Connectors WITHOUT a declared static surface (RemoteMcpConnector,
@@ -1307,7 +1307,7 @@ const MUTATING_TOOL_PATTERN = /^(?:write_|update_|delete_|remove_|set_|create_|i
 const UNCONFIRMED_MUTATION: LintRule = {
   id: "unconfirmed-mutation",
   severity: "warning",
-  description: "A mutation-class op runs without author authorization. Mutation classes: `$ tool` with mutating-name shape (write/update/delete/...); `$ memory_write` MCP dispatch; `file_write(...)` function-call op. Silent when the skill declares `# Autonomous: true` (v0.4.2), when a preceding `??` / `ask(...)` confirmation gates the op, or (v0.7.0+) when the op carries `approved=\"reason\"` per-op authorization.",
+  description: "A mutation-class op runs without author authorization. Mutation classes: `$ tool` with mutating-name shape (write/update/delete/...); `$ data_write` MCP dispatch; `file_write(...)` function-call op. Silent when the skill declares `# Autonomous: true` (v0.4.2), when a preceding `??` / `ask(...)` confirmation gates the op, or (v0.7.0+) when the op carries `approved=\"reason\"` per-op authorization.",
   remediation: "Three ways to authorize: (1) add `# Autonomous: true` at the skill header for cron/agent-fired skills; (2) add a preceding `??` / `ask(prompt=\"...\")` confirmation op in the same target; (3) v0.7.0+: pass `approved=\"reason\"` kwarg on the mutation op itself (any non-empty string; presence is what matters, value not parsed semantically).",
   check: (ctx) => {
     // v0.4.2 — `# Autonomous: true` skills are unattended by design;
@@ -1329,10 +1329,10 @@ const UNCONFIRMED_MUTATION: LintRule = {
         // Class 1: `$` MCP dispatch with mutating tool name.
         if (op.kind === "$") {
           const toolName = op.body.split(/\s+/)[0] ?? "";
-          // memory_write is explicitly a mutation tool name — flag it even
+          // data_write is explicitly a mutation tool name — flag it even
           // though it doesn't start with `write_` (the pattern's anchor).
-          const isMemoryWrite = toolName === "memory_write" || /(?:^|_)memory_write(?:_|$)/.test(toolName);
-          if (MUTATING_TOOL_PATTERN.test(toolName) || isMemoryWrite) {
+          const isDataWrite = toolName === "data_write" || /(?:^|_)data_write(?:_|$)/.test(toolName);
+          if (MUTATING_TOOL_PATTERN.test(toolName) || isDataWrite) {
             findings.push({
               rule: "unconfirmed-mutation",
               severity: "warning",
@@ -1779,22 +1779,22 @@ const NUMERIC_SUBSCRIPT: LintRule = {
 };
 
 // v0.9.3 — P1.3 canonicalize `recipients=[...]` over `addressed_to="..."`
-// for `$ memory_write` dispatch. The bundled MemoryStoreMcpConnector only
-// reads `args["recipients"]` (line 132 of memory-store-mcp.ts), so
+// for `$ data_write` dispatch. The bundled DataStoreMcpConnector only
+// reads `args["recipients"]` (line 132 of data-store-mcp.ts), so
 // `addressed_to=...` was always a doc-bug: it parsed but silently
 // dropped. Help docs had it pre-v0.9.3 (`help({topic:"connectors"})`
 // line 318) — fixed in this same ship. Lint catches any cold author
 // who picked the wrong shape from older docs / muscle memory.
 //
 // Tier-2 warning, not tier-1 — adopter substrates may genuinely accept
-// `addressed_to` if they wire a custom MemoryStoreMcpConnector. The
+// `addressed_to` if they wire a custom DataStoreMcpConnector. The
 // lint nudges toward the bundled-canonical shape without breaking
 // adopter freedom.
 const DEPRECATED_ADDRESSED_TO: LintRule = {
   id: "deprecated-addressed-to",
   severity: "warning",
-  description: "`$ memory_write addressed_to=...` is not the canonical kwarg for the bundled MemoryStoreMcpConnector. The bundled bridge reads `recipients=[...]` (array). `addressed_to` may parse but silently drops in default deployments.",
-  remediation: "Rewrite as `$ memory_write content=\"...\" recipients=[<agent_id>, ...] -> R`. The bracket-array form is the canonical shape that the bundled `MemoryStoreMcpConnector` reads. Adopters with a custom memory bridge that genuinely accepts `addressed_to` can wire it; this lint is a nudge toward the default contract.",
+  description: "`$ data_write addressed_to=...` is not the canonical kwarg for the bundled DataStoreMcpConnector. The bundled bridge reads `recipients=[...]` (array). `addressed_to` may parse but silently drops in default deployments.",
+  remediation: "Rewrite as `$ data_write content=\"...\" recipients=[<agent_id>, ...] -> R`. The bracket-array form is the canonical shape that the bundled `DataStoreMcpConnector` reads. Adopters with a custom memory bridge that genuinely accepts `addressed_to` can wire it; this lint is a nudge toward the default contract.",
   check: (ctx) => {
     const findings: LintFinding[] = [];
     const reported = new Set<string>();
@@ -1804,9 +1804,9 @@ const DEPRECATED_ADDRESSED_TO: LintRule = {
         const m = /^([A-Za-z_][\w:-]*)/.exec(op.body);
         if (m === null) return;
         const toolName = m[1]!;
-        // Only fire on memory_write — adopters may have other tools that
+        // Only fire on data_write — adopters may have other tools that
         // legitimately accept addressed_to.
-        if (toolName !== "memory_write") return;
+        if (toolName !== "data_write") return;
         if (!/\baddressed_to\s*=/.test(op.body)) return;
         const key = `${targetName}:${op.body}`;
         if (reported.has(key)) return;
@@ -1814,7 +1814,7 @@ const DEPRECATED_ADDRESSED_TO: LintRule = {
         findings.push({
           rule: "deprecated-addressed-to",
           severity: "warning",
-          message: `\`$ memory_write ... addressed_to=...\` in target '${targetName}' — the bundled MemoryStoreMcpConnector reads \`recipients=[...]\`, not \`addressed_to=\`. Use \`recipients=[<agent_id>, ...]\` (bracket-array form).`,
+          message: `\`$ data_write ... addressed_to=...\` in target '${targetName}' — the bundled DataStoreMcpConnector reads \`recipients=[...]\`, not \`addressed_to=\`. Use \`recipients=[<agent_id>, ...]\` (bracket-array form).`,
           block: targetName,
         });
       });
@@ -2267,11 +2267,11 @@ function describeOriginRisk(origin: BindingOrigin): string {
  * marker). Only the 6 symbol ops that became function-call ops in v0.7.0.
  */
 const DEPRECATED_SYMBOL_OP_REPLACEMENT: Record<string, string> = {
-  // v0.7.2: bridge classes ship default-wired so `$ llm` / `$ memory` work
+  // v0.7.2: bridge classes ship default-wired so `$ llm` / `$ data_read` work
   // out of the box in default deployments. Suggestions are load-bearing
   // (no more "(or your wired connector name)" caveat).
   "~": "$ llm prompt=\"...\" [maxTokens=N] [model=\"...\"] -> R",
-  ">": "$ memory mode=\"fts|semantic|rerank\" query=\"...\" limit=N -> R",
+  ">": "$ data_read mode=\"fts|semantic|rerank\" query=\"...\" limit=N -> R",
   "@": "shell(command=\"...\") [-> R]",
   "!": "emit(text=\"...\")",
   "??": "ask(prompt=\"...\") -> R",
@@ -2630,7 +2630,7 @@ function collectClassesFromRegistry(
   if (registry === undefined) return null;
   return [
     ...registry.listSkillStoreClasses(),
-    ...registry.listMemoryStoreClasses(),
+    ...registry.listDataStoreClasses(),
     ...registry.listLocalModelClasses(),
     ...registry.listMcpConnectorClasses(),
   ];

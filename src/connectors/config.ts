@@ -27,12 +27,12 @@ import { dirname, basename, resolve } from "node:path";
 import { CallbackMcpConnector } from "./mcp.js";
 import { RemoteMcpConnector } from "./mcp-remote.js";
 import { LocalModelMcpConnector } from "./local-model-mcp.js";
-import { MemoryStoreMcpConnector } from "./memory-store-mcp.js";
+import { DataStoreMcpConnector } from "./data-store-mcp.js";
 import type { McpConnector, McpConnectorClass } from "./types.js";
 
 /**
  * v0.10 — substrate config (top-level `substrate` key in connectors.json).
- * Singleton substrates (SkillStore, MemoryStore, LocalModel) declared here
+ * Singleton substrates (SkillStore, DataStore, LocalModel) declared here
  * are consumed by `bootstrap()` / `defaultRegistry()` BEFORE the
  * per-instance MCP connectors load. Each slot accepts three forms:
  *
@@ -42,7 +42,7 @@ import type { McpConnector, McpConnectorClass } from "./types.js";
  *
  * Built-in `type` values per slot:
  *   skill_store:   "filesystem" | "sqlite"
- *   memory_store:  "sqlite"
+ *   data_store:  "sqlite"
  *   local_model:   "ollama"
  *
  * Adopter-custom (`type: "custom"`) loads the named module + exported class
@@ -57,7 +57,7 @@ export type SubstrateChoice =
 
 export interface SubstrateConfig {
   skill_store?: SubstrateChoice | null;
-  memory_store?: SubstrateChoice | null;
+  data_store?: SubstrateChoice | null;
   local_model?: SubstrateChoice | null;
 }
 
@@ -98,11 +98,11 @@ export const KNOWN_CONNECTOR_CLASSES: ReadonlyMap<string, ConnectorClassEntry> =
   // v0.7.2 — bridge classes registered for discoverability via
   // `runtime_capabilities({include:["mcpConnectorClasses"]})`. Like
   // `CallbackMcpConnector`, these are NOT JSON-config-wired (they need
-  // a runtime LocalModel/MemoryStore instance, not just config). Bootstrap
+  // a runtime LocalModel/DataStore instance, not just config). Bootstrap
   // auto-wires them via embedder code; adopters override by re-registering
   // under the same instance name.
   ["LocalModelMcpConnector", { ctor: LocalModelMcpConnector }],
-  ["MemoryStoreMcpConnector", { ctor: MemoryStoreMcpConnector }],
+  ["DataStoreMcpConnector", { ctor: DataStoreMcpConnector }],
 ]);
 
 // v0.7.3 — adopter-registered connector classes. Mutable, separate from
@@ -174,7 +174,7 @@ export interface LoadConnectorsConfigResult {
   /** Hard errors from parsing/validation/instantiation. Surfaced at startup. */
   errors: string[];
   /**
-   * v0.10 — parsed substrate intent (skill_store / memory_store / local_model)
+   * v0.10 — parsed substrate intent (skill_store / data_store / local_model)
    * from the top-level `substrate` key. `undefined` when the key is absent.
    * Consumer (`bootstrap()`) translates intent → instances + threads them
    * into `defaultRegistry()`.
@@ -310,7 +310,7 @@ export function loadConnectorsConfig(opts: LoadConnectorsConfigOpts): LoadConnec
 
   for (const [name, entry] of Object.entries(parsed)) {
     // v0.10 — `substrate` is a reserved top-level key for singleton substrate
-    // config (skill_store / memory_store / local_model). Not an MCP connector.
+    // config (skill_store / data_store / local_model). Not an MCP connector.
     if (name === "substrate") {
       const parseResult = parseSubstrateSection(entry);
       if (parseResult.errors.length > 0) errors.push(...parseResult.errors);
@@ -432,7 +432,7 @@ export function loadConnectorsConfig(opts: LoadConnectorsConfigOpts): LoadConnec
  * intent (`SubstrateChoice` per slot); instantiation happens in `bootstrap.ts`
  * where built-in classes + dynamic-import for custom impls live.
  *
- * Validates: top-level shape, slot names (`skill_store` / `memory_store` /
+ * Validates: top-level shape, slot names (`skill_store` / `data_store` /
  * `local_model`), per-slot value shape (short / object / custom form).
  * Unknown slot names or malformed values surface as errors and the slot is
  * dropped.
@@ -443,7 +443,7 @@ function parseSubstrateSection(entry: unknown): { substrate?: SubstrateConfig; e
     errors.push(`connectors.json: 'substrate' must be an object (got ${Array.isArray(entry) ? "array" : entry === null ? "null" : typeof entry}).`);
     return { errors };
   }
-  const VALID_SLOTS = new Set(["skill_store", "memory_store", "local_model"]);
+  const VALID_SLOTS = new Set(["skill_store", "data_store", "local_model"]);
   const out: SubstrateConfig = {};
   for (const [slot, value] of Object.entries(entry)) {
     if (slot.startsWith("_")) continue; // reserved for inline comments
@@ -463,7 +463,7 @@ function parseSubstrateSection(entry: unknown): { substrate?: SubstrateConfig; e
 
 const VALID_SUBSTRATE_TYPES: Record<string, ReadonlySet<string>> = {
   skill_store: new Set(["filesystem", "sqlite", "custom"]),
-  memory_store: new Set(["sqlite", "custom"]),
+  data_store: new Set(["sqlite", "custom"]),
   local_model: new Set(["ollama", "custom"]),
 };
 

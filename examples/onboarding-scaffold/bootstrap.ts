@@ -4,8 +4,8 @@
 // Copy this file into your deployment and modify substrate choices to
 // match your environment. The shape is:
 //   1. Construct a Registry
-//   2. Register your substrate impls (SkillStore + LocalModel + MemoryStore + AgentConnector)
-//   3. Wire bridges so canonical `$ llm` / `$ memory` dispatch works
+//   2. Register your substrate impls (SkillStore + LocalModel + DataStore + AgentConnector)
+//   3. Wire bridges so canonical `$ llm` / `$ data_read` dispatch works
 //   4. Load connectors.json + skillscript.config.json
 //   5. Wire scheduler + MCP server
 //   6. Start
@@ -20,15 +20,15 @@ import {
 import { Scheduler } from "skillscript-runtime/scheduler";
 import { FilesystemTraceStore } from "skillscript-runtime/trace";
 import { McpServer } from "skillscript-runtime/mcp-server";
-// Note: LocalModelMcpConnector + MemoryStoreMcpConnector are bridge classes
+// Note: LocalModelMcpConnector + DataStoreMcpConnector are bridge classes
 // already exported from skillscript-runtime/connectors. They wrap any
 // typed-contract impl as an MCP-dispatchable connector.
 import {
   LocalModelMcpConnector,
-  MemoryStoreMcpConnector,
+  DataStoreMcpConnector,
 } from "skillscript-runtime/connectors";
 
-import { FileMemoryStore } from "./file-memory-store.js";
+import { FileDataStore } from "./file-data-store.js";
 import { OpenAILocalModel } from "./openai-local-model.js";
 import { TmuxShellAgentConnector } from "./tmux-shell-agent-connector.js";
 
@@ -44,10 +44,10 @@ const skillStore = new FilesystemSkillStore(config.skillsDir ?? `${HOME}/skills`
 registry.registerSkillStore("primary", skillStore);
 
 // File-backed memory at $SKILLSCRIPT_HOME/memory.json
-const memoryStore = new FileMemoryStore({
-  filePath: config.memoryDbPath ?? `${HOME}/memory.json`,
+const dataStore = new FileDataStore({
+  filePath: config.dataDbPath ?? `${HOME}/memory.json`,
 });
-registry.registerMemoryStore("primary", memoryStore);
+registry.registerDataStore("primary", dataStore);
 
 // OpenAI LLM — reads OPENAI_API_KEY from env.
 const openai = new OpenAILocalModel({ defaultModel: "gpt-4o-mini" });
@@ -63,10 +63,10 @@ const agentConnector = new TmuxShellAgentConnector({
 });
 registry.registerAgentConnector("primary", agentConnector);
 
-// Step 3: wire bridges so `$ llm` / `$ memory` dispatch through the
+// Step 3: wire bridges so `$ llm` / `$ data_read` dispatch through the
 // adopter substrates above (case 1 typed-contract wiring — portable).
 registry.registerMcpConnector("llm", new LocalModelMcpConnector(openai));
-registry.registerMcpConnector("memory", new MemoryStoreMcpConnector(memoryStore));
+registry.registerMcpConnector("data_read", new DataStoreMcpConnector(dataStore));
 
 // Step 4: wire connectors.json instances (adopter-defined MCP servers).
 for (const c of connectors) {

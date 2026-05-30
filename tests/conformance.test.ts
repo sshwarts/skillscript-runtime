@@ -5,12 +5,12 @@ import { join } from "node:path";
 
 import {
   SkillStoreConformance,
-  MemoryStoreConformance,
+  DataStoreConformance,
   LocalModelConformance,
   McpConnectorConformance,
 } from "../src/testing/index.js";
 import { FilesystemSkillStore } from "../src/connectors/skill-store.js";
-import { SqliteMemoryStore } from "../src/connectors/memory-store.js";
+import { SqliteDataStore } from "../src/connectors/data-store.js";
 import { OllamaLocalModel } from "../src/connectors/local-model.js";
 import { CallbackMcpConnector } from "../src/connectors/mcp.js";
 
@@ -41,20 +41,20 @@ describe("FilesystemSkillStore conformance", () => {
   }
 });
 
-describe("SqliteMemoryStore conformance", () => {
+describe("SqliteDataStore conformance", () => {
   let dirs: string[] = [];
   beforeEach(() => { dirs = []; });
   afterEach(() => {
     for (const d of dirs) rmSync(d, { recursive: true, force: true });
   });
 
-  const tests = MemoryStoreConformance.buildTests({
+  const tests = DataStoreConformance.buildTests({
     build: () => {
       const d = mkdtempSync(join(tmpdir(), "skillscript-mem-"));
       dirs.push(d);
-      return new SqliteMemoryStore({ dbPath: join(d, "test.db") });
+      return new SqliteDataStore({ dbPath: join(d, "test.db") });
     },
-    ctor: SqliteMemoryStore,
+    ctor: SqliteDataStore,
     // Close the SQLite handle so Windows can unlink the file in afterEach.
     // Linux/macOS don't care (open files can be unlinked), but Windows
     // locks held files.

@@ -42,7 +42,7 @@ describe("v0.4.2 — # Autonomous header parser recognition", () => {
 describe("v0.4.2 — unconfirmed-mutation conditional on Autonomous", () => {
   const mutationSkill = (autonomous: string | null) => {
     const header = autonomous === null ? "" : `# Autonomous: ${autonomous}\n`;
-    return `# Skill: t\n# Status: Approved\n${header}run:\n    $ memorystore.write_thing key=value\n    ! done\ndefault: run\n`;
+    return `# Skill: t\n# Status: Approved\n${header}run:\n    $ datastore.write_thing key=value\n    ! done\ndefault: run\n`;
   };
 
   it("absent header → unconfirmed-mutation fires (existing v0.2.11+ behavior)", async () => {
@@ -65,7 +65,7 @@ describe("v0.4.2 — unconfirmed-mutation conditional on Autonomous", () => {
   });
 
   it("# Autonomous: true with preceding ?? confirmation → still silent (header dominates)", async () => {
-    const src = `# Skill: t\n# Status: Approved\n# Autonomous: true\nrun:\n    ?? proceed\n    $ memorystore.write_thing key=value\ndefault: run\n`;
+    const src = `# Skill: t\n# Status: Approved\n# Autonomous: true\nrun:\n    ?? proceed\n    $ datastore.write_thing key=value\ndefault: run\n`;
     const r = await lint(src);
     const finding = r.findings.find((f) => f.rule === "unconfirmed-mutation");
     expect(finding).toBeUndefined();

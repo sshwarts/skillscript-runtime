@@ -185,7 +185,7 @@ export class ConnectorNotFoundError extends OpError {
     opKind: string,
     target?: string,
     /**
-     * v0.10 — when bare-form (`$ llm`, `$ memory`, `$ memory_write`) errors
+     * v0.10 — when bare-form (`$ llm`, `$ data_read`, `$ data_write`) errors
      * because the auto-wired substrate bridge isn't registered, pass the tool
      * name so the error message points cold authors at the right
      * `connectors.json` substrate setting instead of the generic "register
@@ -217,15 +217,15 @@ export class ConnectorNotFoundError extends OpError {
 /**
  * v0.10 — substrate-bridge-tool → (slot, defaultType, bridgeName, contract).
  * Used by ConnectorNotFoundError to surface substrate-aware remediation copy
- * when a bare bridge name (`$ llm`, `$ memory`, `$ memory_write`) errors
+ * when a bare bridge name (`$ llm`, `$ data_read`, `$ data_write`) errors
  * against a null substrate slot. Auto-wired in `bootstrap.ts` when the
  * relevant substrate exists, so reaching this error path means the substrate
  * slot is null + cold author needs the config pointer.
  */
 const RESOLVE_BRIDGE_INFO: Record<string, { slot: string; defaultType: string; bridgeName: string; contract: string }> = {
   llm: { slot: "local_model", defaultType: "ollama", bridgeName: "the default Ollama bridge", contract: "LocalModel" },
-  memory: { slot: "memory_store", defaultType: "sqlite", bridgeName: "the default SQLite memory bridge", contract: "MemoryStore" },
-  memory_write: { slot: "memory_store", defaultType: "sqlite", bridgeName: "the default SQLite memory bridge", contract: "MemoryStore" },
+  data_read: { slot: "data_store", defaultType: "sqlite", bridgeName: "the default SQLite DataStore bridge", contract: "DataStore" },
+  data_write: { slot: "data_store", defaultType: "sqlite", bridgeName: "the default SQLite DataStore bridge", contract: "DataStore" },
 };
 
 /** An op exceeded its resolved timeout (per-op > skill > built-in). */

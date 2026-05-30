@@ -1,15 +1,15 @@
 // Reference bootstrap — wires the runtime surface for the CLI's `dashboard`
 // / `serve` commands. v0.10 base config:
 //   skill_store   → FilesystemSkillStore (override via connectors.json substrate)
-//   memory_store  → SqliteMemoryStore (conditional on memoryDbPath)
+//   data_store  → SqliteDataStore (conditional on dataDbPath)
 //   local_model   → null (adopter opts in via substrate.local_model)
 //   mcp_connector → null (adopter wires named instances in connectors.json)
 //   agent_connector → null (adopter wires explicitly)
-// Plus v0.7.2 MCP bridges (`llm`, `memory`, `memory_write`) auto-wired when
+// Plus v0.7.2 MCP bridges (`llm`, `memory`, `data_write`) auto-wired when
 // their underlying substrates exist.
 //
 // **Adopters: this file is a starting point, not a contract.** For custom
-// substrate wiring (your own MemoryStore, your own LocalModel impl, a
+// substrate wiring (your own DataStore, your own LocalModel impl, a
 // non-bundled AgentConnector, etc.), write your own bootstrap that imports
 // the public APIs (`Registry`, `registerConnectorClass`, `loadConnectorsConfig`,
 // `loadSkillscriptConfig`, the individual connector classes) and constructs
@@ -28,10 +28,10 @@ import { dirname } from "node:path";
 import { Registry } from "./connectors/registry.js";
 import { FilesystemSkillStore } from "./connectors/skill-store.js";
 import { SqliteSkillStore } from "./connectors/sqlite-skill-store.js";
-import { SqliteMemoryStore } from "./connectors/memory-store.js";
+import { SqliteDataStore } from "./connectors/data-store.js";
 import { OllamaLocalModel } from "./connectors/local-model.js";
 import { LocalModelMcpConnector } from "./connectors/local-model-mcp.js";
-import { MemoryStoreMcpConnector } from "./connectors/memory-store-mcp.js";
+import { DataStoreMcpConnector } from "./connectors/data-store-mcp.js";
 import { loadConnectorsConfig, detectGitignoreRisk, type SubstrateConfig, type SubstrateChoice } from "./connectors/config.js";
 import { FilesystemTraceStore } from "./trace.js";
 import { Scheduler, type ResolvableTriggerSource, type TriggerRegistration } from "./scheduler.js";
@@ -39,18 +39,18 @@ import type { TraceConfig } from "./trace.js";
 import { McpServer } from "./mcp-server.js";
 import { parse } from "./parser.js";
 import { join } from "node:path";
-import type { SkillStore, MemoryStore, LocalModel } from "./connectors/types.js";
+import type { SkillStore, DataStore, LocalModel } from "./connectors/types.js";
 
 export interface BootstrapOpts {
   skillsDir: string;
   traceDir: string;
-  /** When set + existing, register `SqliteMemoryStore` as primary memory_store. */
-  memoryDbPath?: string;
+  /** When set + existing, register `SqliteDataStore` as primary data_store. */
+  dataDbPath?: string;
   /** Override the bundled-default SkillStore. v0.10 — threaded by the CLI when
    * `connectors.json` substrate config selects sqlite / adopter-custom. */
   skillStore?: SkillStore;
-  /** Override the conditional Sqlite MemoryStore wiring. */
-  memoryStore?: MemoryStore;
+  /** Override the conditional Sqlite DataStore wiring. */
+  dataStore?: DataStore;
   /** Optional LocalModel to register as `"default"`. v0.10 — base config is
    * null; adopters wire explicitly via `connectors.json` or this opt. */
   localModel?: LocalModel;
@@ -146,7 +146,7 @@ const VALID_TRIGGER_SOURCES: ReadonlyArray<ResolvableTriggerSource> = [
 
 export interface DefaultRegistryOpts {
   skillsDir: string;
-  memoryDbPath?: string;
+  dataDbPath?: string;
   /**
    * Override the bundled-default SkillStore. When supplied, used instead of
    * `new FilesystemSkillStore(skillsDir)`. Threaded through by the CLI when
@@ -154,10 +154,10 @@ export interface DefaultRegistryOpts {
    */
   skillStore?: SkillStore;
   /**
-   * Override the conditional-Sqlite MemoryStore wiring. When supplied, used
-   * instead of the `memoryDbPath`-conditional `SqliteMemoryStore`.
+   * Override the conditional-Sqlite DataStore wiring. When supplied, used
+   * instead of the `dataDbPath`-conditional `SqliteDataStore`.
    */
-  memoryStore?: MemoryStore;
+  dataStore?: DataStore;
   /**
    * Optional LocalModel to register as `"default"`. **v0.10 — base config:
    * LocalModel is NULL unless explicitly provided.** Adopters wanting Ollama
@@ -169,14 +169,14 @@ export interface DefaultRegistryOpts {
 
 /**
  * Build the default connector registry: primary SkillStore (configurable),
- * primary MemoryStore (configurable / conditional), and optional LocalModel
+ * primary DataStore (configurable / conditional), and optional LocalModel
  * (null by default — v0.10). Used by both `bootstrap()` (long-lived host)
  * and the `skillfile run` one-shot path so both surfaces wire the same
  * defaults.
  *
  * **v0.10 base config**:
  *   skill_store   → FilesystemSkillStore (override via `opts.skillStore`)
- *   memory_store  → SqliteMemoryStore (conditional on `memoryDbPath`)
+ *   data_store  → SqliteDataStore (conditional on `dataDbPath`)
  *   local_model   → null (override via `opts.localModel`)
  *   mcp_connector → null (adopter wires via `connectors.json`)
  *   agent_connector → null (adopter wires explicitly)
@@ -186,12 +186,12 @@ export function defaultRegistry(opts: DefaultRegistryOpts): { registry: Registry
   const skillStore = opts.skillStore ?? new FilesystemSkillStore(opts.skillsDir);
   registry.registerSkillStore("primary", skillStore);
 
-  let memoryStore: MemoryStore | undefined = opts.memoryStore;
-  if (memoryStore === undefined && opts.memoryDbPath !== undefined && (existsSync(opts.memoryDbPath) || existsSync(dirname(opts.memoryDbPath)))) {
-    memoryStore = new SqliteMemoryStore({ dbPath: opts.memoryDbPath });
+  let dataStore: DataStore | undefined = opts.dataStore;
+  if (dataStore === undefined && opts.dataDbPath !== undefined && (existsSync(opts.dataDbPath) || existsSync(dirname(opts.dataDbPath)))) {
+    dataStore = new SqliteDataStore({ dbPath: opts.dataDbPath });
   }
-  if (memoryStore !== undefined) {
-    registry.registerMemoryStore("primary", memoryStore);
+  if (dataStore !== undefined) {
+    registry.registerDataStore("primary", dataStore);
   }
 
   // v0.10 — LocalModel default is null. Only register if explicitly provided.
@@ -205,13 +205,13 @@ export function defaultRegistry(opts: DefaultRegistryOpts): { registry: Registry
   if (registry.hasLocalModel("default")) {
     registry.registerMcpConnector("llm", new LocalModelMcpConnector(registry.getLocalModel("default")));
   }
-  if (memoryStore !== undefined) {
+  if (dataStore !== undefined) {
     // v0.8.0 — register the SAME bridge instance under both names so
-    // bare-form `$ memory mode=fts ...` and `$ memory_write content=...`
+    // bare-form `$ data_read mode=fts ...` and `$ data_write content=...`
     // both route to it. The bridge dispatches on toolName internally.
-    const bridge = new MemoryStoreMcpConnector(memoryStore);
-    registry.registerMcpConnector("memory", bridge);
-    registry.registerMcpConnector("memory_write", bridge);
+    const bridge = new DataStoreMcpConnector(dataStore);
+    registry.registerMcpConnector("data_read", bridge);
+    registry.registerMcpConnector("data_write", bridge);
   }
 
   return { registry, skillStore };
@@ -222,9 +222,9 @@ export function defaultRegistry(opts: DefaultRegistryOpts): { registry: Registry
  *
  * **Reference deployment, v0.10.** Base config:
  *   - `FilesystemSkillStore` (override via `opts.skillStore` or `connectors.json` substrate)
- *   - `SqliteMemoryStore` (conditional on `memoryDbPath`; override via `opts.memoryStore`)
+ *   - `SqliteDataStore` (conditional on `dataDbPath`; override via `opts.dataStore`)
  *   - LocalModel `null` (provide via `opts.localModel` or `connectors.json` substrate)
- *   - v0.7.2 MCP bridges (`llm`, `memory`, `memory_write`) wired when their
+ *   - v0.7.2 MCP bridges (`llm`, `memory`, `data_write`) wired when their
  *     substrates exist
  *   - Any `McpConnector` declared in `connectors.json`
  *
@@ -243,7 +243,7 @@ export function defaultRegistry(opts: DefaultRegistryOpts): { registry: Registry
 export function bootstrap(opts: BootstrapOpts): BootstrapResult {
   // v0.10 — pre-load connectors.json (if configured) to extract substrate
   // intent BEFORE defaultRegistry runs. The substrate section selects
-  // SkillStore / MemoryStore / LocalModel impls; the MCP-connector entries
+  // SkillStore / DataStore / LocalModel impls; the MCP-connector entries
   // are registered after defaultRegistry below.
   const configuredConnectorNames: string[] = [];
   const connectorConfigErrors: string[] = [];
@@ -263,13 +263,13 @@ export function bootstrap(opts: BootstrapOpts): BootstrapResult {
   // Explicit wiring (`opts.skillStore = ...`) beats declarative substrate;
   // declarative beats the FilesystemSkillStore fallback inside defaultRegistry.
   const skillStoreToUse = opts.skillStore ?? substrateResult.skillStore;
-  const memoryStoreToUse = opts.memoryStore ?? substrateResult.memoryStore;
+  const dataStoreToUse = opts.dataStore ?? substrateResult.dataStore;
   const localModelToUse = opts.localModel ?? substrateResult.localModel;
 
   const { registry, skillStore } = defaultRegistry({
     ...opts,
     ...(skillStoreToUse !== undefined ? { skillStore: skillStoreToUse } : {}),
-    ...(memoryStoreToUse !== undefined ? { memoryStore: memoryStoreToUse } : {}),
+    ...(dataStoreToUse !== undefined ? { dataStore: dataStoreToUse } : {}),
     ...(localModelToUse !== undefined ? { localModel: localModelToUse } : {}),
   });
   const traceStore = new FilesystemTraceStore(opts.traceDir);
@@ -373,9 +373,9 @@ export function bootstrap(opts: BootstrapOpts): BootstrapResult {
 function buildSubstrateInstances(
   substrate: SubstrateConfig | undefined,
   opts: BootstrapOpts,
-): { skillStore?: SkillStore; memoryStore?: MemoryStore; localModel?: LocalModel; errors: string[] } {
+): { skillStore?: SkillStore; dataStore?: DataStore; localModel?: LocalModel; errors: string[] } {
   const errors: string[] = [];
-  const result: { skillStore?: SkillStore; memoryStore?: MemoryStore; localModel?: LocalModel; errors: string[] } = { errors };
+  const result: { skillStore?: SkillStore; dataStore?: DataStore; localModel?: LocalModel; errors: string[] } = { errors };
   if (substrate === undefined) return result;
 
   // skill_store
@@ -384,11 +384,11 @@ function buildSubstrateInstances(
     if (built.error !== undefined) errors.push(built.error);
     else if (built.instance !== undefined) result.skillStore = built.instance;
   }
-  // memory_store
-  if (substrate.memory_store !== undefined && substrate.memory_store !== null) {
-    const built = buildMemoryStoreFromChoice(substrate.memory_store, opts);
+  // data_store
+  if (substrate.data_store !== undefined && substrate.data_store !== null) {
+    const built = buildDataStoreFromChoice(substrate.data_store, opts);
     if (built.error !== undefined) errors.push(built.error);
-    else if (built.instance !== undefined) result.memoryStore = built.instance;
+    else if (built.instance !== undefined) result.dataStore = built.instance;
   }
   // local_model (null → explicit "no LocalModel", which is also the v0.10 default)
   if (substrate.local_model !== undefined && substrate.local_model !== null) {
@@ -413,17 +413,17 @@ function buildSkillStoreFromChoice(choice: SubstrateChoice, opts: BootstrapOpts)
   return { error: `connectors.json: substrate.skill_store — unknown type '${(choice as { type: string }).type}'.` };
 }
 
-function buildMemoryStoreFromChoice(choice: SubstrateChoice, opts: BootstrapOpts): { instance?: MemoryStore; error?: string } {
+function buildDataStoreFromChoice(choice: SubstrateChoice, opts: BootstrapOpts): { instance?: DataStore; error?: string } {
   if (choice.type === "sqlite") {
     const dbPath = (choice.config?.["dbPath"] as string | undefined)
-      ?? opts.memoryDbPath
+      ?? opts.dataDbPath
       ?? join(opts.skillsDir, "memories.db");
-    return { instance: new SqliteMemoryStore({ dbPath }) };
+    return { instance: new SqliteDataStore({ dbPath }) };
   }
   if (choice.type === "custom") {
-    return { error: `connectors.json: substrate.memory_store — 'custom' type not yet supported via connectors.json (sync bootstrap can't dynamic-import). Wire your custom MemoryStore via a programmatic bootstrap script.` };
+    return { error: `connectors.json: substrate.data_store — 'custom' type not yet supported via connectors.json (sync bootstrap can't dynamic-import). Wire your custom DataStore via a programmatic bootstrap script.` };
   }
-  return { error: `connectors.json: substrate.memory_store — unknown type '${(choice as { type: string }).type}'.` };
+  return { error: `connectors.json: substrate.data_store — unknown type '${(choice as { type: string }).type}'.` };
 }
 
 function buildLocalModelFromChoice(choice: SubstrateChoice): { instance?: LocalModel; error?: string } {

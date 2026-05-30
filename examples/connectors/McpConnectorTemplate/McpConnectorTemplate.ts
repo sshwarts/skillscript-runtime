@@ -15,8 +15,8 @@
  *   - `LocalModelMcpConnector` — bridges a registered LocalModel as
  *     `$ llm prompt=...` MCP dispatch. Auto-wired when LocalModel substrate
  *     is configured.
- *   - `MemoryStoreMcpConnector` — bridges a registered MemoryStore as
- *     `$ memory mode=...` MCP dispatch. Auto-wired when MemoryStore substrate
+ *   - `DataStoreMcpConnector` — bridges a registered DataStore as
+ *     `$ data_read mode=...` MCP dispatch. Auto-wired when DataStore substrate
  *     is configured.
  *
  * Fork from this template when none of those fit — e.g.:

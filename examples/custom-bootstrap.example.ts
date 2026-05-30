@@ -3,8 +3,8 @@
 //
 // **When to write your own bootstrap.** The bundled `bootstrap()` from
 // `skillscript-runtime` wires `FilesystemSkillStore` + `OllamaLocalModel` +
-// `SqliteMemoryStore` + the v0.7.2 bridges. If your deployment uses
-// different substrates (your own memory system, a hosted LLM API, an MCP
+// `SqliteDataStore` + the v0.7.2 bridges. If your deployment uses
+// different substrates (your own data store, a hosted LLM API, an MCP
 // server for agent delivery, etc.), write your own bootstrap rather than
 // modifying the bundled one. Prevents merge conflicts on every upstream
 // release that touches `src/bootstrap.ts`.
@@ -83,17 +83,17 @@ const registry = new Registry();
 const skillStore = new FilesystemSkillStore(config.skillsDir ?? `${HOME}/skills`);
 registry.registerSkillStore("primary", skillStore);
 
-// Wire your own LocalModel, MemoryStore, AgentConnector here. For typed-
+// Wire your own LocalModel, DataStore, AgentConnector here. For typed-
 // contract impls, this is the "case 1" wiring — substrate-portable.
 //   registry.registerLocalModel("default", new MyHostedLlmAdapter(...));
-//   registry.registerMemoryStore("primary", new MyMemoryAdapter(...));
+//   registry.registerDataStore("primary", new MyMemoryAdapter(...));
 //   registry.registerAgentConnector("primary", new MyAgentHarnessAdapter(...));
 
-// Then wire bridges if you want the canonical `$ llm` / `$ memory` surfaces:
-//   import { LocalModelMcpConnector, MemoryStoreMcpConnector } from "skillscript-runtime";
+// Then wire bridges if you want the canonical `$ llm` / `$ data_read` surfaces:
+//   import { LocalModelMcpConnector, DataStoreMcpConnector } from "skillscript-runtime";
 //   registry.registerMcpConnector("llm", new LocalModelMcpConnector(registry.getLocalModel("default")));
-//   const ms = registry.listMemoryStores().find((e) => e.name === "primary");
-//   if (ms !== undefined) registry.registerMcpConnector("memory", new MemoryStoreMcpConnector(ms.instance));
+//   const ms = registry.listDataStores().find((e) => e.name === "primary");
+//   if (ms !== undefined) registry.registerMcpConnector("data_read", new DataStoreMcpConnector(ms.instance));
 
 // Wire any connectors.json instances.
 for (const c of connectors) {

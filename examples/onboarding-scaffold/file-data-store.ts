@@ -1,40 +1,40 @@
-// Onboarding scaffold: file-backed MemoryStore. v0.7.3.
+// Onboarding scaffold: file-backed DataStore. v0.7.3.
 //
 // JSON file as the substrate; simple JS substring + token match for "fts"
 // queries; reranks by recency. Adopters copy this file and modify for
 // their concrete substrate (e.g., swap the JSON file for a Postgres
 // table, the substring match for actual full-text search, etc.).
 //
-// **Scope.** Read-only `query()` per the v0.7.2 MemoryStore contract.
+// **Scope.** Read-only `query()` per the v0.7.2 DataStore contract.
 // `write()` is deferred to v0.8.x bundled with the auth model — when
 // that lands, extend this file with the matching `write()` method.
 
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type {
-  MemoryStore,
-  MemoryWrite,
-  MemoryWriteRecord,
-  PortableMemory,
+  DataStore,
+  DataWrite,
+  DataWriteRecord,
+  PortableData,
   QueryFilters,
   ManifestInfo,
   StaticCapabilities,
 } from "skillscript-runtime/connectors";
 
-export interface FileMemoryStoreConfig {
+export interface FileDataStoreConfig {
   /** Absolute path to the JSON file holding the memory array. */
   filePath: string;
 }
 
-interface FileMemoryRecord extends PortableMemory {
-  /** Optional substrate-specific fields go in `metadata`; everything top-level matches PortableMemory. */
+interface FileMemoryRecord extends PortableData {
+  /** Optional substrate-specific fields go in `metadata`; everything top-level matches PortableData. */
 }
 
-export class FileMemoryStore implements MemoryStore {
+export class FileDataStore implements DataStore {
   static staticCapabilities(): StaticCapabilities {
     return {
-      connector_type: "memory_store",
-      implementation: "FileMemoryStore",
+      connector_type: "data_store",
+      implementation: "FileDataStore",
       contract_version: "1.0.0",
       features: {
         supports_fts: true,
@@ -44,9 +44,9 @@ export class FileMemoryStore implements MemoryStore {
     };
   }
 
-  constructor(private readonly config: FileMemoryStoreConfig) {}
+  constructor(private readonly config: FileDataStoreConfig) {}
 
-  async query(filters: QueryFilters): Promise<PortableMemory[]> {
+  async query(filters: QueryFilters): Promise<PortableData[]> {
     const records = this.loadFile();
     const queryTerms = filters.query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
 
@@ -71,7 +71,7 @@ export class FileMemoryStore implements MemoryStore {
     return scored.slice(0, filters.limit).map((s) => s.record);
   }
 
-  async write(entry: MemoryWrite): Promise<MemoryWriteRecord> {
+  async write(entry: DataWrite): Promise<DataWriteRecord> {
     const records = this.loadFile();
     const id = randomUUID();
     const created_at = Math.floor(Date.now() / 1000);
@@ -102,7 +102,7 @@ export class FileMemoryStore implements MemoryStore {
     return {
       capabilities_version: "1",
       manifest: {
-        kind: "file-memory-store",
+        kind: "file-data-store",
         file_path: this.config.filePath,
         record_count: this.loadFile().length,
         supports_write: true,
@@ -116,11 +116,11 @@ export class FileMemoryStore implements MemoryStore {
       const raw = readFileSync(this.config.filePath, "utf8");
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed)) {
-        throw new Error(`FileMemoryStore: '${this.config.filePath}' top-level must be an array of memory records.`);
+        throw new Error(`FileDataStore: '${this.config.filePath}' top-level must be an array of memory records.`);
       }
       return parsed as FileMemoryRecord[];
     } catch (err) {
-      throw new Error(`FileMemoryStore: failed to read '${this.config.filePath}': ${(err as Error).message}`);
+      throw new Error(`FileDataStore: failed to read '${this.config.filePath}': ${(err as Error).message}`);
     }
   }
 }

@@ -1,7 +1,7 @@
 // Library entrypoint. Embedders use named exports:
 //
 //   import { compile, execute, lint, parse, Registry } from "skillscript-runtime";
-//   import { FilesystemSkillStore, OllamaLocalModel, SqliteMemoryStore, CallbackMcpConnector }
+//   import { FilesystemSkillStore, OllamaLocalModel, SqliteDataStore, CallbackMcpConnector }
 //     from "skillscript-runtime";
 //
 // T1 ships parse + compile + lint + execute against the bundled-default
@@ -57,8 +57,8 @@ export { SqliteSkillStore } from "./connectors/sqlite-skill-store.js";
 export type { SqliteSkillStoreConfig } from "./connectors/sqlite-skill-store.js";
 export { OllamaLocalModel } from "./connectors/local-model.js";
 export type { OllamaConfig } from "./connectors/local-model.js";
-export { SqliteMemoryStore } from "./connectors/memory-store.js";
-export type { SqliteMemoryStoreConfig } from "./connectors/memory-store.js";
+export { SqliteDataStore } from "./connectors/data-store.js";
+export type { SqliteDataStoreConfig } from "./connectors/data-store.js";
 export { CallbackMcpConnector } from "./connectors/mcp.js";
 export type { DispatchFn } from "./connectors/mcp.js";
 export { NoOpAgentConnector } from "./connectors/agent-noop.js";
@@ -81,9 +81,9 @@ export type {
   SkillStatus,
   SkillFilter,
   VersionInfo,
-  MemoryStore,
-  MemoryStoreClass,
-  PortableMemory,
+  DataStore,
+  DataStoreClass,
+  PortableData,
   QueryFilters,
   LocalModel,
   LocalModelClass,
@@ -93,9 +93,9 @@ export type {
   StaticCapabilities,
   ManifestInfo,
   ConnectorType,
-  CuratedMemoryField,
+  CuratedDataField,
 } from "./connectors/types.js";
-export { CURATED_MEMORY_FIELDS } from "./connectors/types.js";
+export { CURATED_DATA_FIELDS } from "./connectors/types.js";
 
 // v0.7.3 — canonical runtime config + adopter-extensible connector class registration.
 export { loadSkillscriptConfig } from "./runtime-config.js";

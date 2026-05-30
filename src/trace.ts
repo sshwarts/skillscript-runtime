@@ -16,9 +16,9 @@ import type { ExecutionError } from "./runtime.js";
  *              of (trigger_id + skill_name).
  *
  * Trace store contract: pluggable backend. v1 ships `FilesystemTraceStore`
- * (file-backed default, zero external dependency). `MemoryStoreTraceStore`
- * (substrate-backed via the configured MemoryStore connector) becomes
- * possible when MemoryStore contract grows a write surface — currently
+ * (file-backed default, zero external dependency). `DataStoreTraceStore`
+ * (substrate-backed via the configured DataStore connector) becomes
+ * possible when DataStore contract grows a write surface — currently
  * read-only per §3.
  */
 

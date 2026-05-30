@@ -36,7 +36,7 @@ import { evaluateApprovalGate } from "./approval.js";
  *   skill_list({filter?})          → SkillCatalog (v0.9.8 — pre-grouped by audience)
  *   skill_metadata({name})         → metadata + version history + recent_fires + approval (no source — see skill_read)
  *   skill_read({name, version?})   → {name, version, status, source} (v0.13.3 — symmetric peer to skill_write)
- *   memory_read({id, store?})      → PortableMemory | null (v0.13.8 — direct lookup; no memory_write MCP by design)
+ *   data_read({id, store?})      → PortableData | null (v0.13.8 — direct lookup; no data_write MCP by design)
  *   skill_status({name, new_state})→ SkillStatus update (write)
  *   list_triggers({filter?})       → TriggerRegistration[]
  *   register_trigger({...})        → TriggerRegistration (write)
@@ -292,29 +292,29 @@ export class McpServer {
     });
 
     this.registerTool({
-      name: "memory_read",
-      description: "Read a memory by substrate-assigned id. Returns the PortableMemory or null if not found. Symmetric peer to skill_read; lets adopters/agents inspect persisted memories outside execute_skill. v0.13.8 — note: there is no `memory_write` MCP tool by design; writes are skill-context-only (`$ memory_write` op inside a skill body) to preserve intent-tracking.",
+      name: "data_read",
+      description: "Read a memory by substrate-assigned id. Returns the PortableData or null if not found. Symmetric peer to skill_read; lets adopters/agents inspect persisted memories outside execute_skill. v0.13.8 — note: there is no `data_write` MCP tool by design; writes are skill-context-only (`$ data_write` op inside a skill body) to preserve intent-tracking.",
       inputSchema: {
         type: "object",
         properties: {
           id: { type: "string" },
-          store: { type: "string", description: "Named MemoryStore (default: 'primary')" },
+          store: { type: "string", description: "Named DataStore (default: 'primary')" },
         },
         required: ["id"],
       },
       handler: async (args) => {
         const id = args["id"] as string;
         const storeName = typeof args["store"] === "string" ? args["store"] : "primary";
-        if (this.deps.registry === undefined || !this.deps.registry.hasMemoryStore(storeName)) {
+        if (this.deps.registry === undefined || !this.deps.registry.hasDataStore(storeName)) {
           throw new OpError(
-            `\`memory_read\` requires a MemoryStore registered as '${storeName}'; none found in registry.`,
-            "memory_read",
-            `Configure a MemoryStore in connectors.json substrate.memory_store, or register one programmatically via registry.registerMemoryStore("${storeName}", ...).`,
+            `\`data_read\` requires a DataStore registered as '${storeName}'; none found in registry.`,
+            "data_read",
+            `Configure a DataStore in connectors.json substrate.data_store, or register one programmatically via registry.registerDataStore("${storeName}", ...).`,
             id,
           );
         }
-        const memoryStore = this.deps.registry.getMemoryStore(storeName);
-        return await memoryStore.get(id);
+        const dataStore = this.deps.registry.getDataStore(storeName);
+        return await dataStore.get(id);
       },
     });
 
@@ -456,7 +456,7 @@ export class McpServer {
             type: "array",
             items: {
               type: "string",
-              enum: ["localModels", "mcpConnectors", "mcpConnectorClasses", "memoryStores", "skillStores", "agentConnectors", "shellExecution", "runtimeVersion", "runtimeMode", "triggersFilePath"],
+              enum: ["localModels", "mcpConnectors", "mcpConnectorClasses", "dataStores", "skillStores", "agentConnectors", "shellExecution", "runtimeVersion", "runtimeMode", "triggersFilePath"],
             },
             description: "Filter which categories to return. Omit for all.",
           },
@@ -810,7 +810,7 @@ export class McpServer {
     if (want("runtimeMode")) out["runtimeMode"] = this.deps.runtimeMode ?? "dashboard";
     if (want("triggersFilePath")) out["triggersFilePath"] = this.deps.triggersFilePath ?? null;
     if (want("skillStores")) out["skillStores"] = reg ? reg.listSkillStores().map((e) => describeEntry(e)) : [];
-    if (want("memoryStores")) out["memoryStores"] = reg ? reg.listMemoryStores().map((e) => describeEntry(e)) : [];
+    if (want("dataStores")) out["dataStores"] = reg ? reg.listDataStores().map((e) => describeEntry(e)) : [];
     if (want("localModels")) out["localModels"] = reg ? reg.listLocalModels().map((e) => describeEntry(e)) : [];
     if (want("mcpConnectors")) {
       // v0.4.1 — surface `allowed_tools` per connector (or null when allow-all).

@@ -4,9 +4,6 @@ Canonical language reference for skillscript. Audience: skill authors (human + a
 
 Implementation state is cross-referenced to commit hashes; pending items mark v2/v3 work.
 
-Companion docs under the Skillscript project anchor:
-- `skillscript-prd` — product positioning, value prop, roadmap
-- `skillscript-erd` — engineering requirements, system architecture, runtime mechanics
 
 ## Not yet implemented, but planned
 
@@ -103,7 +100,7 @@ Skillscript is a constrained domain-specific language for authoring agent workfl
 Every skill follows the same shape:
 
 1. **Trigger** — what fires the skill: cron, command, session-start, agent-event, file-watch, webhook, etc.
-2. **Process** — pull data (MCP / memory / file), classify or compose via sub-LLM + iteration, build the deliverable.
+2. **Process** — pull data (MCP / data store / file), classify or compose via sub-LLM + iteration, build the deliverable.
 3. **Deliver** — emit the result via one or more delivery channels (see below).
 
 Skillscript's job is to express this pipeline declaratively. When there is an agent above the skill, the agent's job is to act on the delivered artifact. When there isn't (autonomous fires), the delivery channel IS the outcome.
@@ -128,9 +125,9 @@ A skill delivers its work via one or more of three channels. Delivery channel is
 |---|---|---|
 | **Augmenting (context to agent)** | `emit(text="...")` + `# Output: agent: <name>` | Skill output is augment-kind payload for the receiving agent's next turn; joined emit stream becomes the delivered context. Pattern: agent-augmenting skills (briefing skills, session-start prepared context). |
 | **Template (playbook to agent)** | `emit(text="...")` + `# Output: template: <name>` | Skill output is a template-kind payload (recipe/playbook) the receiving agent executes. Pattern: instructional skills, reusable recipes. |
-| **Memory handoff** | `$ memory_write content="..." recipients=[<agent>] -> R` | Skill writes a memory the target agent picks up via mailbox at next session. Pattern: async carrier skills, autonomous fires that hand off to a future session. |
+| **Data handoff** | `$ data_write content="..." recipients=[<agent>] -> R` | Skill writes data the target agent picks up via mailbox at next session. Pattern: async carrier skills, autonomous fires that hand off to a future session. |
 
-A single skill can use any combination. An autonomous cron-fired sweep might write a memory to one agent AND emit augment-kind context to another. The combinations are unconstrained — the per-op gating model governs which mutating ops are authorized, not which channels a skill uses.
+A single skill can use any combination. An autonomous cron-fired sweep might write data to one agent AND emit augment-kind context to another. The combinations are unconstrained — the per-op gating model governs which mutating ops are authorized, not which channels a skill uses.
 
 ## Three op classes
 
@@ -148,19 +145,19 @@ Full op catalog and per-op semantics in Ops Reference.
 
 ## Substrate portability
 
-The language doesn't privilege any backend. `$ llm`, `$ memory`, `$ ticketing_search` are not language built-ins — they're connector names resolved at runtime through the registered MCP connector instances. The same skill source runs against any conforming substrate.
+The language doesn't privilege any backend. `$ llm`, `$ data_read`, `$ ticketing_search` are not language built-ins — they're connector names resolved at runtime through the registered MCP connector instances. The same skill source runs against any conforming substrate.
 
 The runtime ships bundled bridges for two common patterns:
 
 - `$ llm` routes through whichever LocalModel is wired (via `substrate.local_model` in `connectors.json`)
-- `$ memory` / `$ memory_write` route through whichever MemoryStore is wired (via `substrate.memory_store`)
+- `$ data_read` / `$ data_write` route through whichever DataStore is wired (via `substrate.data_store`)
 
 Adopters wire OpenAI instead of Ollama, Pinecone instead of SQLite, etc. Configuration lives outside the skill body; the language remains agnostic.
 
 | Connector slot | Adopter A wires | Adopter B wires |
 |---|---|---|
 | `llm` | LocalModel: Ollama (default) | LocalModel: OpenAI |
-| `memory` / `memory_write` | MemoryStore: SqliteMemoryStore (default) | MemoryStore: Pinecone |
+| `data_read` / `data_write` | DataStore: SqliteDataStore (default) | DataStore: Pinecone |
 | `ticketing_search` | YouTrack MCP | Jira MCP |
 
 Substrate config syntax + the three-form configuration shape lives in the adopter playbook, not in this reference. Skill authors don't typically need to touch it — they author against the canonical `$ tool` surfaces and adopters wire whatever's underneath.
@@ -201,7 +198,7 @@ The joined `emit()` stream becomes the augment-kind payload delivered to the on-
 2. **Targets** — named blocks of typed ops, optionally with `needs:` dependencies
 3. **`default:`** — names the goal target the runtime walks toward
 
-Other delivery channels for the same shape: swap `# Output: agent: oncall` + the `emit()` calls for `$ memory_write content="..." recipients=["oncall"] approved="cron-fired" -> R` (one summary memory handoff per fire) or `file_write(path="/var/log/showstoppers-${EVENT.fired_at_unix}.md", content="...", approved="cron-fired")` (one file deliverable per fire).
+Other delivery channels for the same shape: swap `# Output: agent: oncall` + the `emit()` calls for `$ data_write content="..." recipients=["oncall"] approved="cron-fired" -> R` (one summary data handoff per fire) or `file_write(path="/var/log/showstoppers-${EVENT.fired_at_unix}.md", content="...", approved="cron-fired")` (one file deliverable per fire).
 
 ## Lexical conventions
 
@@ -476,14 +473,14 @@ Both forms are first-class. Neither is canonical; choose by what makes the call 
 ```
 $ ticketing_search query="project:INFRA" -> R
 $ llm prompt="${INPUT}" -> V
-$ memory mode=fts query="..." limit=5 -> M
+$ data_read mode=fts query="..." limit=5 -> M
 ```
 
 **Dotted-prefix dispatch** is the explicit-routing escape hatch — useful when multiple connectors expose tools with overlapping names, or when an adopter wants the connector identity visible at the call site for audit clarity:
 
 ```
 $ ticketing.search query="project:INFRA" -> R
-$ memory.query_memories query="..." -> M
+$ data_read.query query="..." -> M
 ```
 
 Parser rule: the text before the dot is the connector name (must match an entry in `connectors.json`); the rest is the tool + args.
@@ -493,13 +490,13 @@ Parser rule: the text before the dot is the connector name (must match an entry 
 ```
 $ ticketing_search query="project:INFRA state:Open" limit=20 -> ISSUES
 $ llm prompt="Classify: ${INPUT}" -> VERDICT
-$ memory mode=fts query="${TOPIC}" limit=5 -> RESULTS
-$ memory_write content="${SUMMARY}" recipients=["oncall"] approved="morning roundup, 2026-05-25" -> ACK
+$ data_read mode=fts query="${TOPIC}" limit=5 -> RESULTS
+$ data_write content="${SUMMARY}" recipients=["oncall"] approved="morning roundup, 2026-05-25" -> ACK
 ```
 
 Tool args are unconstrained `key=value` pairs — the connector forwards them to the underlying MCP tool. If a dispatched call returns `isError: true`, the executor throws via `makeOpError`, which routes through `else:` / `# OnError:` machinery. The inner tool's error text is preserved in `result.errors[]`.
 
-**Substrate-neutrality.** Connector names like `$ llm`, `$ memory`, `$ ticketing_search` are NOT reserved or built-in — they're whatever the adopter declares in `connectors.json` (substrate config). Bridges for `$ llm` and `$ memory` / `$ memory_write` auto-wire only when the adopter's substrate config sets `substrate.local_model` / `substrate.memory_store` respectively. See the adopter playbook for the full substrate config reference.
+**Substrate-neutrality.** Connector names like `$ llm`, `$ data_read`, `$ ticketing_search` are NOT reserved or built-in — they're whatever the adopter declares in `connectors.json` (substrate config). Bridges for `$ llm` and `$ data_read` / `$ data_write` auto-wire only when the adopter's substrate config sets `substrate.local_model` / `substrate.data_store` respectively. See the adopter playbook for the full substrate config reference.
 
 **Unknown connector** → tier-1 `unknown-connector` lint with the list of wired connector names.
 
@@ -513,7 +510,7 @@ Mutation ops require an authorization signal. The signal is per-op, not a mode b
 
 **Mutation-classified ops:**
 - `file_write(...)` (runtime-intrinsic)
-- `$ memory_write ...` and any MCP connector entry declared `"mutating": true` in `connectors.json`
+- `$ data_write ...` and any MCP connector entry declared `"mutating": true` in `connectors.json`
 - `shell(command=..., unsafe=true)` (always mutation-classified)
 - `shell(command=...)` with destructive verb (rm, mv, dd, mkfs, etc. — heuristic list)
 - `$ <tool>` matching the mutating-verb regex
@@ -537,7 +534,7 @@ Mutation ops require an authorization signal. The signal is per-op, not a mode b
 
 deliver:
     file_write(path="/tmp/sweep.md", content="${REPORT}")        # no approved= needed
-    $ memory_write content="${REPORT}" recipients=["oncall"]     # no approved= needed
+    $ data_write content="${REPORT}" recipients=["oncall"]       # no approved= needed
 ```
 
 ```
@@ -577,35 +574,15 @@ flush:
 | Runtime-intrinsic | `file_write` | `file_write(path="...", content="...", [approved="..."])` | none |
 | External MCP | `$ <connector>` | `$ <name>[.<tool>] kwarg=value, ... [-> R]` | optional |
 
----
-
-## Legacy syntax (deprecated, grace period)
-
-These symbol-forms shipped in earlier versions and still compile during the grace period with tier-2 `deprecated-symbol-op` warnings. New skills should use the canonical forms.
-
-| Deprecated | Canonical replacement |
-|---|---|
-| `~ prompt="..."` | `$ llm prompt="..."` |
-| `> mode=... query=...` | `$ memory mode=... query=...` |
-| `@ <command>` | `shell(command="...")` |
-| `@ unsafe <command>` | `shell(command="...", unsafe=true)` |
-| `! <text>` | `emit(text="<text>")` |
-| `?? "<prompt>" -> R` | `ask(prompt="<prompt>") -> R` |
-| `& <data-skill-name>` | `inline(skill="<data-skill-name>")` |
-| `$(VAR)` (legacy substitution) | `${VAR}` |
-| `(approved: "reason")` trailer | `approved="reason"` kwarg |
-
-The symbol-per-op design was deprecated when verb-word ops in function-call shape proved more author-friendly (training-corpus alignment + human-reviewability). Removal lands in a future version; until then, the canonical surface is the recommended form.
-
 ## Variable resolution — ${VAR} canonical, substitution + ambient refs + # Requires: cascade
 
-Skillscript supports four tiers of variables, each with distinct resolution timing and scope. Substitution uses **`${VAR}` as the canonical form**. The legacy `$(VAR)` form (parentheses) continues to compile during the grace period; see Ops Reference legacy syntax section for the deprecation map.
+Skillscript supports four tiers of variables, each with distinct resolution timing and scope. Substitution uses **`${VAR}` as the canonical form**.
 
 ## Substitution syntax — `${VAR}` canonical
 
 ```
 emit(text="Hello, ${USER.login}!")
-$ memory mode=fts query="${TOPIC}" limit=5 -> R
+$ data_read mode=fts query="${TOPIC}" limit=5 -> R
 $set REPORT = "Triage for ${PROJECT} (${ISSUES|length} open):\n"
 ```
 
@@ -638,7 +615,7 @@ For cron and session triggers, the scheduler injects time-offset ambient fields 
 
 These let skill bodies compute `expires_at` and similar bounded-lifetime values without arithmetic in op kwargs. For ISO-formatted rendering of any epoch value, see the `|isodate` filter.
 
-Additional ambient refs may be injected based on connector configuration (e.g., a vault-backed memory connector may expose `${VAULT_ROOT}`). Connectors section documents which ambient refs each connector contributes.
+Additional ambient refs may be injected based on connector configuration. Connector documentation specifies which ambient refs each connector contributes.
 
 ## Tier 2: Input
 
@@ -662,18 +639,16 @@ Bracketed list literals supported (`# Vars: TAGS=[a, b, c]`).
 
 ## Tier 4: Local
 
-Bound to a previous target's output mid-execution. Two forms:
+Bound to a previous target's output mid-execution. Three forms:
 - `${target.output}` — the bound output of a target
 - `${VAR}` — an explicit `-> VAR` binding from any op
-- `${target.output.field}` or `${MEMORY.field}` — dotted field access into structured output
+- `${VAR.field}` / `${VAR.nested.field}` — dotted field access into structured output
 
-**Field access resolution tiers** for `${MEMORY.field}`:
-1. Core `PortableMemory` fields (id, summary, detail, score)
-2. Curated substrate subset (thread_status, pinned, confidence, domain_tags, payload_type, knowledge_type, recipients, expires_at, created_at, agent_id, vault)
-3. `metadata.X` for everything else
-4. Ambient passthrough as literal `${MEMORY.field}` if unresolved
+The exact field set available on a bound variable depends on what the wired connector returns. Field access resolves against the returned object's structure. If a field doesn't resolve, the substitution errors unless `|fallback:"default"` is supplied (see Pipe filters for full `|fallback:` semantics):
 
-**Missing-field opt-out:** `${MEMORY.field|fallback:"-"}` coalesces to the literal when the field doesn't resolve. See Pipe filters for the full `|fallback:` semantics.
+```
+emit(text="Assignee: ${ISSUE.customFields.Assignee|fallback:\"unassigned\"}")
+```
 
 ## Resolution order
 
@@ -751,7 +726,7 @@ Strings that hold JSON arrays get the same tolerance as `in`/`not in` RHS: if th
 Pairs naturally with the numeric comparison operators (see Conditionals section):
 
 ```
-$ memory mode=fts query="urgent" -> ITEMS
+$ data_read mode=fts query="urgent" -> ITEMS
 if ${ITEMS|length} > 5:
     emit(text="Mailbox is getting crowded")
 ```
@@ -901,7 +876,7 @@ The ref-vs-ref form is the canonical change-detection pattern. Both sides resolv
 if ${M.id|trim} in ${SEEN}:
     emit(text="already processed")
 elif ${M.id} not in ${SEEN}:
-    $ memory_write content="..." approved="dedup" -> R
+    $ data_write content="..." approved="dedup" -> R
 ```
 
 Both sides are explicit refs. RHS must resolve to an array at runtime; clean error otherwise. LHS-undefined evaluates to `false` for both polarities. Optional filter on LHS.
@@ -909,9 +884,9 @@ Both sides are explicit refs. RHS must resolve to an array at runtime; clean err
 **JSON-string tolerance on RHS**: if the RHS resolves to a *string* that successfully JSON-parses to an array, the parsed array is used. This accommodates the canonical pattern where the array comes from a `$ llm` call that prompted for JSON output:
 
 ```
-$ llm prompt="List the URGENT memory IDs as a JSON array of strings. Items: ${M|json}" -> SEEN
+$ llm prompt="List the URGENT item IDs as a JSON array of strings. Items: ${M|json}" -> SEEN
 
-foreach M in ${MEMORIES}:
+foreach M in ${ITEMS}:
     if ${M.id} in ${SEEN}:
         emit(text="flagged urgent")
 ```
@@ -932,7 +907,7 @@ elif ${COUNT} <= 0:
 Filters and dotted-field access work on either side, same as equality. The `|length` filter (see Pipe filters section) is the canonical companion — `${LIST|length} > 5` is the natural "more than five items" pattern:
 
 ```
-$ memory mode=fts query="urgent" -> ITEMS
+$ data_read mode=fts query="urgent" -> ITEMS
 if ${ITEMS|length} > 5:
     emit(text="Mailbox is getting crowded")
 ```
@@ -972,7 +947,7 @@ classify:
 
 ```
 mailbox_check:
-    $ memory mode=fts query="addressed:perry" limit=10 -> MAILBOX
+    $ data_read mode=fts query="addressed:perry" limit=10 -> MAILBOX
     if not ${MAILBOX}:
         emit(text="empty mailbox today")
     elif ${MAILBOX|length} > 5:
@@ -1019,12 +994,12 @@ Both can coexist in the same target.
 foreach M in ${RESULTS}:
     emit(text="Processing ${M.id} — ${M.summary}")
     if ${M.id|trim} not in ${SEEN}:
-        $ memory_write content="${M.summary}" approved="dedup" -> ACK
+        $ data_write content="${M.summary}" approved="dedup" -> ACK
 ```
 
 ### Iterator vars
 
-`${M}` and `${M.field}` pass through ambient at compile; runtime substitutes per iteration. Dotted field access against `PortableMemory` shape applies (core fields → curated subset → metadata). Indexed access (`${LIST.0}`, `${LIST.0.id}`) also works on bound results.
+`${M}` and `${M.field}` pass through ambient at compile; runtime substitutes per iteration. Dotted field access resolves against whatever structure the connector returned per item — the exact field set depends on the connector. Indexed access (`${LIST.0}`, `${LIST.0.id}`) also works on bound results.
 
 ### Loop-local scope (and the accumulator exception)
 
@@ -1369,7 +1344,7 @@ Runs if any op in the target's primary body errors. Local to the failing target.
 
 ```
 fetch:
-    $ memory mode=fts query=${TOPIC} limit=5 -> RESULT
+    $ data_read mode=fts query=${TOPIC} limit=5 -> RESULT
 else:
     emit(text="retrieval failed, falling back to empty result")
     $set RESULT = ""
@@ -1412,7 +1387,7 @@ Inline fallback declared on the op line. Used when the call fails or returns emp
 
 ```
 weather:
-    $ memory mode=fts query="weather ${LOCATION}" limit=1 -> CURRENT (fallback: "weather unavailable")
+    $ data_read mode=fts query="weather ${LOCATION}" limit=1 -> CURRENT (fallback: "weather unavailable")
     $ llm prompt="Summarize: ${CURRENT}" -> SUMMARY (fallback: "summary unavailable")
     $ slack.post channel=${CHANNEL} text=${SUMMARY} (fallback: "post failed silently") -> ACK
 ```
@@ -1422,7 +1397,7 @@ Same pattern as the `# Requires:` cascade's `(fallback: ...)` syntax — consist
 **Fallback value parsing.** Permissive: bare identifiers, quoted strings, and bracketed array literals all accepted. Matches the `# Requires:` cascade convention.
 
 ```
-$ memory mode=fts query="..." -> RESULTS (fallback: [])              # array literal
+$ data_read mode=fts query="..." -> RESULTS (fallback: [])           # array literal
 $ llm prompt="..." -> VERDICT (fallback: unknown)                    # bare identifier
 $ slack.post text="..." -> ACK (fallback: "post failed")             # quoted string
 ```
@@ -1728,7 +1703,7 @@ Normal `prompt` / `prose` compilation ignores the `# Tests:` section entirely �
 
 ### Runtime assertion sandboxing
 
-`# Tests:` cases that exercise runtime behavior (memory writes, shell ops, LocalModel calls) need a sandbox so they don't pollute production data. Two approaches:
+`# Tests:` cases that exercise runtime behavior (data writes, shell ops, LocalModel calls) need a sandbox so they don't pollute production data. Two approaches:
 - Scratch DB / scratch connector overrides for tests
 - Skip-and-warn for non-deterministic ops, only assert deterministic compile-time properties
 
@@ -1832,7 +1807,7 @@ $set NAME = value scope=session
 
 Backed by a configured data-records connector (the same surface `# Requires:` reads from) with conventionally-namespaced keys (e.g., `state:skill-local:<skill-name>:<key>`).
 
-**Rationale:** Most interesting skills need memory across firings — change-detection, windowing, dedup-against-recent. Without lifecycle, every skill rebuilds state tracking via raw memory-write / memory-query calls.
+**Rationale:** Most interesting skills need persistent state across firings — change-detection, windowing, dedup-against-recent. Without lifecycle, every skill rebuilds state tracking via raw `$ data_write` / `$ data_read` calls.
 
 ## Cross-skill pub-sub
 
@@ -1905,7 +1880,7 @@ ${SELF.confidence-trend}
 Skill declares its required surfaces:
 
 ```
-# Requires-Capabilities: sensors=[mic, camera], tools=[memorystore.write, slack.post]
+# Requires-Capabilities: sensors=[mic, camera], tools=[datastore.write, slack.post]
 # Requires-Privacy: private-channel-only
 ```
 
@@ -1968,5 +1943,5 @@ Hung dispatches hang the skill without explicit timeout configuration. Lean: ski
 
 ---
 
-*Rendered from `skillscript/skillscript-language-reference` — 2026-05-29 10:20 EDT*  
+*Rendered from `skillscript/skillscript-language-reference` — 2026-05-30 09:52 EDT*  
 *Source of truth: AMP (`amp_render_document("skillscript/skillscript-language-reference")`)*

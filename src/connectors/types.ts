@@ -1,5 +1,5 @@
 // Connector contracts — the integration boundary between the runtime and
-// external state. Five kinds: SkillStore (where skills live), MemoryStore
+// external state. Five kinds: SkillStore (where skills live), DataStore
 // (queryable knowledge), LocalModel (local LLM inference), McpConnector
 // (MCP tool dispatch), AgentConnector (deliver to / wake a frontier agent;
 // T7.1).
@@ -19,7 +19,7 @@
 //     loaded), NOT on every dispatch.
 
 /** The five connector kinds. */
-export type ConnectorType = "skill_store" | "memory_store" | "local_model" | "mcp_connector" | "agent_connector";
+export type ConnectorType = "skill_store" | "data_store" | "local_model" | "mcp_connector" | "agent_connector";
 
 // ─── Per-contract feature-flag namespaces ─────────────────────────────────
 //
@@ -35,7 +35,7 @@ export type SkillStoreFeature =
   | "supports_audit_trail"
   | "supports_atomic_status_transitions";
 
-export type MemoryStoreFeature =
+export type DataStoreFeature =
   | "supports_writes"
   | "supports_tag_filter"
   | "supports_semantic"
@@ -82,9 +82,9 @@ export interface SkillStoreCapabilities extends BaseStaticCapabilities {
   features: Partial<Record<SkillStoreFeature, boolean>>;
 }
 
-export interface MemoryStoreCapabilities extends BaseStaticCapabilities {
-  connector_type: "memory_store";
-  features: Partial<Record<MemoryStoreFeature, boolean>>;
+export interface DataStoreCapabilities extends BaseStaticCapabilities {
+  connector_type: "data_store";
+  features: Partial<Record<DataStoreFeature, boolean>>;
 }
 
 export interface LocalModelCapabilities extends BaseStaticCapabilities {
@@ -104,7 +104,7 @@ export interface AgentConnectorCapabilities extends BaseStaticCapabilities {
 
 export type StaticCapabilities =
   | SkillStoreCapabilities
-  | MemoryStoreCapabilities
+  | DataStoreCapabilities
   | LocalModelCapabilities
   | McpConnectorCapabilities
   | AgentConnectorCapabilities;
@@ -133,7 +133,7 @@ export interface SkillStoreManifest {
   [key: string]: unknown;
 }
 
-export interface MemoryStoreManifest {
+export interface DataStoreManifest {
   kind: string;
   /** Query modes the substrate supports — e.g., ["fts"], ["semantic", "rerank"]. */
   supported_modes?: string[];
@@ -178,7 +178,7 @@ export interface McpConnectorManifest {
 
 type ManifestPayload<K extends ConnectorType> =
   K extends "skill_store" ? SkillStoreManifest
-  : K extends "memory_store" ? MemoryStoreManifest
+  : K extends "data_store" ? DataStoreManifest
   : K extends "local_model" ? LocalModelManifest
   : K extends "mcp_connector" ? McpConnectorManifest
   : never;
@@ -373,7 +373,7 @@ export interface SkillStoreClass {
   staticCapabilities(): StaticCapabilities;
 }
 
-// ─── MemoryStore ──────────────────────────────────────────────────────────
+// ─── DataStore ──────────────────────────────────────────────────────────
 
 /**
  * Portable memory shape. Field-access semantics (4-tier resolution):
@@ -385,7 +385,7 @@ export interface SkillStoreClass {
  * Connector duplication discipline: a curated-subset field must be at
  * top-level only, never also in metadata. Silent divergence otherwise.
  */
-export interface PortableMemory {
+export interface PortableData {
   id: string;
   summary: string;
   detail?: string;
@@ -415,7 +415,7 @@ export interface QueryFilters {
 }
 
 /**
- * Shape of a `MemoryStore.write()` input. `content` is required; other
+ * Shape of a `DataStore.write()` input. `content` is required; other
  * fields are optional hints to the substrate. `recipients` lets the
  * memory system route alerts if it has alerting machinery (e.g., AMP's
  * mailbox model) — purely advisory at the language layer. `metadata`
@@ -423,7 +423,7 @@ export interface QueryFilters {
  * `confidence`, `payload_type` fields) without bloating the typed
  * contract. v0.8.0.
  */
-export interface MemoryWrite {
+export interface DataWrite {
   content: string;
   tags?: string[];
   recipients?: string[];
@@ -433,37 +433,37 @@ export interface MemoryWrite {
 }
 
 /**
- * Return shape from `MemoryStore.write()`. `id` is the substrate-assigned
+ * Return shape from `DataStore.write()`. `id` is the substrate-assigned
  * identifier; `created_at` is unix seconds. v0.8.0.
  */
-export interface MemoryWriteRecord {
+export interface DataWriteRecord {
   id: string;
   created_at: number;
 }
 
-export interface MemoryStore {
-  query(filters: QueryFilters): Promise<PortableMemory[]>;
+export interface DataStore {
+  query(filters: QueryFilters): Promise<PortableData[]>;
   /**
    * Persist a new memory entry. v0.8.0 — bundled with the passthrough
    * auth model (substrate enforces credentials threaded through MCP
    * dispatch context). Returns the substrate-assigned id + timestamp.
    */
-  write(entry: MemoryWrite): Promise<MemoryWriteRecord>;
+  write(entry: DataWrite): Promise<DataWriteRecord>;
   /**
    * Direct lookup by substrate-assigned id. v0.13.8 — added so the
-   * `memory_read` MCP tool can inspect a memory without going through
+   * `data_read` MCP tool can inspect a memory without going through
    * a query roundtrip. Returns `null` (not throws) when the id isn't
-   * found, matching MemoryStore's existing empty-set convention (vs.
+   * found, matching DataStore's existing empty-set convention (vs.
    * SkillStore which throws `SkillNotFoundError`). Substrates that
    * don't have a queryable-by-id concept can implement via
    * `query({id})` extension + filter, but `null` semantics must hold.
    */
-  get(id: string): Promise<PortableMemory | null>;
+  get(id: string): Promise<PortableData | null>;
   manifest(): Promise<ManifestInfo>;
 }
 
-export interface MemoryStoreClass {
-  new (...args: never[]): MemoryStore;
+export interface DataStoreClass {
+  new (...args: never[]): DataStore;
   staticCapabilities(): StaticCapabilities;
 }
 
@@ -516,7 +516,7 @@ export interface McpConnectorClass {
 // ─── Curated memory fields ────────────────────────────────────────────────
 
 /** Eleven curated substrate fields. Connectors route equivalents here at top level; everything else flows into metadata. */
-export const CURATED_MEMORY_FIELDS = [
+export const CURATED_DATA_FIELDS = [
   "thread_status",
   "pinned",
   "confidence",
@@ -530,4 +530,4 @@ export const CURATED_MEMORY_FIELDS = [
   "vault",
 ] as const;
 
-export type CuratedMemoryField = (typeof CURATED_MEMORY_FIELDS)[number];
+export type CuratedDataField = (typeof CURATED_DATA_FIELDS)[number];

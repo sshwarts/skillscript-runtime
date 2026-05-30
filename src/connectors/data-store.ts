@@ -3,12 +3,12 @@ import { dirname } from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type {
-  MemoryStore,
-  MemoryWrite,
-  MemoryWriteRecord,
-  PortableMemory,
+  DataStore,
+  DataWrite,
+  DataWriteRecord,
+  PortableData,
   QueryFilters,
-  MemoryStoreCapabilities,
+  DataStoreCapabilities,
   ManifestInfo,
 } from "./types.js";
 
@@ -43,7 +43,7 @@ function loadDatabaseSync(): DatabaseSyncCtor {
 }
 
 /**
- * SQLite-backed MemoryStore. Schema:
+ * SQLite-backed DataStore. Schema:
  *
  *   memories(
  *     id TEXT PRIMARY KEY,
@@ -65,15 +65,15 @@ function loadDatabaseSync(): DatabaseSyncCtor {
  * agent/vault scoping wrap the contract in a separate adapter; the
  * filesystem-default store has no agents and open visibility.
  */
-export interface SqliteMemoryStoreConfig {
+export interface SqliteDataStoreConfig {
   dbPath: string;
 }
 
-export class SqliteMemoryStore implements MemoryStore {
-  static staticCapabilities(): MemoryStoreCapabilities {
+export class SqliteDataStore implements DataStore {
+  static staticCapabilities(): DataStoreCapabilities {
     return {
-      connector_type: "memory_store",
-      implementation: "SqliteMemoryStore",
+      connector_type: "data_store",
+      implementation: "SqliteDataStore",
       contract_version: CONTRACT_VERSION,
       features: {
         supports_writes: true,
@@ -89,7 +89,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
   private readonly db: DatabaseSync;
 
-  constructor(config: SqliteMemoryStoreConfig) {
+  constructor(config: SqliteDataStoreConfig) {
     const dir = dirname(config.dbPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const DatabaseSync = loadDatabaseSync();
@@ -158,9 +158,9 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   // v0.13.8 — direct lookup by id. Mirrors `SqliteSkillStore.skillRow` shape
-  // but returns `null` on miss instead of throwing (per MemoryStore's empty-set
+  // but returns `null` on miss instead of throwing (per DataStore's empty-set
   // convention, distinct from SkillStore's throw-on-miss).
-  async get(id: string): Promise<PortableMemory | null> {
+  async get(id: string): Promise<PortableData | null> {
     const row = this.db.prepare(
       "SELECT id, summary, detail, tags, created_at, metadata FROM memories WHERE id = $id",
     ).get({ $id: id }) as Record<string, unknown> | undefined;
@@ -168,11 +168,11 @@ export class SqliteMemoryStore implements MemoryStore {
     return this.rowToMemory(row, undefined);
   }
 
-  async query(filters: QueryFilters): Promise<PortableMemory[]> {
+  async query(filters: QueryFilters): Promise<PortableData[]> {
     const { query, limit, mode } = filters;
     if (mode !== "fts") {
       throw new Error(
-        `SqliteMemoryStore: mode '${mode}' not supported in T1 baseline. Use 'fts'. ` +
+        `SqliteDataStore: mode '${mode}' not supported in T1 baseline. Use 'fts'. ` +
         `Semantic / rerank land alongside the embedding pipeline in a follow-up thread.`,
       );
     }
@@ -205,7 +205,7 @@ export class SqliteMemoryStore implements MemoryStore {
     return rows.map((r) => this.rowToMemory(r, r["score"] as number | undefined));
   }
 
-  async manifest(): Promise<ManifestInfo<"memory_store">> {
+  async manifest(): Promise<ManifestInfo<"data_store">> {
     return {
       capabilities_version: "1",
       manifest: {
@@ -224,13 +224,13 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   /**
-   * v0.8.0 — `MemoryStore.write()` impl. Generates a substrate id; persists
+   * v0.8.0 — `DataStore.write()` impl. Generates a substrate id; persists
    * via the existing `upsert()` schema with tags + metadata. The `summary`
    * field defaults to the first line of content (per the v0.7.x convention
    * — adopters who want richer summaries pre-compose and pass via metadata).
    * Recipients hint is stored in metadata for substrates that key alerts off it.
    */
-  async write(entry: MemoryWrite): Promise<MemoryWriteRecord> {
+  async write(entry: DataWrite): Promise<DataWriteRecord> {
     const id = generateMemoryId();
     const createdAt = Math.floor(Date.now() / 1000);
     const firstLine = entry.content.split("\n")[0] ?? entry.content;
@@ -291,10 +291,10 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.close();
   }
 
-  private rowToMemory(row: Record<string, unknown>, score: number | undefined): PortableMemory {
+  private rowToMemory(row: Record<string, unknown>, score: number | undefined): PortableData {
     const tags = typeof row["tags"] === "string" ? safeParseJson(row["tags"]) : null;
     const metadata = typeof row["metadata"] === "string" ? safeParseJson(row["metadata"]) : null;
-    const memory: PortableMemory = {
+    const memory: PortableData = {
       id: row["id"] as string,
       summary: row["summary"] as string,
       created_at: row["created_at"] as number,

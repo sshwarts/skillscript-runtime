@@ -73,9 +73,9 @@ describe("v0.2.1 — bootstrap()", () => {
     expect(shell.unsafe_enabled).toBe(true);
   });
 
-  it("skipping memoryDbPath leaves MemoryStore unregistered", () => {
+  it("skipping dataDbPath leaves DataStore unregistered", () => {
     const { registry } = defaultRegistry({ skillsDir: join(home, "skills") });
-    expect(registry.hasMemoryStore("primary")).toBe(false);
+    expect(registry.hasDataStore("primary")).toBe(false);
   });
 });
 
@@ -145,7 +145,7 @@ describe("v0.2.1 — runtime_capabilities MCP tool", () => {
     const caps = await callTool(mcpServer, "runtime_capabilities");
     expect(Array.isArray(caps["skillStores"])).toBe(true);
     expect(Array.isArray(caps["localModels"])).toBe(true);
-    expect(Array.isArray(caps["memoryStores"])).toBe(true);
+    expect(Array.isArray(caps["dataStores"])).toBe(true);
     expect(Array.isArray(caps["mcpConnectors"])).toBe(true);
     expect(Array.isArray(caps["agentConnectors"])).toBe(true);
     expect(typeof caps["shellExecution"]).toBe("object");

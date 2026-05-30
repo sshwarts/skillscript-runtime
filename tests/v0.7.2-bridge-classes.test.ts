@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { LocalModelMcpConnector } from "../src/connectors/local-model-mcp.js";
-import { MemoryStoreMcpConnector } from "../src/connectors/memory-store-mcp.js";
+import { DataStoreMcpConnector } from "../src/connectors/data-store-mcp.js";
 import { KNOWN_CONNECTOR_CLASSES } from "../src/connectors/config.js";
-import type { LocalModel, MemoryStore, PortableMemory } from "../src/connectors/types.js";
+import type { LocalModel, DataStore, PortableData } from "../src/connectors/types.js";
 
-// v0.7.2 — bridge classes that expose LocalModel + MemoryStore as
+// v0.7.2 — bridge classes that expose LocalModel + DataStore as
 // McpConnector instances. Canonical contract per architectural decision:
 //   $ llm prompt="..." [maxTokens=N] [model="..."] -> R (R = string)
-//   $ memory mode=... query=... limit=N -> R (R = {items: [...]})
+//   $ data_read mode=... query=... limit=N -> R (R = {items: [...]})
 
 class FakeLocalModel implements LocalModel {
   public lastCall: { prompt: string; opts: { maxTokens?: number; model?: string } } | null = null;
@@ -20,17 +20,17 @@ class FakeLocalModel implements LocalModel {
   }
 }
 
-class FakeMemoryStore implements MemoryStore {
+class FakeDataStore implements DataStore {
   public lastQuery: Record<string, unknown> | null = null;
-  async query(filters: Record<string, unknown> & { query: string; limit: number; mode: string }): Promise<PortableMemory[]> {
+  async query(filters: Record<string, unknown> & { query: string; limit: number; mode: string }): Promise<PortableData[]> {
     this.lastQuery = filters;
     return [
-      { id: "m1", summary: "first", confidence: 0.9, agentId: "test", vault: "private" } as unknown as PortableMemory,
-      { id: "m2", summary: "second", confidence: 0.8, agentId: "test", vault: "private" } as unknown as PortableMemory,
+      { id: "m1", summary: "first", confidence: 0.9, agentId: "test", vault: "private" } as unknown as PortableData,
+      { id: "m2", summary: "second", confidence: 0.8, agentId: "test", vault: "private" } as unknown as PortableData,
     ];
   }
   async manifest(): Promise<{ capabilities_version: string; manifest: Record<string, unknown> }> {
-    return { capabilities_version: "1", manifest: { kind: "fake-memory-store" } };
+    return { capabilities_version: "1", manifest: { kind: "fake-data-store" } };
   }
 }
 
@@ -77,55 +77,55 @@ describe("v0.7.2 — LocalModelMcpConnector bridge", () => {
   });
 });
 
-describe("v0.7.2 — MemoryStoreMcpConnector bridge", () => {
-  it("dispatches mode/query/limit to wrapped MemoryStore.query", async () => {
-    const ms = new FakeMemoryStore();
-    const bridge = new MemoryStoreMcpConnector(ms);
-    const result = await bridge.call("memory", { mode: "fts", query: "incidents", limit: 5 });
+describe("v0.7.2 — DataStoreMcpConnector bridge", () => {
+  it("dispatches mode/query/limit to wrapped DataStore.query", async () => {
+    const ms = new FakeDataStore();
+    const bridge = new DataStoreMcpConnector(ms);
+    const result = await bridge.call("data_read", { mode: "fts", query: "incidents", limit: 5 });
     expect(ms.lastQuery).toMatchObject({ mode: "fts", query: "incidents", limit: 5 });
     expect(result).toHaveProperty("items");
-    expect((result as { items: PortableMemory[] }).items).toHaveLength(2);
+    expect((result as { items: PortableData[] }).items).toHaveLength(2);
   });
 
   it("wraps return in {items: [...]} envelope (consistent with object-iteration-advisory)", async () => {
-    const ms = new FakeMemoryStore();
-    const bridge = new MemoryStoreMcpConnector(ms);
-    const result = await bridge.call("memory", { mode: "fts", query: "x", limit: 10 });
+    const ms = new FakeDataStore();
+    const bridge = new DataStoreMcpConnector(ms);
+    const result = await bridge.call("data_read", { mode: "fts", query: "x", limit: 10 });
     expect(result).toEqual({
       items: expect.arrayContaining([expect.objectContaining({ id: "m1" }), expect.objectContaining({ id: "m2" })]),
     });
   });
 
   it("defaults mode to 'fts' if not provided", async () => {
-    const ms = new FakeMemoryStore();
-    const bridge = new MemoryStoreMcpConnector(ms);
-    await bridge.call("memory", { query: "x" });
+    const ms = new FakeDataStore();
+    const bridge = new DataStoreMcpConnector(ms);
+    await bridge.call("data_read", { query: "x" });
     expect(ms.lastQuery?.mode).toBe("fts");
   });
 
   it("defaults limit to 10 if not provided", async () => {
-    const ms = new FakeMemoryStore();
-    const bridge = new MemoryStoreMcpConnector(ms);
-    await bridge.call("memory", { query: "x" });
+    const ms = new FakeDataStore();
+    const bridge = new DataStoreMcpConnector(ms);
+    await bridge.call("data_read", { query: "x" });
     expect(ms.lastQuery?.limit).toBe(10);
   });
 
   it("passes extras through to query filters (domain_tags, vault, etc.)", async () => {
-    const ms = new FakeMemoryStore();
-    const bridge = new MemoryStoreMcpConnector(ms);
-    await bridge.call("memory", { query: "x", domain_tags: ["a", "b"], vault: "team" });
+    const ms = new FakeDataStore();
+    const bridge = new DataStoreMcpConnector(ms);
+    await bridge.call("data_read", { query: "x", domain_tags: ["a", "b"], vault: "team" });
     expect(ms.lastQuery).toMatchObject({ query: "x", domain_tags: ["a", "b"], vault: "team" });
   });
 
   it("throws on missing query", async () => {
-    const ms = new FakeMemoryStore();
-    const bridge = new MemoryStoreMcpConnector(ms);
-    await expect(bridge.call("memory", { mode: "fts", limit: 5 })).rejects.toThrow(/query/);
+    const ms = new FakeDataStore();
+    const bridge = new DataStoreMcpConnector(ms);
+    await expect(bridge.call("data_read", { mode: "fts", limit: 5 })).rejects.toThrow(/query/);
   });
 
-  it("staticCapabilities reports implementation = MemoryStoreMcpConnector", () => {
-    const caps = MemoryStoreMcpConnector.staticCapabilities();
-    expect(caps.implementation).toBe("MemoryStoreMcpConnector");
+  it("staticCapabilities reports implementation = DataStoreMcpConnector", () => {
+    const caps = DataStoreMcpConnector.staticCapabilities();
+    expect(caps.implementation).toBe("DataStoreMcpConnector");
     expect(caps.connector_type).toBe("mcp_connector");
   });
 });
@@ -135,13 +135,13 @@ describe("v0.7.2 — closed-set class registry includes bridges", () => {
     expect(KNOWN_CONNECTOR_CLASSES.has("LocalModelMcpConnector")).toBe(true);
   });
 
-  it("MemoryStoreMcpConnector is registered", () => {
-    expect(KNOWN_CONNECTOR_CLASSES.has("MemoryStoreMcpConnector")).toBe(true);
+  it("DataStoreMcpConnector is registered", () => {
+    expect(KNOWN_CONNECTOR_CLASSES.has("DataStoreMcpConnector")).toBe(true);
   });
 
   it("bridges have no fromConfig — wire via embedder code only", () => {
     const lm = KNOWN_CONNECTOR_CLASSES.get("LocalModelMcpConnector");
-    const ms = KNOWN_CONNECTOR_CLASSES.get("MemoryStoreMcpConnector");
+    const ms = KNOWN_CONNECTOR_CLASSES.get("DataStoreMcpConnector");
     expect(lm?.fromConfig).toBeUndefined();
     expect(ms?.fromConfig).toBeUndefined();
   });

@@ -51,7 +51,7 @@ Skillscript intends to answer the second question.
 
 **Agents are code, and skillscript is the language they write themselves in.** Not memory in the recall sense. Not prompt templates. Not configuration. Code, in the strict sense of named, typed, composable, executable artifacts that constitute capability.
 
-A skillscript skill is a declarative recipe, a small program with a dependency DAG of typed operations — that an agent authors once and the runtime fires many times. Where typical agent code is procedural (Python scripts, TypeScript handlers), skillscript is **orchestration-only**: it composes calls into tools, models, and memory stores through swappable connector contracts. Computation lives in tools; coordination lives in skills.
+A skillscript skill is a declarative recipe, a small program with a dependency DAG of typed operations — that an agent authors once and the runtime fires many times. Where typical agent code is procedural (Python scripts, TypeScript handlers), skillscript is **orchestration-only**: it composes calls into tools, models, and data stores through swappable connector contracts. Computation lives in tools; coordination lives in skills.
 
 ```
 # Skill: hello
@@ -66,7 +66,7 @@ greet:
 default: greet
 ```
 
-That's a complete, runnable skill. Five lines, no dependencies, no boilerplate. The same shape scales to multi-stage DAGs that classify inputs, dispatch to LLMs, query memory stores, branch on conditions, and orchestrate sub-agents, all in the same declarative grammar.
+That's a complete, runnable skill. Five lines, no dependencies, no boilerplate. The same shape scales to multi-stage DAGs that classify inputs, dispatch to LLMs, query data stores, branch on conditions, and orchestrate sub-agents, all in the same declarative grammar.
 
 ## Why a new language
 
@@ -89,7 +89,7 @@ For this shape, Python's strengths invert into liabilities:
 Skillscript deliberately constrains expressiveness. It's not Turing complete. It can't `eval`, can't `subprocess`, can't import arbitrary code. **The constraint *is* the safety story** — enforced at the language level, not as an aspiration. In exchange:
 
 - **Sandboxed grammar.** The language can only do what configured connectors permit.
-- **Declarative legibility.** Skills are DAGs of typed dispatches. A human reading a skill sees exactly which tools get called, which memory writes happen, which model prompts fire. The same source produces the same audit diagram every time.
+- **Declarative legibility.** Skills are DAGs of typed dispatches. A human reading a skill sees exactly which tools get called, which data writes happen, which model prompts fire. The same source produces the same audit diagram every time.
 - **Connector-mediated capability.** Skills don't import packages, they invoke connectors, gated artifacts with curated tool surfaces. Python doesn't disappear from the system; it moves out of the agent's hands and into the connector implementations adopters write deliberately. The safety boundary moves to the connector edge.
 - **Static validation before admission.** A skill that fails the linter can't enter the library. Structural issues, missing dependencies, undeclared variables, mutation paths without confirmation gates are caught at authorship time, not at 3am.
 - **Asymmetric cost.** Routine work (classify, dispatch, transform) costs local-model tokens. The frontier model is reserved for the small fraction of work that actually needs frontier judgment.
@@ -119,11 +119,11 @@ Every skillscript skill is one of three shapes, determined by the relationship t
 
 The kinds compose. A Headless monitor fires on cron, evaluates a condition, and routes into an Augmenting skill that wakes an agent with context, which itself references a Template skill for the agent to execute.
 
-The three kinds describe the skill's *role* (who consumes the output). Orthogonal to that is the skill's *delivery channel* — the actual op that ships the result. Three channels are first-class: `emit(text="...")` for embedded prompt-context, `$ memory_write content="..." addressed_to="<agent>"` for memory handoff, and `file_write(path="...", content="...")` for file handoff. A single skill can use any combination. See the [Language Reference](docs/language-reference.md) §1 for the full taxonomy.
+The three kinds describe the skill's *role* (who consumes the output). Orthogonal to that is the skill's *delivery channel* — the actual op that ships the result. Three channels are first-class: `emit(text="...")` for embedded prompt-context, `$ data_write content="..." addressed_to="<agent>"` for data handoff, and `file_write(path="...", content="...")` for file handoff. A single skill can use any combination. See the [Language Reference](docs/language-reference.md) §1 for the full taxonomy.
 
 ### Waking agents
 
-Augmenting and Template skills don't just write somewhere; they deliver to a frontier agent through `AgentConnector`. The contract is substrate-neutral: a Headless monitor detects a condition, evaluates whether action is warranted, and either resolves silently or calls `AgentConnector.deliver(agent_id, payload)`. The implementation might write a memory the agent reads at next session, post to a chat thread the agent monitors, send a push notification, write to a tmux pane, or invoke a webhook. All the adopter's call.
+Augmenting and Template skills don't just write somewhere; they deliver to a frontier agent through `AgentConnector`. The contract is substrate-neutral: a Headless monitor detects a condition, evaluates whether action is warranted, and either resolves silently or calls `AgentConnector.deliver(agent_id, payload)`. The implementation might write to a data store the agent reads at next session, post to a chat thread the agent monitors, send a push notification, write to a tmux pane, or invoke a webhook. All the adopter's call.
 
 The runtime ships `NoOpAgentConnector` by default; production deployments wire their own and register it via the runtime's connector registry, rather than declaring it in `connectors.json`. Common wirings look like:
 
@@ -145,7 +145,7 @@ const runtime = new Runtime({
 });
 ```
 
-Adopter impls can write to memory, post to a chat thread, send a webhook, write to a tmux pane, or anything else that wakes the receiving agent.
+Adopter impls can write to a data store, post to a chat thread, send a webhook, write to a tmux pane, or anything else that wakes the receiving agent.
 
 This is what makes *"Headless monitor → wake agent with context"* a real composition primitive, not just a pattern adopters bolt on. Skills don't know what substrate they're waking into; the substrate doesn't know what skill triggered it. The contract handles the seam.
 
@@ -281,7 +281,7 @@ Three things to notice:
 2. **`# Autonomous: true`** — the skill-author's declaration that mutation ops (here `file_write`) are authorized to fire without per-call confirmation. Without this header, mutation ops require an inline `approved="<reason>"` kwarg on each call site, or a preceding `ask(...)` gate in the same target. Pick whichever fits.
 3. **`${EVENT.fired_at_unix}` + `${NOW}`** — ambient refs the runtime substitutes per-fire. `EVENT.*` covers the trigger payload; `NOW` is the ISO timestamp at op dispatch. See [Language Reference §3](docs/language-reference.md) for the full ambient list.
 
-Swap in `$ ticketing_search`, `$ llm`, `$ memory_write` once you've wired connectors, and the same skill shape becomes a real triage pipeline.
+Swap in `$ ticketing_search`, `$ llm`, `$ data_write` once you've wired connectors, and the same skill shape becomes a real triage pipeline.
 
 ## Connector model
 
@@ -290,7 +290,7 @@ Skills don't know what they're talking to. Five contracts decouple language from
 | Contract | Purpose | Base config |
 |---|---|---|
 | `SkillStore` | Skill source persistence | `FilesystemSkillStore` (default); switch via `substrate.skill_store` in `connectors.json` |
-| `MemoryStore` | Retrieval over a knowledge store | `SqliteMemoryStore` (conditional on dbPath); switch via `substrate.memory_store` |
+| `DataStore` | Generic data persistence with query | `SqliteDataStore` (conditional on dbPath); switch via `substrate.data_store` |
 | `LocalModel` | Local LLM dispatch | **null** (adopter wires explicitly via `substrate.local_model`) |
 | `McpConnector` | MCP tool invocation — external dispatch | adopter wires named instances in `connectors.json` |
 | `AgentConnector` | Delivery to a frontier agent | adopter wires explicitly (no bundled default) |
@@ -305,14 +305,14 @@ Wire your own by implementing the interface and registering in `connectors.json`
 
 Per-host configuration. The runtime loads it at startup. Two top-level concerns:
 
-1. **`substrate`** — which `SkillStore` / `MemoryStore` / `LocalModel` the runtime hosts use
+1. **`substrate`** — which `SkillStore` / `DataStore` / `LocalModel` the runtime hosts use
 2. **Named MCP connector instances** — each becomes a connector referenced via `$ <name>` in skill source
 
 ```json
 {
   "substrate": {
     "skill_store": "sqlite",
-    "memory_store": "sqlite",
+    "data_store": "sqlite",
     "local_model": null
   },
 
@@ -369,7 +369,7 @@ The runtime exposes 16 tools over MCP (HTTP at `/rpc`) for cold-client authoring
 | Category | Tools |
 |---|---|
 | Skill management | `skill_list`, `skill_metadata`, `skill_read`, `skill_status`, `skill_write` |
-| Memory | `memory_read` |
+| Data | `data_read` |
 | Authoring | `lint_skill`, `compile_skill` |
 | Composition | `execute_skill` |
 | Triggers | `list_triggers`, `register_trigger`, `unregister_trigger`, `set_trigger_enabled` |

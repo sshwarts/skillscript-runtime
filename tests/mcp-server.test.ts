@@ -5,14 +5,14 @@ import { join } from "node:path";
 import { McpServer, type JsonRpcRequest } from "../src/mcp-server.js";
 import { Scheduler } from "../src/scheduler.js";
 import { FilesystemSkillStore } from "../src/connectors/skill-store.js";
-import { SqliteMemoryStore } from "../src/connectors/memory-store.js";
+import { SqliteDataStore } from "../src/connectors/data-store.js";
 import { FilesystemTraceStore, TraceBuilder } from "../src/trace.js";
 import { Registry } from "../src/connectors/registry.js";
 
 function withServer(): {
   server: McpServer;
   skillStore: FilesystemSkillStore;
-  memoryStore: SqliteMemoryStore;
+  dataStore: SqliteDataStore;
   registry: Registry;
   scheduler: Scheduler;
   traceStore: FilesystemTraceStore;
@@ -20,24 +20,24 @@ function withServer(): {
 } {
   const home = mkdtempSync(join(tmpdir(), "skillscript-mcp-"));
   const skillStore = new FilesystemSkillStore(join(home, "skills"));
-  const memoryStore = new SqliteMemoryStore({ dbPath: ":memory:" });
+  const dataStore = new SqliteDataStore({ dbPath: ":memory:" });
   const traceStore = new FilesystemTraceStore(join(home, "traces"));
   const registry = new Registry();
   registry.registerSkillStore("primary", skillStore);
-  registry.registerMemoryStore("primary", memoryStore);
+  registry.registerDataStore("primary", dataStore);
   const scheduler = new Scheduler({
     registry,
     skillStore,
     traceStore,
   });
-  // v0.13.8 — registry now wired into McpServer so memory_read can resolve the
-  // registered MemoryStore. runtime_capabilities also benefits (was returning
+  // v0.13.8 — registry now wired into McpServer so data_read can resolve the
+  // registered DataStore. runtime_capabilities also benefits (was returning
   // empty arrays per the optional-registry guard).
   const server = new McpServer({ skillStore, scheduler, traceStore, registry });
   return {
     server,
     skillStore,
-    memoryStore,
+    dataStore,
     registry,
     scheduler,
     traceStore,
@@ -78,12 +78,12 @@ describe("McpServer protocol", () => {
       const names = r.tools.map((t) => t.name).sort();
       expect(names).toEqual([
         "compile_skill",
+        "data_read",
         "execute_skill",
         "health_metrics",
         "help",
         "lint_skill",
         "list_triggers",
-        "memory_read",
         "register_trigger",
         "runtime_capabilities",
         "set_trigger_enabled",
@@ -225,15 +225,15 @@ describe("McpServer.skill_list / skill_metadata / skill_status", () => {
     }
   });
 
-  // v0.13.8 — memory_read mirrors skill_read shape but on MemoryStore. Returns
-  // null on miss (per MemoryStore's empty-set convention, vs SkillStore which
-  // throws SkillNotFoundError). No memory_write MCP by design: writes are
-  // skill-context-only via `$ memory_write` op (Perry thread 4b58c283 Q1C).
-  it("memory_read returns PortableMemory for known id (v0.13.8)", async () => {
-    const { server, memoryStore, cleanup } = withServer();
+  // v0.13.8 — data_read mirrors skill_read shape but on DataStore. Returns
+  // null on miss (per DataStore's empty-set convention, vs SkillStore which
+  // throws SkillNotFoundError). No data_write MCP by design: writes are
+  // skill-context-only via `$ data_write` op (Perry thread 4b58c283 Q1C).
+  it("data_read returns PortableData for known id (v0.13.8)", async () => {
+    const { server, dataStore, cleanup } = withServer();
     try {
-      const written = await memoryStore.write({ content: "phase 3 probe", tags: ["probe"] });
-      const resp = await server.handle(rpc("tools/call", { name: "memory_read", arguments: { id: written.id } }));
+      const written = await dataStore.write({ content: "phase 3 probe", tags: ["probe"] });
+      const resp = await server.handle(rpc("tools/call", { name: "data_read", arguments: { id: written.id } }));
       const result = parseToolResult<{ id: string; summary: string; detail?: string }>(resp);
       expect(result).not.toBeNull();
       expect(result.id).toBe(written.id);
@@ -243,10 +243,10 @@ describe("McpServer.skill_list / skill_metadata / skill_status", () => {
     }
   });
 
-  it("memory_read returns null for unknown id (v0.13.8)", async () => {
+  it("data_read returns null for unknown id (v0.13.8)", async () => {
     const { server, cleanup } = withServer();
     try {
-      const resp = await server.handle(rpc("tools/call", { name: "memory_read", arguments: { id: "nonexistent-id-12345" } }));
+      const resp = await server.handle(rpc("tools/call", { name: "data_read", arguments: { id: "nonexistent-id-12345" } }));
       const result = parseToolResult<unknown>(resp);
       expect(result).toBeNull();
     } finally {
@@ -254,7 +254,7 @@ describe("McpServer.skill_list / skill_metadata / skill_status", () => {
     }
   });
 
-  it("memory_read errors cleanly when no MemoryStore registered (v0.13.8)", async () => {
+  it("data_read errors cleanly when no DataStore registered (v0.13.8)", async () => {
     // Build a server WITHOUT a registry to verify the guard fires correctly.
     const home = mkdtempSync(join(tmpdir(), "skillscript-mcp-no-mem-"));
     const skillStore = new FilesystemSkillStore(join(home, "skills"));
@@ -262,10 +262,10 @@ describe("McpServer.skill_list / skill_metadata / skill_status", () => {
     const scheduler = new Scheduler({ registry: new Registry(), skillStore, traceStore });
     const server = new McpServer({ skillStore, scheduler, traceStore });  // no registry
     try {
-      const resp = await server.handle(rpc("tools/call", { name: "memory_read", arguments: { id: "anything" } }));
+      const resp = await server.handle(rpc("tools/call", { name: "data_read", arguments: { id: "anything" } }));
       expect("error" in resp).toBe(true);
       const errResp = resp as { error: { message: string } };
-      expect(errResp.error.message).toMatch(/MemoryStore/);
+      expect(errResp.error.message).toMatch(/DataStore/);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

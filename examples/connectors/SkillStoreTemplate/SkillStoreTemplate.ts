@@ -138,7 +138,7 @@ export class SkillStoreTemplate implements SkillStore {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async versions(_name: string): Promise<VersionInfo[]> {
     // TODO — return version chain. SQL substrates: SELECT FROM skill_versions
-    // ORDER BY changed_at. MemoryStore-style: query memories with the right tag.
+    // ORDER BY changed_at. DataStore-style: query memories with the right tag.
     throw new Error("TODO: versions() — return VersionInfo[] chronologically.");
   }
 

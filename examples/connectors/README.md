@@ -7,9 +7,9 @@ Worked examples + fork-me templates for adopter-written connectors. The bundled 
 | Contract | Bundled defaults | Worked example | Fork template |
 |---|---|---|---|
 | `SkillStore` | `FilesystemSkillStore`, `SqliteSkillStore` (in `src/connectors/`) | — | **[SkillStoreTemplate/](./SkillStoreTemplate/)** |
-| `MemoryStore` | `SqliteMemoryStore` (in `src/connectors/`) | — | **[MemoryStoreTemplate/](./MemoryStoreTemplate/)** |
+| `DataStore` | `SqliteDataStore` (in `src/connectors/`) | — | **[DataStoreTemplate/](./DataStoreTemplate/)** |
 | `LocalModel` | `OllamaLocalModel` (in `src/connectors/`; opt-in via substrate config) | — | **[LocalModelTemplate/](./LocalModelTemplate/)** |
-| `McpConnector` | `RemoteMcpConnector`, `CallbackMcpConnector`, `LocalModelMcpConnector`, `MemoryStoreMcpConnector` (in `src/connectors/`) | — | **[McpConnectorTemplate/](./McpConnectorTemplate/)** |
+| `McpConnector` | `RemoteMcpConnector`, `CallbackMcpConnector`, `LocalModelMcpConnector`, `DataStoreMcpConnector` (in `src/connectors/`) | — | **[McpConnectorTemplate/](./McpConnectorTemplate/)** |
 | `AgentConnector` | `NoOpAgentConnector` (in `src/connectors/`) | **[HttpWebhookAgentConnector/](./HttpWebhookAgentConnector/)** | — |
 
 **Bundled defaults** are runnable out of the box — wired through `connectors.json` substrate config or programmatic bootstrap.
@@ -35,7 +35,7 @@ Worked examples + fork-me templates for adopter-written connectors. The bundled 
 - **[`docs/configuration.md`](../../docs/configuration.md)** — substrate selection via `connectors.json`; programmatic-bootstrap vs declarative patterns
 - **[`docs/adopter-playbook.md`](../../docs/adopter-playbook.md)** — Case 1 vs Case 2 wiring decisions; two-instance posture; upstream-merge-friendly conventions
 - **[`docs/connector-contract-reference.md`](../../docs/connector-contract-reference.md)** — interface contracts for adopter agents writing connector impls
-- **`src/connectors/types.ts`** — authoritative contract interfaces (SkillStore, MemoryStore, LocalModel, McpConnector)
+- **`src/connectors/types.ts`** — authoritative contract interfaces (SkillStore, DataStore, LocalModel, McpConnector)
 - **`src/testing/conformance.ts`** — the per-contract conformance test suites
 
 ## Naming convention

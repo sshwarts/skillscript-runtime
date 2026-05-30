@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-host connector wiring. Copied to ~/.skillscript/connectors.json by `skillfile init`. The top-level `substrate` key selects singleton substrate connectors (SkillStore, MemoryStore, LocalModel). All other top-level keys define named MCP connector instances referenced via `$ name args` in skill source.",
+  "_comment": "Per-host connector wiring. Copied to ~/.skillscript/connectors.json by `skillfile init`. The top-level `substrate` key selects singleton substrate connectors (SkillStore, DataStore, LocalModel). All other top-level keys define named MCP connector instances referenced via `$ name args` in skill source.",
 
   "_comment_substrate": "Substrate selection — runtime hosts (MCP server + web dashboard) honor whatever you configure here. The bundled CLI authoring commands (`skillfile compile`, `skillfile lint`, `skillfile audit`, `skillfile list`) stay filesystem-pinned regardless — they're the FS-authoring loop. Three legs: bundled filesystem, bundled sqlite, adopter-custom (write your own SkillStore impl).",
 
@@ -7,7 +7,7 @@
 
   "substrate": {
     "skill_store": "filesystem",
-    "memory_store": "sqlite",
+    "data_store": "sqlite",
     "local_model": null,
 
     "_example_sqlite_skills": "Uncomment to switch skill storage to SQLite. Adopter-portable; persists between restarts. dbPath defaults to <skillsDir>/skills.db.",
@@ -31,7 +31,7 @@
     }
   },
 
-  "_comment_classes": "Closed-set class registry for MCP connectors. Available: `RemoteMcpConnector` (stdio-bridged remote MCP). Use `runtime_capabilities({include:['mcpConnectorClasses']})` to introspect the available class set. The `LocalModelMcpConnector` + `MemoryStoreMcpConnector` bridges (for `$ llm` / `$ memory` canonical dispatch) auto-wire when their substrates are configured above.",
+  "_comment_classes": "Closed-set class registry for MCP connectors. Available: `RemoteMcpConnector` (stdio-bridged remote MCP). Use `runtime_capabilities({include:['mcpConnectorClasses']})` to introspect the available class set. The `LocalModelMcpConnector` + `DataStoreMcpConnector` bridges (for `$ llm` / `$ data_read` canonical dispatch) auto-wire when their substrates are configured above.",
 
   "_comment_security": "This file is secret-bearing when filled with real credentials. The repo's `.gitignore` excludes `connectors.json` (the live copy) but tracks `connectors.json.example`. Prefer `${VAR}` substitution over in-file literals for deployments.",
 

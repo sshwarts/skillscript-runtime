@@ -21,7 +21,7 @@ import { renderSidecarProvenance } from "./provenance.js";
 import { Registry } from "./connectors/registry.js";
 import { FilesystemSkillStore } from "./connectors/skill-store.js";
 import { OllamaLocalModel } from "./connectors/local-model.js";
-import { SqliteMemoryStore } from "./connectors/memory-store.js";
+import { SqliteDataStore } from "./connectors/data-store.js";
 import { parse, type SkillOp } from "./parser.js";
 import { FilesystemTraceStore } from "./trace.js";
 import { healthMetrics } from "./metrics.js";
@@ -32,7 +32,7 @@ import { createHash } from "node:crypto";
 
 const HOME_DIR = process.env["SKILLSCRIPT_HOME"] ?? join(homedir(), ".skillscript");
 const SKILLS_DIR = join(HOME_DIR, "skills");
-const MEMORY_DB = join(HOME_DIR, "memory.db");
+const DATA_DB = join(HOME_DIR, "data.db");
 const EXAMPLES_DIR = join(HOME_DIR, "examples");
 const PLUGINS_DIR = join(HOME_DIR, "plugins");
 const TRACE_DIR = join(HOME_DIR, "traces");
@@ -174,7 +174,7 @@ const COMMAND_HELP: Readonly<Record<string, CommandHelp>> = {
     examples: [
       "skillfile health",
       "skillfile health --skill hello --human",
-      "skillfile health --connector memory-store --since-ms 3600000",
+      "skillfile health --connector data-store --since-ms 3600000",
     ],
   },
   serve: {
@@ -480,7 +480,7 @@ async function cmdLint(args: string[]): Promise<number> {
   // SkillStore so cross-skill rules (unknown-skill-reference,
   // disabled-skill-reference) can resolve.
   const result = await lint(source, {
-    classes: [FilesystemSkillStore, SqliteMemoryStore, OllamaLocalModel],
+    classes: [FilesystemSkillStore, SqliteDataStore, OllamaLocalModel],
     skillStore: new FilesystemSkillStore(SKILLS_DIR),
     callSite: "cli",
   });
@@ -618,7 +618,7 @@ async function loadSkillSource(ref: string): Promise<string | null> {
 }
 
 function buildRegistry(): Registry {
-  return defaultRegistry({ skillsDir: SKILLS_DIR, memoryDbPath: MEMORY_DB }).registry;
+  return defaultRegistry({ skillsDir: SKILLS_DIR, dataDbPath: DATA_DB }).registry;
 }
 
 /** Locate the bundled scaffold directory — works both in dev (running from src/) and prod (running from dist/). */
@@ -670,7 +670,7 @@ async function cmdRuntimeHost(args: string[], opts: { mode: "serve" | "dashboard
   const wired = bootstrap({
     skillsDir: fileConfig.skillsDir ?? SKILLS_DIR,
     traceDir: fileConfig.traceDir ?? TRACE_DIR,
-    memoryDbPath: fileConfig.memoryDbPath ?? MEMORY_DB,
+    dataDbPath: fileConfig.dataDbPath ?? DATA_DB,
     triggersFilePath,
     connectorsConfigPath,
     mode: opts.mode,

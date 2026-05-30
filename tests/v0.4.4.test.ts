@@ -29,7 +29,7 @@ describe("v0.4.4 — SPA fetches runtime_capabilities + renders wired connectors
     const src = readFileSync(APP_JS, "utf8");
     expect(src).toMatch(/state\.capabilities/);
     expect(src).toMatch(/wiredMcp/);
-    // Renders MCP + LocalModel + MemoryStore + SkillStore + Agent
+    // Renders MCP + LocalModel + DataStore + SkillStore + Agent
     expect(src).toMatch(/Local model/);
     expect(src).toMatch(/Memory store/);
     expect(src).toMatch(/Skill store/);

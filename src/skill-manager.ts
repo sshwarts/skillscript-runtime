@@ -256,7 +256,7 @@ export async function invalidateConnector(
   let matchedSkillStore: SkillStore | null = null;
   for (const lookup of [
     () => registry.hasLocalModel(name) ? registry.getLocalModel(name) : null,
-    () => registry.hasMemoryStore(name) ? registry.getMemoryStore(name) : null,
+    () => registry.hasDataStore(name) ? registry.getDataStore(name) : null,
     () => registry.hasSkillStore(name) ? registry.getSkillStore(name) : null,
     () => registry.hasMcpConnector(name) ? registry.getMcpConnector(name) : null,
   ]) {

@@ -5,7 +5,7 @@ A skeleton `SkillStore` implementation for adopters writing their own. Not runna
 Use this when you want skillscript skills backed by:
 - A database the bundled impls don't cover (Postgres, MySQL, MongoDB, etc.)
 - A vector store (Pinecone, Weaviate, Qdrant)
-- A memory system (AMP, hosted memory API)
+- A data store backing (memory broker like AMP, hosted memory API, vector DB, etc.)
 - An HTTP CRUD service
 - Anything else with a query/write interface
 

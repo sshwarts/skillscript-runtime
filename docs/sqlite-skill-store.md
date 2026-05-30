@@ -159,7 +159,7 @@ registerApprovalFn("v2", (body) => hmacSha256(SECRET, body));
 When forking into your codebase:
 
 1. Rename the class (e.g., `PostgresSkillStore`, `AmpSkillStore`)
-2. Replace the SQL with your substrate's API (HTTP, MemoryStore, vector DB, etc.)
+2. Replace the SQL with your substrate's API (HTTP, DataStore, vector DB, etc.)
 3. Update `staticCapabilities()` to match what your substrate actually supports — drop `supports_versioning` if you can't track history, drop `supports_tag_filter` if querying tags isn't tractable
 4. Update `manifest()` to describe your substrate (`kind: "amp"` or whatever)
 5. Tests: copy `tests/SqliteSkillStore.test.ts` as a starting point + run the conformance suite (`SkillStoreConformance.buildTests()` from `skillscript-runtime/testing`)

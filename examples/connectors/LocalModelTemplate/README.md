@@ -113,7 +113,7 @@ Adopters wire their custom LocalModel **programmatically** from their bootstrap:
 registry.registerLocalModel("default", new MyLocalModel({ /* config */ }));
 ```
 
-Declarative custom-LocalModel via `connectors.json` `substrate.local_model: {type: "custom", module, export, config}` form is **deferred** until async-bootstrap support lands. Same limitation applies to `SkillStore` and `MemoryStore` custom forms — sync `bootstrap()` can't `await import()`. Not LocalModel-specific.
+Declarative custom-LocalModel via `connectors.json` `substrate.local_model: {type: "custom", module, export, config}` form is **deferred** until async-bootstrap support lands. Same limitation applies to `SkillStore` and `DataStore` custom forms — sync `bootstrap()` can't `await import()`. Not LocalModel-specific.
 
 ## Wiring against the dashboard / MCP
 

@@ -49,7 +49,7 @@ async function refresh() {
       callTool("skill_list", { filter: { audience: "all" } }),
       callTool("list_triggers", {}),
       callTool("health_metrics", {}),
-      callTool("runtime_capabilities", { include: ["mcpConnectors", "mcpConnectorClasses", "localModels", "memoryStores", "skillStores", "agentConnectors", "runtimeVersion"] }),
+      callTool("runtime_capabilities", { include: ["mcpConnectors", "mcpConnectorClasses", "localModels", "dataStores", "skillStores", "agentConnectors", "runtimeVersion"] }),
     ]);
     state.skills = [
       ...(catalog.receives ?? []),
@@ -319,7 +319,7 @@ function renderConnectors() {
   const caps = state.capabilities;
   const wiredMcp = caps?.mcpConnectors ?? [];
   const wiredLocal = caps?.localModels ?? [];
-  const wiredMemory = caps?.memoryStores ?? [];
+  const wiredMemory = caps?.dataStores ?? [];
   const wiredSkill = caps?.skillStores ?? [];
   const wiredAgent = caps?.agentConnectors ?? [];
   const classes = caps?.mcpConnectorClasses ?? [];

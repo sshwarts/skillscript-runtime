@@ -9,7 +9,7 @@ A skeleton `McpConnector` implementation for adopters writing their own. Not run
 | `RemoteMcpConnector` | Stdio bridging to remote MCP servers (`npx mcp-remote ...`). YouTrack, GitHub, Linear, most adopter MCP wiring goes through this. JSON-configurable via `connectors.json`. |
 | `CallbackMcpConnector` | Wraps a JS function. Test rigs + embedder-wired transports where the dispatch is local code. |
 | `LocalModelMcpConnector` | Bridges a registered `LocalModel` as `$ llm prompt=...`. Auto-wired when `substrate.local_model` is set. |
-| `MemoryStoreMcpConnector` | Bridges a registered `MemoryStore` as `$ memory mode=...`. Auto-wired when `substrate.memory_store` is set. |
+| `DataStoreMcpConnector` | Bridges a registered `DataStore` as `$ data_read mode=...`. Auto-wired when `substrate.data_store` is set. |
 
 **Fork this template only when none of those fit** — e.g.:
 
@@ -72,7 +72,7 @@ The bundled impls are the canonical reference:
 - **`src/connectors/mcp-remote.ts`** — `RemoteMcpConnector`. Most comprehensive: stdio framing (LSP and newline), child process lifecycle (spawn → initialize → tools/list cache → SIGTERM/SIGKILL on dispose), `fromConfig` factory with strict validation, per-message timeout discipline. The closest reference for any transport that needs robust lifecycle management.
 - **`src/connectors/mcp.ts`** — `CallbackMcpConnector`. Minimal reference: 60 LOC. The closest reference for embedder-wired transports.
 
-When in doubt, read both + the bridge classes (`local-model-mcp.ts`, `memory-store-mcp.ts`) for how single-substrate bridges work.
+When in doubt, read both + the bridge classes (`local-model-mcp.ts`, `data-store-mcp.ts`) for how single-substrate bridges work.
 
 ## Contract surface (2 methods)
 
@@ -131,15 +131,15 @@ Two registration paths:
 
 The declarative path is the canonical adopter pattern for stdio-bridged remote MCPs. Your fork is for transports the declarative path can't express.
 
-## McpConnector vs. SkillStore / MemoryStore differences
+## McpConnector vs. SkillStore / DataStore differences
 
-| Aspect | McpConnector | SkillStore / MemoryStore |
+| Aspect | McpConnector | SkillStore / DataStore |
 |---|---|---|
 | Methods | 2 (call, manifest) | 3-8 (more state machine) |
 | Cardinality | Many instances per deployment | One singleton per slot |
 | Substrate config | Per-instance via top-level keys | `substrate` section short/object/custom |
 | Class extensibility | `registerConnectorClass()` for adopter-custom classes | Programmatic bootstrap (or `substrate.skill_store: {type: "custom", ...}` once async-bootstrap lands) |
-| Auto-wired bridges | `llm` + `memory` + `memory_write` (LocalModel + MemoryStore exposed via bridge connectors) | n/a (these ARE the substrates being bridged) |
+| Auto-wired bridges | `llm` + `memory` + `data_write` (LocalModel + DataStore exposed via bridge connectors) | n/a (these ARE the substrates being bridged) |
 
 McpConnector is fundamentally the "dispatch to external tools" surface — narrowest contract, broadest range of impls.
 

@@ -1,8 +1,8 @@
 import type {
   SkillStore,
   SkillStoreClass,
-  MemoryStore,
-  MemoryStoreClass,
+  DataStore,
+  DataStoreClass,
   LocalModel,
   LocalModelClass,
   McpConnector,
@@ -52,7 +52,7 @@ interface McpEntry extends Entry<McpConnector, McpConnectorClass> {
 
 export class Registry {
   private skillStores = new Map<string, Entry<SkillStore, SkillStoreClass>>();
-  private memoryStores = new Map<string, Entry<MemoryStore, MemoryStoreClass>>();
+  private dataStores = new Map<string, Entry<DataStore, DataStoreClass>>();
   private localModels = new Map<string, Entry<LocalModel, LocalModelClass>>();
   private mcpConnectors = new Map<string, McpEntry>();
   private agentConnectors = new Map<string, Entry<AgentConnector, AgentConnectorClass>>();
@@ -63,8 +63,8 @@ export class Registry {
     this.skillStores.set(name, { instance, ctor: ctorOf(instance) as SkillStoreClass });
   }
 
-  registerMemoryStore(name: string, instance: MemoryStore): void {
-    this.memoryStores.set(name, { instance, ctor: ctorOf(instance) as MemoryStoreClass });
+  registerDataStore(name: string, instance: DataStore): void {
+    this.dataStores.set(name, { instance, ctor: ctorOf(instance) as DataStoreClass });
   }
 
   registerLocalModel(name: string, instance: LocalModel): void {
@@ -129,8 +129,8 @@ export class Registry {
   getSkillStore(name = "primary"): SkillStore {
     return must(this.skillStores, name, "SkillStore").instance;
   }
-  getMemoryStore(name = "primary"): MemoryStore {
-    return must(this.memoryStores, name, "MemoryStore").instance;
+  getDataStore(name = "primary"): DataStore {
+    return must(this.dataStores, name, "DataStore").instance;
   }
   getLocalModel(name = "default"): LocalModel {
     return must(this.localModels, name, "LocalModel").instance;
@@ -168,8 +168,8 @@ export class Registry {
   getSkillStoreClass(name = "primary"): SkillStoreClass {
     return must(this.skillStores, name, "SkillStore").ctor;
   }
-  getMemoryStoreClass(name = "primary"): MemoryStoreClass {
-    return must(this.memoryStores, name, "MemoryStore").ctor;
+  getDataStoreClass(name = "primary"): DataStoreClass {
+    return must(this.dataStores, name, "DataStore").ctor;
   }
   getLocalModelClass(name = "default"): LocalModelClass {
     return must(this.localModels, name, "LocalModel").ctor;
@@ -201,7 +201,7 @@ export class Registry {
   // ─── List distinct classes per kind ─────────────────────────────────────
 
   listSkillStoreClasses(): SkillStoreClass[] { return distinct(this.skillStores); }
-  listMemoryStoreClasses(): MemoryStoreClass[] { return distinct(this.memoryStores); }
+  listDataStoreClasses(): DataStoreClass[] { return distinct(this.dataStores); }
   listLocalModelClasses(): LocalModelClass[] { return distinct(this.localModels); }
   listMcpConnectorClasses(): McpConnectorClass[] { return distinct(this.mcpConnectors); }
   listAgentConnectorClasses(): AgentConnectorClass[] { return distinct(this.agentConnectors); }
@@ -212,7 +212,7 @@ export class Registry {
   // calls. Excludes the implicit NoOp agent-connector fallback.
 
   listSkillStores(): Array<{ name: string; instance: SkillStore; ctor: SkillStoreClass }> { return entries(this.skillStores); }
-  listMemoryStores(): Array<{ name: string; instance: MemoryStore; ctor: MemoryStoreClass }> { return entries(this.memoryStores); }
+  listDataStores(): Array<{ name: string; instance: DataStore; ctor: DataStoreClass }> { return entries(this.dataStores); }
   listLocalModels(): Array<{ name: string; instance: LocalModel; ctor: LocalModelClass }> { return entries(this.localModels); }
   listMcpConnectors(): Array<{ name: string; instance: McpConnector; ctor: McpConnectorClass; allowedTools?: string[] }> {
     const out: Array<{ name: string; instance: McpConnector; ctor: McpConnectorClass; allowedTools?: string[] }> = [];
@@ -239,7 +239,7 @@ export class Registry {
   getAllStaticCapabilities(): StaticCapabilities[] {
     return [
       ...this.listSkillStoreClasses().map((c) => c.staticCapabilities()),
-      ...this.listMemoryStoreClasses().map((c) => c.staticCapabilities()),
+      ...this.listDataStoreClasses().map((c) => c.staticCapabilities()),
       ...this.listLocalModelClasses().map((c) => c.staticCapabilities()),
       ...this.listMcpConnectorClasses().map((c) => c.staticCapabilities()),
       ...this.listAgentConnectorClasses().map((c) => c.staticCapabilities()),
@@ -249,7 +249,7 @@ export class Registry {
   // ─── Existence checks ───────────────────────────────────────────────────
 
   hasSkillStore(name = "primary"): boolean { return this.skillStores.has(name); }
-  hasMemoryStore(name = "primary"): boolean { return this.memoryStores.has(name); }
+  hasDataStore(name = "primary"): boolean { return this.dataStores.has(name); }
   hasLocalModel(name = "default"): boolean { return this.localModels.has(name); }
   hasMcpConnector(name = "primary"): boolean { return this.mcpConnectors.has(name); }
   hasAgentConnector(name = "primary"): boolean { return this.agentConnectors.has(name); }

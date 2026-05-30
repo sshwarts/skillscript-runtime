@@ -38,7 +38,7 @@ default: m
       const src = `# Skill: t
 # Status: Approved
 m:
-    $ memory mode=fts query="x" -> R
+    $ data_read mode=fts query="x" -> R
 default: m
 `;
       const parsed = parse(src);
@@ -75,7 +75,7 @@ default: m
       const src = `# Skill: t
 # Status: Approved
 m:
-    $ memory.memory_write content="x" domain_tags=[svc, foo:bar, ops] -> R
+    $ data_read.data_write content="x" domain_tags=[svc, foo:bar, ops] -> R
 default: m
 `;
       const r = await lint(src);

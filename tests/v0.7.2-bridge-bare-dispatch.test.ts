@@ -3,13 +3,13 @@ import { compile } from "../src/compile.js";
 import { execute } from "../src/runtime.js";
 import { bootstrap } from "../src/bootstrap.js";
 import { LocalModelMcpConnector } from "../src/connectors/local-model-mcp.js";
-import { MemoryStoreMcpConnector } from "../src/connectors/memory-store-mcp.js";
+import { DataStoreMcpConnector } from "../src/connectors/data-store-mcp.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LocalModel, MemoryStore, PortableMemory } from "../src/connectors/types.js";
+import type { LocalModel, DataStore, PortableData } from "../src/connectors/types.js";
 
-// v0.7.2 push-blocker fix (per Perry f46d3c49): bare-form `$ memory ...` and
+// v0.7.2 push-blocker fix (per Perry f46d3c49): bare-form `$ data_read ...` and
 // `$ llm ...` must dispatch through the auto-wired bridges, not fail with
 // ConnectorNotFoundError trying to look up "primary". These tests exercise
 // the bare-form path end-to-end — the coverage gap that let the bug slip
@@ -26,16 +26,16 @@ class FakeLocalModel implements LocalModel {
   }
 }
 
-class FakeMemoryStore implements MemoryStore {
+class FakeDataStore implements DataStore {
   public lastQuery: Record<string, unknown> | null = null;
-  async query(filters: Record<string, unknown> & { query: string; limit: number; mode: string }): Promise<PortableMemory[]> {
+  async query(filters: Record<string, unknown> & { query: string; limit: number; mode: string }): Promise<PortableData[]> {
     this.lastQuery = filters;
     return [
-      { id: "m1", summary: "first item", confidence: 0.9, agentId: "test", vault: "private" } as unknown as PortableMemory,
+      { id: "m1", summary: "first item", confidence: 0.9, agentId: "test", vault: "private" } as unknown as PortableData,
     ];
   }
   async manifest(): Promise<{ capabilities_version: string; manifest: Record<string, unknown> }> {
-    return { capabilities_version: "1", manifest: { kind: "fake-memory-store" } };
+    return { capabilities_version: "1", manifest: { kind: "fake-data-store" } };
   }
 }
 
@@ -59,12 +59,12 @@ describe("v0.7.2 — bare-form bridge dispatch (push-blocker fix)", () => {
     expect(result.emissions[0]).toBe("LM:hello world");
   });
 
-  it("`$ memory mode=\"fts\" query=\"...\" limit=N -> R` dispatches through bridge", async () => {
+  it("`$ data_read mode=\"fts\" query=\"...\" limit=N -> R` dispatches through bridge", async () => {
     const wired = bootstrap({ skillsDir: join(home, "skills"), traceDir: join(home, "traces") });
-    const fakeMs = new FakeMemoryStore();
-    wired.registry.registerMcpConnector("memory", new MemoryStoreMcpConnector(fakeMs));
+    const fakeMs = new FakeDataStore();
+    wired.registry.registerMcpConnector("data_read", new DataStoreMcpConnector(fakeMs));
 
-    const src = `# Skill: t\n# Status: Approved\nrun:\n    $ memory mode="fts" query="incidents" limit=5 -> R\n    emit(text="got \${R.items|length} items")\ndefault: run\n`;
+    const src = `# Skill: t\n# Status: Approved\nrun:\n    $ data_read mode="fts" query="incidents" limit=5 -> R\n    emit(text="got \${R.items|length} items")\ndefault: run\n`;
     const compiled = await compile(src);
     const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, { registry: wired.registry });
     expect(result.errors).toEqual([]);
@@ -72,12 +72,12 @@ describe("v0.7.2 — bare-form bridge dispatch (push-blocker fix)", () => {
     expect(result.emissions[0]).toBe("got 1 items");
   });
 
-  it("dotted form `$ memory.query mode=... ...` still works (no regression)", async () => {
+  it("dotted form `$ data_read.query mode=... ...` still works (no regression)", async () => {
     const wired = bootstrap({ skillsDir: join(home, "skills"), traceDir: join(home, "traces") });
-    const fakeMs = new FakeMemoryStore();
-    wired.registry.registerMcpConnector("memory", new MemoryStoreMcpConnector(fakeMs));
+    const fakeMs = new FakeDataStore();
+    wired.registry.registerMcpConnector("data_read", new DataStoreMcpConnector(fakeMs));
 
-    const src = `# Skill: t\n# Status: Approved\nrun:\n    $ memory.query mode="fts" query="x" limit=10 -> R\n    emit(text="\${R.items|length}")\ndefault: run\n`;
+    const src = `# Skill: t\n# Status: Approved\nrun:\n    $ data_read.query mode="fts" query="x" limit=10 -> R\n    emit(text="\${R.items|length}")\ndefault: run\n`;
     const compiled = await compile(src);
     const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, { registry: wired.registry });
     expect(result.errors).toEqual([]);
@@ -118,10 +118,10 @@ describe("v0.7.2 — bare-form bridge dispatch (push-blocker fix)", () => {
 
   it("foreach over `${R.items}` from bare-form memory works end-to-end", async () => {
     const wired = bootstrap({ skillsDir: join(home, "skills"), traceDir: join(home, "traces") });
-    const fakeMs = new FakeMemoryStore();
-    wired.registry.registerMcpConnector("memory", new MemoryStoreMcpConnector(fakeMs));
+    const fakeMs = new FakeDataStore();
+    wired.registry.registerMcpConnector("data_read", new DataStoreMcpConnector(fakeMs));
 
-    const src = `# Skill: t\n# Status: Approved\nrun:\n    $ memory mode="fts" query="x" limit=10 -> R\n    foreach M in \${R.items}:\n        emit(text="\${M.summary}")\ndefault: run\n`;
+    const src = `# Skill: t\n# Status: Approved\nrun:\n    $ data_read mode="fts" query="x" limit=10 -> R\n    foreach M in \${R.items}:\n        emit(text="\${M.summary}")\ndefault: run\n`;
     const compiled = await compile(src);
     const result = await execute(compiled.parsed, compiled.resolvedVariables, compiled.targetOrder, { registry: wired.registry });
     expect(result.errors).toEqual([]);

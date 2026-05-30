@@ -37,7 +37,7 @@ The three delivery channels are all first-class:
 |---|---|---|
 | **Embedded prompt** | \`emit(text="...")\` | Skill output is delivered to the receiving agent via the \`# Output: agent: <name>\` lifecycle hook |
 | **File handoff** | \`file_write(path="...", content="...")\` | Skill writes a file at a known location for the agent to read |
-| **Memory handoff** | \`$ memory_write content="..." recipients=["agent"] -> R\` | Skill writes a memory the target agent picks up via mailbox. Routes through the wired \`memory_write\` connector (default: \`MemoryStoreMcpConnector\` bundled in v0.8.0+). |
+| **Data handoff** | \`$ data_write content="..." recipients=["agent"] -> R\` | Skill writes a record the target agent picks up via mailbox. Routes through the wired \`data_write\` connector (default: \`DataStoreMcpConnector\` bundled in v0.8.0+). |
 
 ## 2. The three op classes
 
@@ -45,7 +45,7 @@ The three delivery channels are all first-class:
 |---|---|---|
 | **Mutation statements** | \`$verb VAR = value\` / \`$verb VAR <value>\` | \`$set NAME = "Scott"\`, \`$append LIST <item>\` |
 | **Runtime-intrinsic function-calls** | \`verb(kwarg=value, ...) [-> BINDING]\` | \`emit(text="...")\`, \`ask(prompt="...") -> R\`, \`inline(skill="...")\`, \`execute_skill(skill_name="...") -> R\`, \`shell(command="...") -> R\`, \`file_read(path="...") -> R\`, \`file_write(path="...", content="...")\` |
-| **External MCP dispatch** | \`$ <connector> kwarg=value, ... [-> BINDING]\` | \`$ youtrack_search query="..." -> R\`, \`$ llm prompt="..." -> R\`, \`$ memory mode=fts query="..." -> R\` |
+| **External MCP dispatch** | \`$ <connector> kwarg=value, ... [-> BINDING]\` | \`$ youtrack_search query="..." -> R\`, \`$ llm prompt="..." -> R\`, \`$ data_read mode=fts query="..." -> R\` |
 
 The \`$\` prefix marks **state-affecting ops** (mutation OR external dispatch). Function-call shape marks **language-intrinsic ops the runtime knows directly**.
 
@@ -153,7 +153,7 @@ Three op classes, two grammars:
 |---|---|---|
 | **Mutation statements** | \`$verb VAR = value\` / \`$verb VAR <value>\` | Bind / mutate a named variable in scope |
 | **Runtime-intrinsic function-calls** | \`verb(kwarg=value, ...) [-> BINDING]\` | Language-intrinsic side-effects: emit, ask, file I/O, shell, composition |
-| **External MCP dispatch** | \`$ <connector> kwarg=value, ... [-> BINDING]\` | Any tool resolved through \`connectors.json\` (LLM calls, memory queries, business tools) |
+| **External MCP dispatch** | \`$ <connector> kwarg=value, ... [-> BINDING]\` | Any tool resolved through \`connectors.json\` (LLM calls, data queries, business tools) |
 
 The \`$\` prefix marks **state-affecting** ops (mutation OR external dispatch). Function-call shape marks **language-intrinsic** ops the runtime knows directly. Legacy symbol forms (\`~\` / \`>\` / \`@\` / \`!\` / \`??\` / \`&\`) compile during the v0.7.x grace period with tier-2 \`deprecated-symbol-op\` warnings.
 
@@ -286,7 +286,7 @@ $ tool_name arg1=value1 arg2=value2 -> VAR [(fallback: "default")]
 $ connector.tool_name args -> VAR
 \`\`\`
 
-Resolves the tool name against the adopter's \`connectors.json\`. Flat form (\`$ youtrack_search ...\`) uses the connector that owns the tool; dotted form (\`$ youtrack.search ...\`) routes explicitly. Fallback binds when dispatch errors. The substrate-specific shapes — LLM calls (\`$ llm\`), memory queries (\`$ memory\`), memory writes (\`$ memory_write\`), business tools — all use this dispatch.
+Resolves the tool name against the adopter's \`connectors.json\`. Flat form (\`$ youtrack_search ...\`) uses the connector that owns the tool; dotted form (\`$ youtrack.search ...\`) routes explicitly. Fallback binds when dispatch errors. The substrate-specific shapes — LLM calls (\`$ llm\`), data queries (\`$ data_read\`), data writes (\`$ data_write\`), business tools — all use this dispatch.
 
 **Kwarg value grammar.** Each \`key=value\` token follows a small literal grammar:
 
@@ -315,19 +315,19 @@ read:
         emit(text="processing \${P.count} items")
 \`\`\`
 
-## Substrate-portable LLM + memory dispatch
+## Substrate-portable LLM + data dispatch
 
-The canonical paths for LLM calls and memory queries are MCP dispatch through adopter-wired connectors. Connector names are convention — \`llm\` / \`memory\` / \`memory_write\` are descriptive, but adopters wire whatever names match their substrate.
+The canonical paths for LLM calls and data queries are MCP dispatch through adopter-wired connectors. Connector names are convention — \`llm\` / \`data_read\` / \`data_write\` are descriptive, but adopters wire whatever names match their substrate.
 
 \`\`\`
 $ llm prompt="Classify priority: \${ISSUE.summary}" -> VERDICT
-$ memory mode=fts query="recent incidents" limit=10 -> CONTEXT
-$ memory_write content="\${REPORT}" recipients=[oncall] tags=[morning-sweep] approved="cron deliverable" -> R
+$ data_read mode=fts query="recent incidents" limit=10 -> CONTEXT
+$ data_write content="\${REPORT}" recipients=[oncall] tags=[morning-sweep] approved="cron deliverable" -> R
 \`\`\`
 
-**Today's reality (v0.10).** Default deployments auto-wire \`llm\` + \`memory\` + \`memory_write\` MCP connectors via bundled bridges — but **only when the underlying substrate is configured**. v0.10 base config: \`SqliteMemoryStore\` is wired conditionally (substrate.memory_store: \`"sqlite"\`); \`LocalModel\` is \`null\` by default. To enable \`$ llm\`, set \`substrate.local_model: "ollama"\` in \`~/.skillscript/connectors.json\` (then restart the runtime host). To enable \`$ memory\` / \`$ memory_write\`, set \`substrate.memory_store: "sqlite"\` (default value in the scaffold). The bridges are the same shape they've always been (\`LocalModelMcpConnector\` over \`LocalModel\`; \`MemoryStoreMcpConnector\` over \`MemoryStore\` — same instance under both \`memory\` + \`memory_write\` names so query + write share substrate). Adopters with their own substrate impl wire it programmatically. See [\`docs/configuration.md\`](docs/configuration.md) for the substrate config reference.
+**Today's reality (v0.10).** Default deployments auto-wire \`llm\` + \`memory\` + \`data_write\` MCP connectors via bundled bridges — but **only when the underlying substrate is configured**. v0.10 base config: \`SqliteDataStore\` is wired conditionally (substrate.data_store: \`"sqlite"\`); \`LocalModel\` is \`null\` by default. To enable \`$ llm\`, set \`substrate.local_model: "ollama"\` in \`~/.skillscript/connectors.json\` (then restart the runtime host). To enable \`$ data_read\` / \`$ data_write\`, set \`substrate.data_store: "sqlite"\` (default value in the scaffold). The bridges are the same shape they've always been (\`LocalModelMcpConnector\` over \`LocalModel\`; \`DataStoreMcpConnector\` over \`DataStore\` — same instance under both \`memory\` + \`data_write\` names so query + write share substrate). Adopters with their own substrate impl wire it programmatically. See [\`docs/configuration.md\`](docs/configuration.md) for the substrate config reference.
 
-**One canonical call surface per concern.** \`$ memory\` is **the** memory-retrieval call surface — one contract (\`mode=... query=... limit=N -> R\` returning \`{items: [...]}\` envelope), one connector name. Both bare-form (\`$ memory ...\`) and dotted-form (\`$ memory.query ...\`) dispatch through the same registered connector. Same shape for \`$ llm\` (one \`prompt=... [maxTokens=N] [model="..."] -> R\` contract returning the response string). Author against the canonical \`$ llm\` / \`$ memory\` surfaces today; legacy \`~\` / \`>\` removal lands in v0.8/v0.9.
+**One canonical call surface per concern.** \`$ data_read\` is **the** data-retrieval call surface — one contract (\`mode=... query=... limit=N -> R\` returning \`{items: [...]}\` envelope), one connector name. Both bare-form (\`$ data_read ...\`) and dotted-form (\`$ data_read.query ...\`) dispatch through the same registered connector. Same shape for \`$ llm\` (one \`prompt=... [maxTokens=N] [model="..."] -> R\` contract returning the response string). Author against the canonical \`$ llm\` / \`$ data_read\` surfaces today; legacy \`~\` / \`>\` removal lands in v0.8/v0.9.
 
 ## Pipe filters
 
@@ -382,7 +382,7 @@ Branches via \`if:\` / \`elif COND:\` / \`else:\`. The \`else:\` after a target 
 | \`@ unsafe cmd\` | \`shell(command="cmd", unsafe=true)\` |
 | \`& skill-name\` | \`inline(skill="skill-name")\` |
 | \`~ prompt="..." -> R\` | \`$ llm prompt="..." -> R\` (auto-wired via \`LocalModelMcpConnector\` bridge in default deployments) |
-| \`> mode=... query=... -> R\` | \`$ memory mode=... query=... -> R\` (auto-wired via \`MemoryStoreMcpConnector\` bridge in default deployments) |
+| \`> mode=... query=... -> R\` | \`$ data_read mode=... query=... -> R\` (auto-wired via \`DataStoreMcpConnector\` bridge in default deployments) |
 | \`$(VAR)\` | \`\${VAR}\` |
 | \`(approved: "reason")\` trailer | \`approved="reason"\` kwarg |
 
@@ -579,7 +579,7 @@ Demonstrates: \`execute_skill(...)\` runtime composition (each child runs throug
 # Vars: TOPIC=infrastructure
 
 walk:
-    $ memory mode=topical query="\${TOPIC}" limit=50 -> CANDIDATES
+    $ data_read mode=topical query="\${TOPIC}" limit=50 -> CANDIDATES
     $set SEEN = []
     foreach C in \${CANDIDATES.items}:
         if \${C.id} not in \${SEEN}:
@@ -592,9 +592,9 @@ walk:
 default: walk
 \`\`\`
 
-Demonstrates: \`$ memory\` MCP dispatch (substrate-portable memory query), \`$append\` accumulator pattern, \`$set SEEN = []\` init at the target body (before the foreach) so mutations persist across iterations, \`not in\` membership check against the accumulating list, \`|length\` filter on the final collected list. **Note** — most MCP memory tools wrap the array in an envelope object (e.g., \`{items: [...], hasNextPage}\`); the example assumes \`.items\` is the array field. Check your tool's response shape; tier-3 \`object-iteration-advisory\` lint helps when you forget the field accessor.
+Demonstrates: \`$ data_read\` MCP dispatch (substrate-portable data query), \`$append\` accumulator pattern, \`$set SEEN = []\` init at the target body (before the foreach) so mutations persist across iterations, \`not in\` membership check against the accumulating list, \`|length\` filter on the final collected list. **Note** — most MCP data-query tools wrap the array in an envelope object (e.g., \`{items: [...], hasNextPage}\`); the example assumes \`.items\` is the array field. Check your tool's response shape; tier-3 \`object-iteration-advisory\` lint helps when you forget the field accessor.
 
-## Triggered cron deliverable — memory handoff
+## Triggered cron deliverable — data handoff
 
 \`\`\`
 # Skill: morning-showstopper-sweep
@@ -620,7 +620,7 @@ default: run
 
 Demonstrates: end-to-end trigger → process → deliver pattern. Trigger fires cron; process pulls data + sub-classifies each issue with \`$ llm\`; delivers via the \`agent:\` lifecycle hook (each \`emit(text=...)\` becomes a line in the joined-emissions delivery to the named agent).
 
-## 6. Memory durable-handoff (substrate-portable write)
+## 6. Data durable-handoff (substrate-portable write)
 
 \`\`\`
 # Skill: research-and-handoff
@@ -630,13 +630,13 @@ Demonstrates: end-to-end trigger → process → deliver pattern. Trigger fires 
 
 go:
     $ llm prompt="\${QUERY}" -> ANSWER
-    $ memory_write content="\${ANSWER}" recipients=[researcher] domain_tags=[incident, handoff] -> ACK
+    $ data_write content="\${ANSWER}" recipients=[researcher] domain_tags=[incident, handoff] -> ACK
     emit(text="memory written; receipt \${ACK.id}")
 
 default: go
 \`\`\`
 
-Demonstrates: \`$ memory_write\` substrate-portable durable handoff (returns \`{id, created_at}\` envelope). \`recipients=[...]\` is the bracket-array literal form — the receiving agent's mailbox surfaces this on their next session check.
+Demonstrates: \`$ data_write\` substrate-portable durable handoff (returns \`{id, created_at}\` envelope). \`recipients=[...]\` is the bracket-array literal form — the receiving agent's mailbox surfaces this on their next session check.
 
 ## 7. File output with confirmed write (v0.9.2+)
 
@@ -662,8 +662,8 @@ Demonstrates: \`$append\` accumulator over a string + \`file_write\` side effect
 Different connectors return different envelope shapes. Cold authors authoring against multiple substrates should expect:
 
 - **Ticketing-style** (\`$ ticketing_search\`): returns \`{items: [...], totalCount, hasNextPage, ...}\` — \`.items\` is the array; \`.totalCount\` is the count.
-- **Memory query** (\`$ memory\`): returns \`{items: [...]}\` envelope — \`.items\` is the array of memories.
-- **Memory write** (\`$ memory_write\`): returns \`{id, created_at}\` — \`.id\` is the new memory's UUID.
+- **Data query** (\`$ data_read\`): returns \`{items: [...]}\` envelope — \`.items\` is the array of records.
+- **Data write** (\`$ data_write\`): returns \`{id, created_at}\` — \`.id\` is the new record's UUID.
 - **LLM** (\`$ llm\`): returns the response string directly (no envelope).
 - **File read** (\`file_read(path=...) -> R\`): binds the file content string to R.
 
@@ -736,17 +736,17 @@ Skillscript skills don't import packages — they invoke connectors. The runtime
 |---|---|---|
 | \`SkillStore\` | Skill source persistence + status lifecycle | implicit (\`inline\` / \`execute_skill\` reference) |
 | \`LocalModel\` | LLM inference | \`$ llm\` MCP dispatch via \`LocalModelMcpConnector\` bridge — auto-wired ONLY when \`substrate.local_model\` is set in \`connectors.json\`. v0.10 default: null (off). |
-| \`MemoryStore\` | Knowledge retrieval | \`$ memory\` MCP dispatch via \`MemoryStoreMcpConnector\` bridge — auto-wired when \`substrate.memory_store\` is set (default in v0.10 scaffold: \`"sqlite"\`). |
+| \`DataStore\` | Data persistence + query | \`$ data_read\` MCP dispatch via \`DataStoreMcpConnector\` bridge — auto-wired when \`substrate.data_store\` is set (default in v0.10 scaffold: \`"sqlite"\`). |
 | \`McpConnector\` | MCP tool dispatch — all external tools | \`$ <connector_name> args\` |
 | \`AgentConnector\` | Deliver augment/template payloads | \`# Output: agent:\` / \`template:\` |
 
-**v0.10 substrate framing.** Canonical syntax routes substrate-specific dispatch through MCP (\`$ llm\` / \`$ memory\` rather than legacy \`~\` / \`>\`). Runtime hosts (MCP server + web dashboard) honor whichever substrate the deployment configures via \`~/.skillscript/connectors.json\`:
+**v0.10 substrate framing.** Canonical syntax routes substrate-specific dispatch through MCP (\`$ llm\` / \`$ data_read\` rather than legacy \`~\` / \`>\`). Runtime hosts (MCP server + web dashboard) honor whichever substrate the deployment configures via \`~/.skillscript/connectors.json\`:
 
 \`\`\`json
 {
   "substrate": {
     "skill_store": "filesystem",
-    "memory_store": "sqlite",
+    "data_store": "sqlite",
     "local_model": "ollama"
   }
 }
@@ -754,13 +754,13 @@ Skillscript skills don't import packages — they invoke connectors. The runtime
 
 Short-form (\`"sqlite"\`, \`"ollama"\`, \`"filesystem"\`, \`null\`) wires bundled defaults. Object form (\`{type, config}\`) overrides config. Adopters with custom substrate impls (AMP, Pinecone, etc.) write a programmatic bootstrap. Authoring CLI commands (\`skillfile compile\` / \`lint\` / \`audit\` / \`list\`) stay filesystem-pinned regardless. See \`docs/configuration.md\`.
 
-**Cold-author footgun (v0.10).** \`$ llm\` errors with \`No \`llm\` connector wired. Set \`substrate.local_model: 'ollama'\` in connectors.json...\` when the substrate slot is null. Same for \`$ memory\` / \`$ memory_write\` against null \`substrate.memory_store\`. The error message points at the right config knob — no need to dig through API docs.
+**Cold-author footgun (v0.10).** \`$ llm\` errors with \`No \`llm\` connector wired. Set \`substrate.local_model: 'ollama'\` in connectors.json...\` when the substrate slot is null. Same for \`$ data_read\` / \`$ data_write\` against null \`substrate.data_store\`. The error message points at the right config knob — no need to dig through API docs.
 
 **Adopter-extensible class registration (v0.7.3).** Custom \`McpConnector\` classes that are JSON-instantiable register via \`registerConnectorClass(name, entry)\` from adopter bootstrap before \`loadConnectorsConfig\` runs. Replaces the pre-v0.7.3 pattern of editing the bundled \`KNOWN_CONNECTOR_CLASSES\` Map directly (merge-conflict bait). See \`examples/custom-bootstrap.example.ts\`.
 
 **Canonical runtime config (v0.7.3).** \`skillscript.config.json\` externalizes runtime knobs (skillsDir, traceDir, dashboard port, etc.) so the two-instance posture (dev + adopter on same machine) works as copy-and-tweak. CLI flags override file values; file values override defaults. See \`skillscript.config.json.example\`.
 
-**One canonical call surface per concern.** \`$ memory\` is **the** memory-retrieval call surface — one contract (\`mode=... query=... limit=N -> R\` returning \`{items: [...]}\` envelope), one connector name. Both bare-form (\`$ memory ...\`) and dotted-form (\`$ memory.query ...\`) dispatch through the same registered connector. Same shape for \`$ llm\` (one \`prompt=... [maxTokens=N] [model="..."] -> R\` contract returning the response string). The legacy \`~\` / \`>\` removal lands in v0.8/v0.9 — author against the canonical \`$ llm\` / \`$ memory\` surfaces today.
+**One canonical call surface per concern.** \`$ data_read\` is **the** data-retrieval call surface — one contract (\`mode=... query=... limit=N -> R\` returning \`{items: [...]}\` envelope), one connector name. Both bare-form (\`$ data_read ...\`) and dotted-form (\`$ data_read.query ...\`) dispatch through the same registered connector. Same shape for \`$ llm\` (one \`prompt=... [maxTokens=N] [model="..."] -> R\` contract returning the response string). The legacy \`~\` / \`>\` removal lands in v0.8/v0.9 — author against the canonical \`$ llm\` / \`$ data_read\` surfaces today.
 
 ## Discovery
 
@@ -817,7 +817,7 @@ Three tiers per ERD §3:
 - \`unknown-retrieval-arg\` — \`>\` op carries kwargs outside mode/query/limit/connector/fallback (v0.2.12 Bug 26)
 - \`unknown-skill-reference\` — \`&\` or \`$ execute_skill\` references a skill not in the store (demoted from tier-1 in v0.3.1; runtime throws \`MissingSkillReferenceError\` if still unresolved at execute)
 - \`unknown-template-reference\` — \`# Templates: <name>\` references a skill not in the store (demoted from tier-1 in v0.3.1)
-- \`unconfirmed-mutation\` — mutation-class op (\`$\` tool with mutating-name shape, \`$ memory_write\`, \`file_write(...)\`) runs without authorization. v0.7.0+ accepts the captured \`approved="reason"\` per-op kwarg as authorization (any non-empty string; presence is what matters). Silent when the skill declares \`# Autonomous: true\` (v0.4.2 — the autonomous-skill category exempts the rule since the user-confirmation pattern doesn't apply to unattended-execution skills) or when a preceding \`??\` / \`ask(...)\` op gates the mutation in the same target.
+- \`unconfirmed-mutation\` — mutation-class op (\`$\` tool with mutating-name shape, \`$ data_write\`, \`file_write(...)\`) runs without authorization. v0.7.0+ accepts the captured \`approved="reason"\` per-op kwarg as authorization (any non-empty string; presence is what matters). Silent when the skill declares \`# Autonomous: true\` (v0.4.2 — the autonomous-skill category exempts the rule since the user-confirmation pattern doesn't apply to unattended-execution skills) or when a preceding \`??\` / \`ask(...)\` op gates the mutation in the same target.
 - \`model-contention\` — async + sync ops on the same model serialize on a single runtime worker
 - \`draft-with-trigger\` — \`# Status: Draft\` skill has \`# Triggers:\` declared; triggers won't fire until Approved
 - \`reference-to-disabled-skill\` — \`&\` op references a Disabled skill (also tier-1 in some contexts)
@@ -874,12 +874,12 @@ function renderConnectorsTopic(registry?: Registry): string {
     ``,
   ];
   const ss = registry.listSkillStores();
-  const ms = registry.listMemoryStores();
+  const ms = registry.listDataStores();
   const lm = registry.listLocalModels();
   const mc = registry.listMcpConnectors();
   const ac = registry.listAgentConnectors();
   summary.push(`- SkillStores: ${ss.length === 0 ? "(none)" : ss.map((e) => `${e.name} (${e.ctor.name})`).join(", ")}`);
-  summary.push(`- MemoryStores: ${ms.length === 0 ? "(none)" : ms.map((e) => `${e.name} (${e.ctor.name})`).join(", ")}`);
+  summary.push(`- DataStores: ${ms.length === 0 ? "(none)" : ms.map((e) => `${e.name} (${e.ctor.name})`).join(", ")}`);
   summary.push(`- LocalModels: ${lm.length === 0 ? "(none)" : lm.map((e) => e.name).join(", ")}`);
   summary.push(`- McpConnectors: ${mc.length === 0 ? "(none)" : mc.map((e) => `${e.name} (${e.ctor.name})`).join(", ")}`);
   summary.push(`- AgentConnectors: ${ac.length === 0 ? "(none — defaults to NoOp)" : ac.map((e) => `${e.name} (${e.ctor.name})`).join(", ")}`);

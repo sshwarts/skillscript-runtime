@@ -584,7 +584,7 @@ function renderOpPrompt(op: SkillOp, targetName: string, resolved: Map<string, s
         .join(", ");
       const tail = extraStr ? `, ${extraStr}` : "";
       return [
-        `${prefix}- Retrieve from MemoryStore \`${p.connector}\`: mode=${modeSub}, query="${querySub}", limit=${limitSub}${tail} — bind result list to $(${op.outputVar}).`,
+        `${prefix}- Retrieve from DataStore \`${p.connector}\`: mode=${modeSub}, query="${querySub}", limit=${limitSub}${tail} — bind result list to $(${op.outputVar}).`,
       ];
     }
     case "~": {
@@ -705,7 +705,7 @@ function renderOpProse(op: SkillOp, resolved: Map<string, string>): string[] {
         .map(([k, v]) => `${k}=${substitute(v, resolved)}`)
         .join(", ");
       const tail = extraStr ? ` (filters: ${extraStr})` : "";
-      return [`Queries MemoryStore \`${p.connector}\` with mode=${modeSub}, query="${querySub}", limit=${limitSub}${tail}; binds to $(${op.outputVar}).`];
+      return [`Queries DataStore \`${p.connector}\` with mode=${modeSub}, query="${querySub}", limit=${limitSub}${tail}; binds to $(${op.outputVar}).`];
     }
     case "~": {
       const p = op.localModelParams!;

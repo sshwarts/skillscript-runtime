@@ -4,7 +4,7 @@ How to configure a skillscript-runtime deployment.
 
 The single config file is **`~/.skillscript/connectors.json`** (or any path passed via `--connectors`). It has two top-level concerns:
 
-1. **`substrate`** — which `SkillStore`, `MemoryStore`, and `LocalModel` the runtime hosts (MCP server + web dashboard) use.
+1. **`substrate`** — which `SkillStore`, `DataStore`, and `LocalModel` the runtime hosts (MCP server + web dashboard) use.
 2. **Named MCP connector instances** — `youtrack`, `github`, etc. — invoked via `$ <name>` in skill source.
 
 The runtime loads `connectors.json` at startup. Missing file → graceful empty config (substrate defaults to filesystem skills + conditional sqlite memories; no MCP connectors). Malformed JSON or unknown fields → structured errors surfaced at bootstrap.
@@ -22,7 +22,7 @@ Every default path the runtime computes is rooted under `SKILLSCRIPT_HOME`:
 | Triggers file | `$SKILLSCRIPT_HOME/triggers.json` |
 | Skills directory (`skillsDir`) | `$SKILLSCRIPT_HOME/skills/` |
 | Sqlite skill store dbPath | `$SKILLSCRIPT_HOME/skills/skills.db` |
-| Sqlite memory store dbPath | `$SKILLSCRIPT_HOME/memory.db` |
+| Sqlite data store dbPath | `$SKILLSCRIPT_HOME/data.db` |
 | Trace directory | `$SKILLSCRIPT_HOME/traces/` |
 
 `SKILLSCRIPT_HOME` defaults to `~/.skillscript`. Set the env var to relocate **everything** under a different root — the cleanest multi-instance isolation primitive:
@@ -47,7 +47,7 @@ A typical out-of-the-box `~/.skillscript/connectors.json`:
 {
   "substrate": {
     "skill_store": "filesystem",
-    "memory_store": "sqlite",
+    "data_store": "sqlite",
     "local_model": null
   }
 }
@@ -88,7 +88,7 @@ Valid short-form values per slot:
 | Slot | Values |
 |---|---|
 | `skill_store` | `"filesystem"` \| `"sqlite"` |
-| `memory_store` | `"sqlite"` |
+| `data_store` | `"sqlite"` |
 | `local_model` | (none — `"ollama"` requires the object form with `defaultModelTag`; see below) |
 
 ### Null — explicit "no substrate"
@@ -116,10 +116,10 @@ The runtime doesn't register a connector for this slot. Useful for explicitly di
 |---|---|
 | `filesystem` (skill_store) | none — uses the CLI's `skillsDir` (defaults to `$SKILLSCRIPT_HOME/skills/`) |
 | `sqlite` (skill_store) | `dbPath` (default: `$SKILLSCRIPT_HOME/skills/skills.db`) |
-| `sqlite` (memory_store) | `dbPath` (default: `$SKILLSCRIPT_HOME/memory.db`; `MEMORY_DB` env overrides) |
+| `sqlite` (data_store) | `dbPath` (default: `$SKILLSCRIPT_HOME/data.db`; `DATA_DB` env overrides) |
 | `ollama` (local_model) | `baseUrl` (default: `OLLAMA_BASE_URL` env or `http://localhost:11434`), **`defaultModelTag` (required — e.g., `"gemma2:9b"`, `"llama3.1:8b"`)** |
 
-> **`SqliteMemoryStore` feature surface.** The bundled `sqlite` memory_store is a deliberately minimal reference implementation: `supports_writes` + `supports_tag_filter` are true; `supports_semantic`, `supports_pinning`, `supports_decay_model`, `supports_thread_status_filter` are all false. Rich features (semantic retrieval, pinning, decay scoring, thread-status workflow) come from substrate impls — adopters fork `examples/connectors/MemoryStoreTemplate/` and wire their backing system (memory broker, vector DB, AMP, etc.). The bundled impl exists so the runtime works out-of-box; adopters with richer memory substrates write their own.
+> **`SqliteDataStore` feature surface.** The bundled `sqlite` data_store is a deliberately minimal reference implementation: `supports_writes` + `supports_tag_filter` are true; `supports_semantic`, `supports_pinning`, `supports_decay_model`, `supports_thread_status_filter` are all false. Rich features (semantic retrieval, pinning, decay scoring, thread-status workflow) come from substrate impls — adopters fork `examples/connectors/DataStoreTemplate/` and wire their backing system (memory broker, vector DB, AMP, etc.). The bundled impl exists so the runtime works out-of-box; adopters with richer query semantics write their own.
 
 Worked Ollama example (because the short form isn't valid for `local_model`):
 
@@ -163,7 +163,7 @@ When multiple config sources speak:
 
 1. **Programmatic opts** (`opts.skillStore` passed to `bootstrap()`) — explicit, highest priority
 2. **`connectors.json` substrate section** — declarative, deployment-durable
-3. **Built-in default** — fallback (filesystem skill_store; conditional sqlite memory_store; no local_model)
+3. **Built-in default** — fallback (filesystem skill_store; conditional sqlite data_store; no local_model)
 
 If two configs disagree, the higher-priority one wins; lower-priority is ignored without error.
 
@@ -256,7 +256,7 @@ Underscore-prefixed top-level keys (`_comment`, `_note_security`, etc.) are igno
 
 ## Adopter-custom substrate impls
 
-Write `class FooSkillStore implements SkillStore { ... }` (or MemoryStore, LocalModel). Wire it via either:
+Write `class FooSkillStore implements SkillStore { ... }` (or DataStore, LocalModel). Wire it via either:
 
 **(a) Programmatic bootstrap (recommended today)** — write your own bootstrap script that constructs the registry directly:
 

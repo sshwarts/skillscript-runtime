@@ -4,7 +4,7 @@ The substrate-neutral contracts skillscript-runtime exposes for adopters to wire
 
 **Audience**: this doc is written for the agent that's implementing an adopter's AgentConnector — typically an LLM-class agent supervised by a human. If you're a human reading it directly, the same content applies; the prose is tightened for agent comprehension (literal field semantics, explicit precedence rules, worked examples).
 
-Other contracts (McpConnector, SkillStore, MemoryStore, LocalModel) audit + lock in subsequent v0.9.x slots; this doc grows with each lock.
+Other contracts (McpConnector, SkillStore, DataStore, LocalModel) audit + lock in subsequent v0.9.x slots; this doc grows with each lock.
 
 ---
 
@@ -161,9 +161,9 @@ These are the load-bearing semantic rules. Internalize before implementing.
 
 ---
 
-## Storage-layer conventions (SkillStore + MemoryStore)
+## Storage-layer conventions (SkillStore + DataStore)
 
-The cold-adopter Phase 3 dogfood (writing AmpSkillStore + AmpMemoryStore against AMP) surfaced several conventions that live in the bundled reference impls but aren't first-class in the typed contracts. Adopters writing their own SkillStore/MemoryStore impls need to know about these, or skills/memories misbehave silently.
+The cold-adopter Phase 3 dogfood (writing AmpSkillStore + AmpDataStore against AMP) surfaced several conventions that live in the bundled reference impls but aren't first-class in the typed contracts. Adopters writing their own SkillStore/DataStore impls need to know about these, or skills/memories misbehave silently.
 
 ### SkillStore conventions
 
@@ -173,18 +173,18 @@ The cold-adopter Phase 3 dogfood (writing AmpSkillStore + AmpMemoryStore against
 
 **`store()` auto-stamps the approval token.** When a caller writes a skill with `# Status: Approved` (no `vN:<token>`), the store MUST stamp the v1 CRC32 (or whatever version is currently `setPreferredApprovalVersion`'d) onto the body before persisting. Otherwise the skill is non-executable — the approval gate refuses bodies without a valid token. This is a **runtime-semantic concern that leaked into the storage layer**: ideally the runtime would stamp at execute-time, but for forward-compat reasons the convention is store-side stamping. See `src/approval.ts` and the v0.9.x hash-token auth thread.
 
-### MemoryStore conventions
+### DataStore conventions
 
-**`summary`/`detail` split is convention, not contract field.** The MemoryStore contract gives `write()` a single `content: string`. Bundled `SqliteMemoryStore` maps this to `summary = first line (≤200 chars)` and `detail = full content`. Adopter substrates with native summary/detail concepts (AMP's `summary` + `detail` columns) can pre-compose and pass via `metadata`, but the basic mapping convention is "first line is the preview." Diverge and the dashboard's memory rendering looks weird, but skills still work.
+**`summary`/`detail` split is convention, not contract field.** The DataStore contract gives `write()` a single `content: string`. Bundled `SqliteDataStore` maps this to `summary = first line (≤200 chars)` and `detail = full content`. Adopter substrates with native summary/detail concepts (AMP's `summary` + `detail` columns) can pre-compose and pass via `metadata`, but the basic mapping convention is "first line is the preview." Diverge and the dashboard's memory rendering looks weird, but skills still work.
 
-**`get(id)` returns null on miss, doesn't throw.** Distinct from SkillStore's `load(name)` which throws `SkillNotFoundError`. MemoryStore's empty-set convention (`query()` returns `[]` not throws; `get()` returns `null` not throws) is **load-bearing for the runtime's control flow** — query callers branch on `result.length`, get callers branch on `result === null`. Don't change this in your impl. Per cold agent's "credit where due": *"unambiguous, and the runtime keys control flow on the specific classes."*
+**`get(id)` returns null on miss, doesn't throw.** Distinct from SkillStore's `load(name)` which throws `SkillNotFoundError`. DataStore's empty-set convention (`query()` returns `[]` not throws; `get()` returns `null` not throws) is **load-bearing for the runtime's control flow** — query callers branch on `result.length`, get callers branch on `result === null`. Don't change this in your impl. Per cold agent's "credit where due": *"unambiguous, and the runtime keys control flow on the specific classes."*
 
 ### Durability stance (both contracts)
 
-**The typed contracts assume durable storage.** Neither SkillStore nor MemoryStore declare "writes live forever" anywhere in the interface — but the runtime + lint + dashboard all behave as if writes persist indefinitely. Substrate backends with their own GC / TTL / decay scoring surprise the skillscript layer invisibly:
+**The typed contracts assume durable storage.** Neither SkillStore nor DataStore declare "writes live forever" anywhere in the interface — but the runtime + lint + dashboard all behave as if writes persist indefinitely. Substrate backends with their own GC / TTL / decay scoring surprise the skillscript layer invisibly:
 
 - A skill written to a substrate that auto-expires after N days disappears from `skill_list` without warning
-- A memory written with an implicit TTL gets pruned, breaking later `$ memory query` references
+- A memory written with an implicit TTL gets pruned, breaking later `$ data_read query` references
 - A substrate that pin-deletes stale content silently invalidates persisted skill references
 
 Implementer responsibility: either pick a substrate posture that satisfies "durable forever," or build adopter-side guards (e.g., pin-rules, retention policies, periodic re-pin sweeps) that maintain the assumption. The contract doesn't enforce — silent staleness is the failure mode.
@@ -193,7 +193,7 @@ Implementer responsibility: either pick a substrate posture that satisfies "dura
 
 **Filters are advisory at the contract layer (v0.13.x and earlier).** `query(filters)` accepts arbitrary fields via the `[key: string]: unknown` extension; substrates honor what they support and silently drop the rest. For non-scope-sensitive filters (`tag`, `since`) this is fine. For **scope/visibility/security-relevant filters** (any future `vault` filter, tenant-id, access-control) — the silent-drop is a leak waiting to happen.
 
-Today's discipline: enforce scope-relevant filters *above* the contract — adopter wraps the SkillStore/MemoryStore with a guard that asserts the substrate honors the filter, or the wrapping layer applies the filter in-memory after the substrate returns.
+Today's discipline: enforce scope-relevant filters *above* the contract — adopter wraps the SkillStore/DataStore with a guard that asserts the substrate honors the filter, or the wrapping layer applies the filter in-memory after the substrate returns.
 
 v0.14.0 plans `strict_filters: true` at the contract layer so the substrate must surface unsupported-filter use via `UnsupportedFilterError`. Until then, adopter-side enforcement is the only option.
 

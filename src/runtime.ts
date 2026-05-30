@@ -941,7 +941,7 @@ async function execOpInner(
       // v0.7.2 — bare-form name-match dispatch resolution. When `$ <name> ...`
       // is bare (no dotted prefix) AND `<name>` matches a registered
       // connector name, route to that connector directly. This makes the
-      // canonical `$ llm prompt="..."` and `$ memory mode=... query=...
+      // canonical `$ llm prompt="..."` and `$ data_read mode=... query=...
       // limit=N` paths work in default deployments where the bridges are
       // auto-wired as `llm` + `memory` (rather than as `primary`). If
       // `<name>` isn't a registered connector, fall back to the legacy
@@ -1006,10 +1006,10 @@ async function execOpInner(
           // errors silently, masking real failures. Now: throw, so the
           // op-level (fallback:) catch below can recover if declared, or
           // the error surfaces immediately.
-          // v0.10 — when bare-form (`$ llm`/`$ memory`/`$ memory_write`),
+          // v0.10 — when bare-form (`$ llm`/`$ data_read`/`$ data_write`),
           // pass the tool name so the error message surfaces substrate-aware
           // remediation copy (point cold authors at `substrate.local_model`/
-          // `substrate.memory_store` in connectors.json, not the generic API).
+          // `substrate.data_store` in connectors.json, not the generic API).
           throw new ConnectorNotFoundError(
             connectorName,
             "mcp_connector",
@@ -1074,14 +1074,14 @@ async function execOpInner(
           ? p.fallback
           : [makeMechanicalPlaceholder(`${op.outputVar}[0]`)];
         emissions.push(
-          `Would query MemoryStore \`${p.connector}\` with mode=${p.mode}, ` +
+          `Would query DataStore \`${p.connector}\` with mode=${p.mode}, ` +
           `query="${querySub}", limit=${p.limit} (mechanical: true preview). ` +
           `Binding $(${op.outputVar}) = placeholder result set.`,
         );
         vars.set(op.outputVar!, mechanicalValue);
         return { lastBoundVar: op.outputVar!, lastValue: mechanicalValue };
       }
-      const store = ctx.registry.getMemoryStore(p.connector);
+      const store = ctx.registry.getDataStore(p.connector);
       const limitResolved = resolveIntParam(p.limit, vars, "limit");
       const filters = {
         query: querySub,
@@ -1517,7 +1517,7 @@ function resolveListExpr(expr: string, vars: Map<string, unknown>): unknown[] {
 
 /**
  * Unwrap `CallToolResult`-shaped values into the meaningful payload.
- * Symmetry with `>` (binds `PortableMemory[]`) and `~` (binds the response
+ * Symmetry with `>` (binds `PortableData[]`) and `~` (binds the response
  * string) — `$` should bind the *content*, not the wire envelope.
  *
  * Rules:

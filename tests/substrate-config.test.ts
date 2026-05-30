@@ -213,16 +213,16 @@ describe("bootstrap — substrate dispatch", () => {
     expect(wired.skillStore).toBeInstanceOf(FilesystemSkillStore);
   });
 
-  it("substrate.memory_store='sqlite' wires SqliteMemoryStore", () => {
+  it("substrate.data_store='sqlite' wires SqliteDataStore", () => {
     const cfg = join(home, "connectors.json");
-    writeFileSync(cfg, JSON.stringify({ substrate: { memory_store: "sqlite" } }));
+    writeFileSync(cfg, JSON.stringify({ substrate: { data_store: "sqlite" } }));
     const wired = bootstrap({
       skillsDir: join(home, "skills"),
       traceDir: join(home, "traces"),
-      memoryDbPath: join(home, "memories.db"),
+      dataDbPath: join(home, "memories.db"),
       connectorsConfigPath: cfg,
     });
-    expect(wired.registry.hasMemoryStore("primary")).toBe(true);
+    expect(wired.registry.hasDataStore("primary")).toBe(true);
   });
 
   it("defaultRegistry — opts.skillStore overrides bundled default", () => {
@@ -242,17 +242,17 @@ describe("substrate-aware error message — Concern 1 patch (Perry's `7b107241`)
     expect(err.remediation).toMatch(/docs\/configuration\.md/);
   });
 
-  it("$ memory against null memory_store surfaces substrate.memory_store remediation", () => {
-    const err = new ConnectorNotFoundError("primary", "mcp_connector", "$", "R", "memory");
-    expect(err.message).toMatch(/No `memory` connector wired/);
-    expect(err.remediation).toMatch(/substrate\.memory_store:\s*'sqlite'/);
-    expect(err.remediation).toMatch(/MemoryStore/);
+  it("$ data_read against null data_store surfaces substrate.data_store remediation", () => {
+    const err = new ConnectorNotFoundError("primary", "mcp_connector", "$", "R","data_read");
+    expect(err.message).toMatch(/No `data_read` connector wired/);
+    expect(err.remediation).toMatch(/substrate\.data_store:\s*'sqlite'/);
+    expect(err.remediation).toMatch(/DataStore/);
   });
 
-  it("$ memory_write — same substrate-aware copy as $ memory", () => {
-    const err = new ConnectorNotFoundError("primary", "mcp_connector", "$", "R", "memory_write");
-    expect(err.message).toMatch(/No `memory_write` connector wired/);
-    expect(err.remediation).toMatch(/substrate\.memory_store:\s*'sqlite'/);
+  it("$ data_write — same substrate-aware copy as $ data_read", () => {
+    const err = new ConnectorNotFoundError("primary", "mcp_connector", "$", "R", "data_write");
+    expect(err.message).toMatch(/No `data_write` connector wired/);
+    expect(err.remediation).toMatch(/substrate\.data_store:\s*'sqlite'/);
   });
 
   it("non-bridge connector name — falls back to generic 'register via API' copy", () => {
